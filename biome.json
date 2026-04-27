@@ -1,7 +1,8 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.2.5/schema.json",
   "files": {
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "includes": ["**", "!apps/mobile/uniwind-types.d.ts"]
   },
   "vcs": {
     "enabled": true,
