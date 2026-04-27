@@ -1,4 +1,5 @@
-import { Pressable, SafeAreaView, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { AuthRecord } from '../../App';
 
@@ -8,8 +9,16 @@ type HomeScreenProps = {
 };
 
 export function HomeScreen({ authRecord, onLogout }: HomeScreenProps) {
+  const insets = useSafeAreaInsets();
+
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <View
+      className="flex-1 bg-background"
+      style={{
+        paddingTop: insets.top,
+        paddingBottom: Math.max(insets.bottom, 12),
+      }}
+    >
       <View className="flex-1 px-5 pt-4">
         <View className="flex-row items-center justify-between">
           <View>
@@ -33,6 +42,6 @@ export function HomeScreen({ authRecord, onLogout }: HomeScreenProps) {
           <Text className="mt-6 text-xl font-semibold text-foreground">No chats yet</Text>
         </View>
       </View>
-    </SafeAreaView>
+    </View>
   );
 }

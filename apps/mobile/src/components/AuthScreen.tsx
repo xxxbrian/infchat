@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
-import { Animated, Easing, KeyboardAvoidingView, Platform, SafeAreaView, View } from 'react-native';
+import { Animated, Easing, KeyboardAvoidingView, Platform, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type AuthScreenProps = {
   children: ReactNode;
 };
 
 export function AuthScreen({ children }: AuthScreenProps) {
+  const insets = useSafeAreaInsets();
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(16)).current;
 
@@ -28,7 +30,13 @@ export function AuthScreen({ children }: AuthScreenProps) {
   }, [opacity, translateY]);
 
   return (
-    <SafeAreaView className="flex-1 bg-background">
+    <View
+      className="flex-1 bg-background"
+      style={{
+        paddingTop: insets.top,
+        paddingBottom: Math.max(insets.bottom, 12),
+      }}
+    >
       <KeyboardAvoidingView
         className="flex-1"
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -37,6 +45,6 @@ export function AuthScreen({ children }: AuthScreenProps) {
           <Animated.View style={{ opacity, transform: [{ translateY }] }}>{children}</Animated.View>
         </View>
       </KeyboardAvoidingView>
-    </SafeAreaView>
+    </View>
   );
 }

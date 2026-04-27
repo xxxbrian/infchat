@@ -3,6 +3,7 @@ import './global.css';
 import { registerWithUsername, signInWithUsername, signOut } from '@infchat/pocketbase';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LoginScreen } from './src/screens/LoginScreen';
@@ -28,9 +29,9 @@ export default function App() {
     }, true);
   }, []);
 
-  if (authRecord) {
-    return (
-      <>
+  return (
+    <SafeAreaProvider>
+      {authRecord ? (
         <HomeScreen
           authRecord={authRecord}
           onLogout={() => {
@@ -38,14 +39,7 @@ export default function App() {
             setRoute('login');
           }}
         />
-        <StatusBar style="light" />
-      </>
-    );
-  }
-
-  return (
-    <>
-      {route === 'login' ? (
+      ) : route === 'login' ? (
         <LoginScreen
           onCreateAccount={() => setRoute('register')}
           onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
@@ -60,6 +54,6 @@ export default function App() {
         />
       )}
       <StatusBar style="light" />
-    </>
+    </SafeAreaProvider>
   );
 }
