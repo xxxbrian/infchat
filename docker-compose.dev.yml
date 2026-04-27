@@ -5,13 +5,11 @@ services:
       dockerfile: Dockerfile
     container_name: infchat-pocketbase-dev
     restart: unless-stopped
-    command: /app/pocketbase serve --http=0.0.0.0:8090 --dev
+    command: /app/infchat-pocketbase serve --http=0.0.0.0:8090 --dev
     ports:
       - "8090:8090"
     volumes:
       - pocketbase_data:/app/pb_data
-      - ./services/pocketbase/pb_hooks:/app/pb_hooks
-      - ./services/pocketbase/pb_migrations:/app/pb_migrations
 
   redis:
     image: redis:7-alpine
