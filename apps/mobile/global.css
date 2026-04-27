@@ -1,0 +1,19 @@
+@import "tailwindcss";
+@import "uniwind";
+
+@source "../../packages/shared/src";
+@source "../../packages/pocketbase/src";
+
+@theme {
+  --color-background: #080b12;
+  --color-foreground: #f8fafc;
+  --color-muted: #111827;
+  --color-muted-foreground: #94a3b8;
+  --color-border: #1f2937;
+  --color-primary: #60a5fa;
+  --color-primary-foreground: #07111f;
+  --color-accent: #a78bfa;
+  --color-danger: #fb7185;
+
+  --font-sans: "System";
+}

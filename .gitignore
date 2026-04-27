@@ -66,6 +66,7 @@ services/pocketbase/pb_hooks/.pb_temp/
 .opencode/
 skills-lock.json
 AGENTS.md
+rn-makeitanimated/
 
 # mise
 .mise.local.toml

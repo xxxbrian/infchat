@@ -1,3 +1,5 @@
+export * from './cn';
+
 export const MESSAGE_KINDS = ['text', 'image', 'voice'] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 
