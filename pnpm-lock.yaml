@@ -39,6 +39,17 @@ importers:
         specifier: ~5.9.2
         version: 5.9.3
 
+  packages/pocketbase:
+    dependencies:
+      "@infchat/shared":
+        specifier: workspace:*
+        version: link:../shared
+      pocketbase:
+        specifier: ^0.26.5
+        version: 0.26.8
+
+  packages/shared: {}
+
 packages:
   "@0no-co/graphql.web@1.2.0":
     resolution:
@@ -3535,6 +3546,12 @@ packages:
         integrity: sha512-NCrCHhWmnQklfH4MtJMRjZ2a8c80qXeMlQMv2uVp9ISJMTt562SbGd6n2oq0PaPgKm7Z6pL9E2UlLIhC+SHL3w==,
       }
     engines: { node: ">=4.0.0" }
+
+  pocketbase@0.26.8:
+    resolution:
+      {
+        integrity: sha512-aQ/ewvS7ncvAE8wxoW10iAZu6ElgbeFpBhKPnCfvRovNzm2gW8u/sQNPGN6vNgVEagz44kK//C61oKjfa+7Low==,
+      }
 
   postcss@8.4.49:
     resolution:
@@ -7081,6 +7098,8 @@ snapshots:
       xmlbuilder: 15.1.1
 
   pngjs@3.4.0: {}
+
+  pocketbase@0.26.8: {}
 
   postcss@8.4.49:
     dependencies:
