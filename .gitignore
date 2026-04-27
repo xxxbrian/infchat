@@ -1,0 +1,71 @@
+# Dependencies
+node_modules/
+.turbo/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Generated native folders
+/ios
+/android
+apps/mobile/ios
+apps/mobile/android
+
+# Native credentials
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Metro
+.metro-health-check*
+
+# Logs
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+pnpm-debug.*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local env files
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# TypeScript
+*.tsbuildinfo
+
+# Local service data
+services/pocketbase/pb_data/
+services/pocketbase/pb_hooks/.pb_temp/
+
+# Agent/editor state
+.agents/
+.claude/
+.codex/
+.cursor/
+.windsurf/
+.continue/
+.roo/
+.kiro/
+.gemini/
+.aider/
+.codeium/
+.opencode/
+skills-lock.json
+AGENTS.md
+
+# mise
+.mise.local.toml

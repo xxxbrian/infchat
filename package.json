@@ -1,0 +1,28 @@
+{
+  "name": "infchat",
+  "version": "0.0.1",
+  "private": true,
+  "description": "InfChat monorepo",
+  "scripts": {
+    "dev:mobile": "pnpm --filter mobile dev",
+    "dev:mobile:android": "pnpm --filter mobile android",
+    "dev:mobile:ios": "pnpm --filter mobile ios",
+    "dev:mobile:web": "pnpm --filter mobile web",
+    "dev:infra": "docker compose -f docker-compose.dev.yml up -d",
+    "dev:infra:down": "docker compose -f docker-compose.dev.yml down",
+    "dev:infra:logs": "docker compose -f docker-compose.dev.yml logs -f",
+    "format": "biome check . --write --formatter-enabled=true --linter-enabled=false --assist-enabled=false --no-errors-on-unmatched && prettier --write \"**/*.{md,yml,yaml}\"",
+    "format:check": "biome check . --formatter-enabled=true --linter-enabled=false --assist-enabled=false && prettier --check \"**/*.{md,yml,yaml}\"",
+    "lint": "pnpm -r --if-present lint",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+  },
+  "packageManager": "pnpm@10.32.1",
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.5",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,7 +1,25 @@
 default_install_hook_types:
+  - pre-commit
   - commit-msg
 
 repos:
+  - repo: local
+    hooks:
+      - id: biome-format
+        name: biome format
+        entry: pnpm exec biome check --write --formatter-enabled=true --linter-enabled=false --assist-enabled=false --no-errors-on-unmatched
+        language: system
+        files: \.(js|cjs|mjs|ts|tsx|json|jsonc|css)$
+      - id: prettier-format
+        name: prettier format
+        entry: pnpm exec prettier --write --ignore-unknown
+        language: system
+        files: \.(md|yml|yaml)$
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -w
+        language: system
+        files: \.go$
   - repo: local
     hooks:
       - id: commitlint

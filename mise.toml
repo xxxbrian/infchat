@@ -4,3 +4,19 @@ go = "1.26"
 node = "24"
 pnpm = "10"
 prek = "latest"
+
+[tasks.setup]
+description = "Install dependencies and git hooks"
+run = "pnpm install && prek install --prepare-hooks --hook-type pre-commit --hook-type commit-msg"
+
+[tasks.dev-mobile]
+description = "Start the Expo mobile app"
+run = "pnpm dev:mobile"
+
+[tasks.dev-infra]
+description = "Start local infrastructure services"
+run = "pnpm dev:infra"
+
+[tasks.check]
+description = "Run repository checks"
+run = "pnpm check"
