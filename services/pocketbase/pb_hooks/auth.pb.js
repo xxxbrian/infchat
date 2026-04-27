@@ -1,17 +1,17 @@
-function normalizeUsername(record) {
-  const username = String(record.get('username') || '')
+onRecordCreateRequest((event) => {
+  const username = String(event.record.get('username') || '')
     .trim()
     .toLowerCase();
 
-  record.set('username', username);
-}
-
-onRecordCreateRequest((event) => {
-  normalizeUsername(event.record);
+  event.record.set('username', username);
   return event.next();
 }, 'users');
 
 onRecordUpdateRequest((event) => {
-  normalizeUsername(event.record);
+  const username = String(event.record.get('username') || '')
+    .trim()
+    .toLowerCase();
+
+  event.record.set('username', username);
   return event.next();
 }, 'users');
