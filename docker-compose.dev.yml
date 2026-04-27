@@ -1,0 +1,40 @@
+services:
+  pocketbase:
+    build:
+      context: ./services/pocketbase
+      dockerfile: Dockerfile
+    container_name: infchat-pocketbase-dev
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - pocketbase_data:/app/pb_data
+      - ./services/pocketbase/pb_hooks:/app/pb_hooks
+      - ./services/pocketbase/pb_migrations:/app/pb_migrations
+
+  redis:
+    image: redis:7-alpine
+    container_name: infchat-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: infchat-livekit-dev
+    restart: unless-stopped
+    command: --config /etc/livekit.yaml
+    depends_on:
+      - redis
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./services/livekit/livekit.dev.yaml:/etc/livekit.yaml:ro
+
+volumes:
+  pocketbase_data:
+  redis_data:
