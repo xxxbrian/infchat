@@ -7,7 +7,6 @@
     "icon": "./assets/icon.png",
     "scheme": "infchat",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -23,7 +22,6 @@
         "backgroundColor": "#ffffff"
       },
       "package": "com.infchat.app",
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {
