@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -28,7 +29,10 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function ChatTab() {
   const insets = useSafeAreaInsets();
+  const searchRef = useRef<TextInput>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
+  const scrollYValue = useRef(0);
   const [headerHeight, setHeaderHeight] = useState(0);
 
   const titleHeight = scrollY.interpolate({
@@ -83,8 +87,23 @@ export default function ChatTab() {
   });
 
   const handleScroll = Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
+    listener: ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number } } }) => {
+      scrollYValue.current = nativeEvent.contentOffset.y;
+    },
     useNativeDriver: false,
   });
+
+  const revealSearch = () => {
+    Animated.timing(scrollY, {
+      toValue: 0,
+      duration: 180,
+      useNativeDriver: false,
+    }).start(() => {
+      scrollYValue.current = 0;
+      searchRef.current?.focus();
+    });
+    scrollViewRef.current?.scrollTo({ animated: true, y: 0 });
+  };
 
   return (
     <View className="flex-1 bg-background">
@@ -115,6 +134,7 @@ export default function ChatTab() {
                 transform: [{ scale: topSearchScale }],
               }}
               name="search"
+              onPress={revealSearch}
             />
             <RoundIcon isPrimary name="add" />
           </View>
@@ -146,6 +166,7 @@ export default function ChatTab() {
               className="h-full px-11 text-[17px] text-foreground"
               placeholder="Search"
               placeholderTextColor="#64748b"
+              ref={searchRef}
               selectionColor="#f8fafc"
             />
           </Animated.View>
@@ -177,6 +198,7 @@ export default function ChatTab() {
           paddingHorizontal: HEADER_SIDE_PADDING,
         }}
         onScroll={handleScroll}
+        ref={scrollViewRef}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
       >
@@ -192,14 +214,17 @@ function RoundIcon({
   animatedStyle,
   isPrimary,
   name,
+  onPress,
 }: {
   animatedStyle?: Animated.WithAnimatedValue<ViewStyle>;
   isPrimary?: boolean;
   name: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
 }) {
   return (
     <AnimatedPressable
       className={`h-10 w-10 items-center justify-center rounded-full ${isPrimary ? 'bg-foreground' : 'bg-muted'}`}
+      onPress={onPress}
       style={animatedStyle}
     >
       <Ionicons color={isPrimary ? '#080b12' : '#f8fafc'} name={name} size={22} />
