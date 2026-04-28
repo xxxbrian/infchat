@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useNetInfo } from '@react-native-community/netinfo';
 import {
   listConversations,
   listProfilesByUserIds,
@@ -6,12 +7,13 @@ import {
   type ProfileRecord,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -50,6 +52,8 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function ChatTab() {
   const { authRecord } = useAuth();
+  const queryClient = useQueryClient();
+  const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
   const searchRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -58,6 +62,7 @@ export default function ChatTab() {
   const [headerHeight, setHeaderHeight] = useState(0);
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
+  const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations', authRecord.id],
@@ -118,6 +123,49 @@ export default function ChatTab() {
   const isLoading =
     conversationsQuery.isLoading || (relatedUserIds.length > 0 && profilesQuery.isLoading);
   const hasError = conversationsQuery.isError || profilesQuery.isError;
+  const isRefreshing = conversationsQuery.isRefetching || profilesQuery.isRefetching;
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+    let unsubscribers: Array<() => void> = [];
+
+    void Promise.all([
+      pb.collection('conversations').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
+      pb.collection('messages').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
+      pb.collection('profiles').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      }),
+    ])
+      .then((nextUnsubscribers) => {
+        if (!isMounted) {
+          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
+          return;
+        }
+
+        unsubscribers = nextUnsubscribers;
+      })
+      .catch(() => {
+        // Query refetch on reconnect covers temporary realtime connection failures.
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [isOnline, queryClient]);
+
+  const handleRefresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['conversations'] });
+    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  };
 
   const titleHeight = scrollY.interpolate({
     inputRange: [0, 84],
@@ -284,6 +332,14 @@ export default function ChatTab() {
           paddingHorizontal: HEADER_SIDE_PADDING,
         }}
         onScroll={handleScroll}
+        refreshControl={
+          <RefreshControl
+            colors={['#f8fafc']}
+            onRefresh={handleRefresh}
+            refreshing={isRefreshing}
+            tintColor="#f8fafc"
+          />
+        }
         ref={scrollViewRef}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}

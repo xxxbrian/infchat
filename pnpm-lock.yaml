@@ -28,6 +28,9 @@ importers:
       "@infchat/shared":
         specifier: workspace:*
         version: link:../../packages/shared
+      "@react-native-community/netinfo":
+        specifier: ^11.5.2
+        version: 11.5.2(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
       "@tanstack/react-query":
         specifier: ^5.100.5
         version: 5.100.5(react@19.2.0)
@@ -1610,6 +1613,15 @@ packages:
     peerDependenciesMeta:
       "@types/react":
         optional: true
+
+  "@react-native-community/netinfo@11.5.2":
+    resolution:
+      {
+        integrity: sha512-/g0m65BtX9HU+bPiCH2517bOHpEIUsGrWFXDzi1a5nNKn5KujQgm04WhL7/OSXWKHyrT8VVtUoJA0XKRxueBpQ==,
+      }
+    peerDependencies:
+      react: "*"
+      react-native: ">=0.59"
 
   "@react-native/assets-registry@0.83.6":
     resolution:
@@ -6740,6 +6752,11 @@ snapshots:
       react: 19.2.0
     optionalDependencies:
       "@types/react": 19.2.14
+
+  "@react-native-community/netinfo@11.5.2(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)":
+    dependencies:
+      react: 19.2.0
+      react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)
 
   "@react-native/assets-registry@0.83.6": {}
 

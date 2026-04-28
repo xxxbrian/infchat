@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useNetInfo } from '@react-native-community/netinfo';
 import {
   getConversation,
   listMessages,
@@ -19,6 +20,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   ScrollView,
@@ -66,6 +68,7 @@ export default function ChatDetailScreen() {
   const conversationId = id ?? '';
   const { authRecord } = useAuth();
   const queryClient = useQueryClient();
+  const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
   const didScrollToEnd = useRef(false);
@@ -81,6 +84,7 @@ export default function ChatDetailScreen() {
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const hasComposerText = composerText.trim().length > 0;
+  const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const conversationQuery = useQuery({
     queryKey: ['conversation', conversationId],
@@ -136,6 +140,63 @@ export default function ChatDetailScreen() {
       });
     },
   });
+  const isRefreshing =
+    conversationQuery.isRefetching || messagesQuery.isRefetching || profilesQuery.isRefetching;
+
+  useEffect(() => {
+    if (!conversationId || !isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+    let unsubscribers: Array<() => void> = [];
+
+    void Promise.all([
+      pb.collection('conversations').subscribe('*', (event) => {
+        if (event.record?.id !== conversationId) {
+          return;
+        }
+
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId],
+        });
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
+      pb.collection('messages').subscribe('*', (event) => {
+        if (event.record?.conversation !== conversationId) {
+          return;
+        }
+
+        didScrollToEnd.current = false;
+        queryClient.invalidateQueries({
+          queryKey: ['messages', conversationId],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId],
+        });
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
+      pb.collection('profiles').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      }),
+    ])
+      .then((nextUnsubscribers) => {
+        if (!isMounted) {
+          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
+          return;
+        }
+
+        unsubscribers = nextUnsubscribers;
+      })
+      .catch(() => {
+        // Query refetch on reconnect covers temporary realtime connection failures.
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [conversationId, isOnline, queryClient]);
 
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
@@ -270,6 +331,14 @@ export default function ChatDetailScreen() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   };
 
+  const handleRefresh = () => {
+    queryClient.invalidateQueries({
+      queryKey: ['conversation', conversationId],
+    });
+    queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
+    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  };
+
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const y = contentOffset.y;
@@ -380,6 +449,14 @@ export default function ChatDetailScreen() {
           onContentSizeChange={handleContentSizeChange}
           onScroll={handleScroll}
           onScrollBeginDrag={Keyboard.dismiss}
+          refreshControl={
+            <RefreshControl
+              colors={['#f8fafc']}
+              onRefresh={handleRefresh}
+              refreshing={isRefreshing}
+              tintColor="#f8fafc"
+            />
+          }
           ref={scrollViewRef}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}

@@ -1,10 +1,17 @@
 import '../../global.css';
 
+import NetInfo from '@react-native-community/netinfo';
 import { registerWithUsername, signInWithUsername, signOut } from '@infchat/pocketbase';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { LoginScreen } from '../screens/LoginScreen';
@@ -13,7 +20,19 @@ import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-contex
 import { pb } from '../lib/pocketbase';
 
 export default function RootLayout() {
-  const [queryClient] = useState(() => new QueryClient());
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            refetchOnMount: true,
+            refetchOnReconnect: true,
+            refetchOnWindowFocus: true,
+            retry: 2,
+          },
+        },
+      }),
+  );
   const [route, setRoute] = useState<AuthRoute>('login');
   const [authRecord, setAuthRecord] = useState<AuthRecord | null>(
     pb.authStore.record as AuthRecord | null,
@@ -23,6 +42,24 @@ export default function RootLayout() {
     return pb.authStore.onChange((_token, record) => {
       setAuthRecord(record as AuthRecord | null);
     }, true);
+  }, []);
+
+  useEffect(() => {
+    return onlineManager.setEventListener((setOnline) =>
+      NetInfo.addEventListener((state) => {
+        setOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    return focusManager.setEventListener((setFocused) => {
+      const subscription = AppState.addEventListener('change', (status) => {
+        setFocused(status === 'active');
+      });
+
+      return () => subscription.remove();
+    });
   }, []);
 
   return (

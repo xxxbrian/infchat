@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useNetInfo } from '@react-native-community/netinfo';
 import {
   acceptFriendRequest,
   cancelFriendRequest,
@@ -19,6 +20,7 @@ import {
   Animated,
   Keyboard,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -58,6 +60,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 export default function FriendsTab() {
   const { authRecord } = useAuth();
   const queryClient = useQueryClient();
+  const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
   const searchRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
@@ -71,6 +74,7 @@ export default function FriendsTab() {
   const currentUserId = authRecord.id;
   const normalizedQuery = normalizeUsername(query);
   const shouldSearchProfiles = activeFilter === 'Find' && normalizedQuery.length >= 3;
+  const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const friendshipsQuery = useQuery({
     queryKey: ['friendships', currentUserId],
@@ -212,6 +216,49 @@ export default function FriendsTab() {
     declineRequestMutation.isPending ||
     cancelRequestMutation.isPending ||
     startPrivateChatMutation.isPending;
+  const isRefreshing =
+    friendshipsQuery.isRefetching ||
+    relatedProfilesQuery.isRefetching ||
+    searchProfilesQuery.isRefetching;
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+    let unsubscribers: Array<() => void> = [];
+
+    void Promise.all([
+      pb.collection('friendships').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['friendships'] });
+      }),
+      pb.collection('profiles').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+      }),
+    ])
+      .then((nextUnsubscribers) => {
+        if (!isMounted) {
+          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
+          return;
+        }
+
+        unsubscribers = nextUnsubscribers;
+      })
+      .catch(() => {
+        // Query refetch on reconnect covers temporary realtime connection failures.
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [isOnline, queryClient]);
+
+  const handleRefresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['friendships'] });
+    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  };
 
   const titleHeight = scrollY.interpolate({
     inputRange: [0, 84],
@@ -441,6 +488,14 @@ export default function FriendsTab() {
         onScroll={handleScroll}
         onScrollBeginDrag={Keyboard.dismiss}
         onTouchStart={Keyboard.dismiss}
+        refreshControl={
+          <RefreshControl
+            colors={['#f8fafc']}
+            onRefresh={handleRefresh}
+            refreshing={isRefreshing}
+            tintColor="#f8fafc"
+          />
+        }
         ref={scrollViewRef}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
