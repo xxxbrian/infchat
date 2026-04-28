@@ -20,6 +20,7 @@ import {
   Alert,
   Animated,
   Easing,
+  PanResponder,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -49,6 +50,10 @@ type ParticipantMetadata = {
 const CONTROL_SIZE = 56;
 const CONTROL_BAR_HEIGHT = 124;
 const FILMSTRIP_GAP = 12;
+const PIP_HEIGHT = 178;
+const PIP_MARGIN = 16;
+const PIP_TOP_OFFSET = 118;
+const PIP_WIDTH = 134;
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function CallScreen() {
@@ -272,6 +277,8 @@ function CallRoomView({ callRoom, onHangUp }: { callRoom: CallRoomRecord; onHang
             filmstripTracks={filmstripTracks}
             mainTrack={mainTrack}
             selectedTrackKey={selectedTrackKey}
+            windowHeight={windowHeight}
+            windowWidth={windowWidth}
             onSelect={(trackRef) => setSelectedTrackKey(getTrackKey(trackRef))}
           />
         )
@@ -354,13 +361,19 @@ function FocusStage({
   mainTrack,
   onSelect,
   selectedTrackKey,
+  windowHeight,
+  windowWidth,
 }: {
   filmstripBottom: number;
   filmstripTracks: TrackReferenceOrPlaceholder[];
   mainTrack: TrackReferenceOrPlaceholder | undefined;
   selectedTrackKey: string | null;
+  windowHeight: number;
+  windowWidth: number;
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
 }) {
+  const floatingTrack = filmstripTracks.length === 1 ? filmstripTracks[0] : undefined;
+
   return (
     <View className="flex-1">
       {mainTrack ? (
@@ -369,7 +382,16 @@ function FocusStage({
         <EmptyCallStage message="Waiting for participants" />
       )}
 
-      {filmstripTracks.length ? (
+      {floatingTrack ? (
+        <DraggablePip
+          filmstripBottom={filmstripBottom}
+          isSelected={selectedTrackKey === getTrackKey(floatingTrack)}
+          trackRef={floatingTrack}
+          windowHeight={windowHeight}
+          windowWidth={windowWidth}
+          onPress={() => onSelect(floatingTrack)}
+        />
+      ) : filmstripTracks.length ? (
         <View className="absolute left-0 right-0 z-10" style={{ bottom: filmstripBottom }}>
           <ScrollView
             horizontal
@@ -393,6 +415,119 @@ function FocusStage({
         </View>
       ) : null}
     </View>
+  );
+}
+
+function DraggablePip({
+  filmstripBottom,
+  isSelected,
+  onPress,
+  trackRef,
+  windowHeight,
+  windowWidth,
+}: {
+  filmstripBottom: number;
+  isSelected: boolean;
+  onPress: () => void;
+  trackRef: TrackReferenceOrPlaceholder;
+  windowHeight: number;
+  windowWidth: number;
+}) {
+  const position = useRef(new Animated.ValueXY({ x: PIP_MARGIN, y: 0 })).current;
+  const currentPosition = useRef({ x: PIP_MARGIN, y: 0 });
+  const dragStartPosition = useRef({ x: PIP_MARGIN, y: 0 });
+  const didDrag = useRef(false);
+  const onPressRef = useRef(onPress);
+  const maxX = Math.max(PIP_MARGIN, windowWidth - PIP_WIDTH - PIP_MARGIN);
+  const minY = PIP_TOP_OFFSET;
+  const maxY = Math.max(minY, windowHeight - filmstripBottom - PIP_HEIGHT);
+  const snapBoundary = windowWidth / 2;
+  const bounds = useRef({ maxX, maxY, minY, snapBoundary });
+
+  bounds.current = { maxX, maxY, minY, snapBoundary };
+  onPressRef.current = onPress;
+
+  useEffect(() => {
+    const nextPosition = {
+      x: clamp(currentPosition.current.x, PIP_MARGIN, maxX),
+      y: clamp(currentPosition.current.y || maxY, minY, maxY),
+    };
+    currentPosition.current = nextPosition;
+    position.setValue(nextPosition);
+  }, [maxX, maxY, minY, position]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_event, gestureState) =>
+        Math.abs(gestureState.dx) > 6 || Math.abs(gestureState.dy) > 6,
+      onPanResponderGrant: () => {
+        didDrag.current = false;
+        dragStartPosition.current = currentPosition.current;
+      },
+      onPanResponderMove: (_event, gestureState) => {
+        didDrag.current = true;
+        const nextPosition = {
+          x: clamp(dragStartPosition.current.x + gestureState.dx, PIP_MARGIN, bounds.current.maxX),
+          y: clamp(
+            dragStartPosition.current.y + gestureState.dy,
+            bounds.current.minY,
+            bounds.current.maxY,
+          ),
+        };
+        currentPosition.current = nextPosition;
+        position.setValue(nextPosition);
+      },
+      onPanResponderRelease: () => {
+        if (!didDrag.current) {
+          onPressRef.current();
+          return;
+        }
+
+        const snapX =
+          currentPosition.current.x + PIP_WIDTH / 2 < bounds.current.snapBoundary
+            ? PIP_MARGIN
+            : bounds.current.maxX;
+        const nextPosition = {
+          x: snapX,
+          y: clamp(currentPosition.current.y, bounds.current.minY, bounds.current.maxY),
+        };
+        currentPosition.current = nextPosition;
+        Animated.spring(position, {
+          damping: 20,
+          mass: 0.8,
+          stiffness: 210,
+          toValue: nextPosition,
+          useNativeDriver: false,
+        }).start();
+      },
+      onPanResponderTerminate: () => {
+        currentPosition.current = {
+          x:
+            currentPosition.current.x + PIP_WIDTH / 2 < bounds.current.snapBoundary
+              ? PIP_MARGIN
+              : bounds.current.maxX,
+          y: clamp(currentPosition.current.y, bounds.current.minY, bounds.current.maxY),
+        };
+        position.setValue(currentPosition.current);
+      },
+      onStartShouldSetPanResponder: () => true,
+    }),
+  ).current;
+
+  return (
+    <Animated.View
+      className="absolute z-10"
+      style={{
+        transform: [{ translateX: position.x }, { translateY: position.y }],
+      }}
+      {...panResponder.panHandlers}
+    >
+      <ParticipantTile
+        containerStyle={styles.floatingPipTile}
+        isSelected={isSelected}
+        trackRef={trackRef}
+      />
+    </Animated.View>
   );
 }
 
@@ -710,6 +845,10 @@ function getMainTrack(
   );
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
 function sortTrackTiles(
   tracks: TrackReferenceOrPlaceholder[],
   localIdentity: string,
@@ -826,6 +965,10 @@ const styles = StyleSheet.create({
   filmstripTile: {
     height: 168,
     width: 128,
+  } as ViewStyle,
+  floatingPipTile: {
+    height: PIP_HEIGHT,
+    width: PIP_WIDTH,
   } as ViewStyle,
   mainTile: {
     borderRadius: 0,
