@@ -113,10 +113,14 @@ export default function ChatDetailScreen() {
   const composerInputExtraHeightValue = useRef(0);
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const hasComposerText = composerText.trim().length > 0;
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
+  const isNearBottomRef = useRef(true);
+  const lastAutoScrolledConversationIdRef = useRef('');
+  const lastAutoScrolledMessageIdRef = useRef('');
 
   const conversationQuery = useQuery({
     queryKey: ['conversation', conversationId],
@@ -222,9 +226,6 @@ export default function ChatDetailScreen() {
       Alert.alert('Could not start call', 'Check your connection and try again.');
     },
   });
-  const isRefreshing =
-    conversationQuery.isRefetching || messagesQuery.isRefetching || profilesQuery.isRefetching;
-
   useEffect(() => {
     if (!conversationId || !isOnline) {
       return;
@@ -249,7 +250,6 @@ export default function ChatDetailScreen() {
           return;
         }
 
-        didScrollToEnd.current = false;
         queryClient.invalidateQueries({
           queryKey: ['messages', conversationId],
         });
@@ -281,7 +281,10 @@ export default function ChatDetailScreen() {
   }, [conversationId, isOnline, queryClient]);
 
   const syncMessagesToBottom = () => {
-    requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
+    requestAnimationFrame(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: false });
+      requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
+    });
   };
   const setJumpButtonVisible = (visible: boolean) => {
     if (isJumpButtonVisible.current === visible) {
@@ -341,6 +344,33 @@ export default function ChatDetailScreen() {
       useNativeDriver: false,
     }).start();
   }, [composerAttachmentProgress, hasComposerText]);
+
+  useEffect(() => {
+    lastAutoScrolledConversationIdRef.current = '';
+    lastAutoScrolledMessageIdRef.current = '';
+    isNearBottomRef.current = true;
+    didScrollToEnd.current = false;
+  }, [conversationId]);
+
+  useEffect(() => {
+    const lastMessage = messages.at(-1);
+    if (!conversationId || !lastMessage) {
+      return;
+    }
+
+    const isNewConversation = lastAutoScrolledConversationIdRef.current !== conversationId;
+    const isNewLastMessage = lastAutoScrolledMessageIdRef.current !== lastMessage.id;
+    if (!isNewConversation && !isNewLastMessage) {
+      return;
+    }
+
+    lastAutoScrolledConversationIdRef.current = conversationId;
+    lastAutoScrolledMessageIdRef.current = lastMessage.id;
+
+    if (isNewConversation || isNearBottomRef.current || lastMessage.sender === authRecord.id) {
+      syncMessagesToBottom();
+    }
+  }, [authRecord.id, conversationId, messages]);
 
   const composerBaseHeight = composerProgress.interpolate({
     inputRange: [0, 1],
@@ -413,12 +443,25 @@ export default function ChatDetailScreen() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   };
 
-  const handleRefresh = () => {
-    queryClient.invalidateQueries({
-      queryKey: ['conversation', conversationId],
-    });
-    queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
-    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  const handleRefresh = async () => {
+    if (isPullRefreshing || !conversationId) {
+      return;
+    }
+
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ['conversation', conversationId],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ['messages', conversationId],
+        }),
+        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
   };
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -426,6 +469,7 @@ export default function ChatDetailScreen() {
     const y = contentOffset.y;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - y;
     const deltaY = y - lastScrollY.current;
+    isNearBottomRef.current = distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM;
 
     if (distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM) {
       setJumpButtonVisible(false);
@@ -583,12 +627,7 @@ export default function ChatDetailScreen() {
           className="flex-1"
           contentContainerStyle={{
             flexGrow: 1,
-            paddingBottom:
-              Math.max(insets.bottom, 12) +
-              COMPOSER_EXPANDED_HEIGHT +
-              COMPOSER_INPUT_MAX_CONTENT_HEIGHT -
-              COMPOSER_INPUT_MIN_CONTENT_HEIGHT +
-              12,
+            paddingBottom: Math.max(insets.bottom, 12) + COMPOSER_EXPANDED_HEIGHT + 16,
             paddingHorizontal: 14,
             paddingTop: 14,
           }}
@@ -600,7 +639,7 @@ export default function ChatDetailScreen() {
             <RefreshControl
               colors={['#f8fafc']}
               onRefresh={handleRefresh}
-              refreshing={isRefreshing}
+              refreshing={isPullRefreshing}
               tintColor="#f8fafc"
             />
           }
