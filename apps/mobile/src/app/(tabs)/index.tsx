@@ -1,11 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
-import {
-  listConversations,
-  listProfilesByUserIds,
-  type ConversationRecord,
-  type ProfileRecord,
-} from '@infchat/pocketbase';
+import { type ConversationRecord, type ProfileRecord } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
@@ -24,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import { listCachedConversations, listCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -66,7 +62,7 @@ export default function ChatTab() {
 
   const conversationsQuery = useQuery({
     queryKey: ['conversations', authRecord.id],
-    queryFn: () => listConversations(pb),
+    queryFn: () => listCachedConversations(pb),
   });
   const conversations = conversationsQuery.data ?? [];
   const relatedUserIds = useMemo(() => {
@@ -84,7 +80,7 @@ export default function ChatTab() {
   }, [authRecord.id, conversations]);
   const profilesQuery = useQuery({
     queryKey: ['profiles', 'chat-members', relatedUserIds],
-    queryFn: () => listProfilesByUserIds(pb, relatedUserIds),
+    queryFn: () => listCachedProfilesByUserIds(pb, relatedUserIds),
     enabled: relatedUserIds.length > 0,
   });
   const profilesByUserId = useMemo(() => {

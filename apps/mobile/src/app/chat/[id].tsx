@@ -1,9 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
 import {
-  getConversation,
-  listMessages,
-  listProfilesByUserIds,
   sendTextMessage,
   type ConversationRecord,
   type MessageRecord,
@@ -34,6 +31,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import {
+  getCachedConversation,
+  listCachedMessages,
+  listCachedProfilesByUserIds,
+} from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -88,12 +90,12 @@ export default function ChatDetailScreen() {
 
   const conversationQuery = useQuery({
     queryKey: ['conversation', conversationId],
-    queryFn: () => getConversation(pb, conversationId),
+    queryFn: () => getCachedConversation(pb, conversationId),
     enabled: Boolean(conversationId),
   });
   const messagesQuery = useQuery({
     queryKey: ['messages', conversationId],
-    queryFn: () => listMessages(pb, conversationId),
+    queryFn: () => listCachedMessages(pb, conversationId),
     enabled: Boolean(conversationId),
   });
   const memberIds = useMemo(
@@ -105,7 +107,7 @@ export default function ChatDetailScreen() {
   );
   const profilesQuery = useQuery({
     queryKey: ['profiles', 'conversation-members', conversationId, memberIds],
-    queryFn: () => listProfilesByUserIds(pb, memberIds),
+    queryFn: () => listCachedProfilesByUserIds(pb, memberIds),
     enabled: memberIds.length > 0,
   });
   const profilesByUserId = useMemo(() => {

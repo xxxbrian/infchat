@@ -4,9 +4,6 @@ import {
   acceptFriendRequest,
   cancelFriendRequest,
   declineFriendRequest,
-  listFriendships,
-  listProfilesByUserIds,
-  searchProfilesByUsername,
   sendFriendRequest,
   startPrivateConversation,
   type FriendshipRecord,
@@ -31,6 +28,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import {
+  listCachedFriendships,
+  listCachedProfilesByUserIds,
+  searchCachedProfilesByUsername,
+} from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type FriendStatus = 'friend' | 'incoming' | 'pending' | 'none';
@@ -78,7 +80,7 @@ export default function FriendsTab() {
 
   const friendshipsQuery = useQuery({
     queryKey: ['friendships', currentUserId],
-    queryFn: () => listFriendships(pb),
+    queryFn: () => listCachedFriendships(pb),
   });
   const friendships = friendshipsQuery.data ?? [];
 
@@ -98,13 +100,13 @@ export default function FriendsTab() {
 
   const relatedProfilesQuery = useQuery({
     queryKey: ['profiles', 'related', relatedUserIds],
-    queryFn: () => listProfilesByUserIds(pb, relatedUserIds),
+    queryFn: () => listCachedProfilesByUserIds(pb, relatedUserIds),
     enabled: relatedUserIds.length > 0,
   });
 
   const searchProfilesQuery = useQuery({
     queryKey: ['profiles', 'search', normalizedQuery],
-    queryFn: () => searchProfilesByUsername(pb, normalizedQuery),
+    queryFn: () => searchCachedProfilesByUsername(pb, normalizedQuery),
     enabled: shouldSearchProfiles,
   });
 
