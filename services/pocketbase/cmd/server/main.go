@@ -219,8 +219,9 @@ func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId
 	canPublish := true
 	canSubscribe := true
 	canPublishData := true
+	normalizedDeviceId := normalizedDeviceId(deviceId)
 	metadata, err := json.Marshal(liveKitParticipantMetadata{
-		DeviceId: normalizedDeviceId(deviceId),
+		DeviceId: normalizedDeviceId,
 		UserId:   userId,
 	})
 	if err != nil {
@@ -228,7 +229,7 @@ func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId
 	}
 
 	return livekitauth.NewAccessToken(apiKey, apiSecret).
-		SetIdentity(userId).
+		SetIdentity(fmt.Sprintf("%s:%s", userId, normalizedDeviceId)).
 		SetName(userId).
 		SetMetadata(string(metadata)).
 		SetValidFor(liveKitTokenTTL).
