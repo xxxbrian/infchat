@@ -1,4 +1,17 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import {
+  acceptFriendRequest,
+  cancelFriendRequest,
+  declineFriendRequest,
+  listFriendships,
+  listProfilesByUserIds,
+  searchProfilesByUsername,
+  sendFriendRequest,
+  type FriendshipRecord,
+  type ProfileRecord,
+} from '@infchat/pocketbase';
+import { getAvatarColor, getAvatarInitial, normalizeUsername } from '@infchat/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -13,17 +26,21 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { useAuth } from '../../lib/auth-context';
+import { pb } from '../../lib/pocketbase';
+
 type FriendStatus = 'friend' | 'incoming' | 'pending' | 'none';
 type FriendFilter = 'Friends' | 'Requests' | 'Find';
 
 type Person = {
   id: string;
+  userId: string;
+  friendshipId?: string;
   name: string;
   username: string;
   accent: string;
   status: FriendStatus;
   note: string;
-  online?: boolean;
 };
 
 const HEADER_SIDE_PADDING = 20;
@@ -34,174 +51,157 @@ const SEARCH_MARGIN_MAX = 14;
 const SEARCH_MARGIN_MIN = 8;
 const filters: FriendFilter[] = ['Friends', 'Requests', 'Find'];
 
-const initialPeople: Person[] = [
-  {
-    id: 'mira',
-    name: 'Mira Chen',
-    username: 'mira',
-    accent: '#60a5fa',
-    status: 'friend',
-    note: 'online',
-    online: true,
-  },
-  {
-    id: 'noah',
-    name: 'Noah Kim',
-    username: 'noah',
-    accent: '#a78bfa',
-    status: 'friend',
-    note: 'last seen 9:20',
-  },
-  {
-    id: 'ari',
-    name: 'Ari Lane',
-    username: 'ari',
-    accent: '#f472b6',
-    status: 'incoming',
-    note: 'sent you a request',
-  },
-  {
-    id: 'kai',
-    name: 'Kai Morgan',
-    username: 'kai',
-    accent: '#fb7185',
-    status: 'friend',
-    note: 'last seen Sat',
-  },
-  {
-    id: 'nora',
-    name: 'Nora Patel',
-    username: 'nora',
-    accent: '#38bdf8',
-    status: 'friend',
-    note: 'online',
-    online: true,
-  },
-  {
-    id: 'mina',
-    name: 'Mina Ito',
-    username: 'mina',
-    accent: '#f97316',
-    status: 'friend',
-    note: 'last seen Tue',
-  },
-  {
-    id: 'owen',
-    name: 'Owen Gray',
-    username: 'owen',
-    accent: '#4ade80',
-    status: 'friend',
-    note: 'available',
-  },
-  {
-    id: 'sasha',
-    name: 'Sasha Vale',
-    username: 'sasha',
-    accent: '#e879f9',
-    status: 'friend',
-    note: 'last seen 8:14',
-  },
-  {
-    id: 'leo',
-    name: 'Leo Martin',
-    username: 'leo',
-    accent: '#2dd4bf',
-    status: 'friend',
-    note: 'last seen Sun',
-  },
-  {
-    id: 'tess',
-    name: 'Tess Wong',
-    username: 'tess',
-    accent: '#facc15',
-    status: 'incoming',
-    note: 'sent you a request',
-  },
-  {
-    id: 'jules',
-    name: 'Jules Park',
-    username: 'jules',
-    accent: '#34d399',
-    status: 'pending',
-    note: 'request sent',
-  },
-  {
-    id: 'rhea',
-    name: 'Rhea Stone',
-    username: 'rhea',
-    accent: '#22d3ee',
-    status: 'none',
-    note: '3 mutual friends',
-  },
-  {
-    id: 'sol',
-    name: 'Sol Reyes',
-    username: 'sol',
-    accent: '#f59e0b',
-    status: 'none',
-    note: 'from Product',
-  },
-  {
-    id: 'lina',
-    name: 'Lina Torres',
-    username: 'lina',
-    accent: '#c084fc',
-    status: 'none',
-    note: 'new to InfChat',
-  },
-  {
-    id: 'marc',
-    name: 'Marc Bell',
-    username: 'marc',
-    accent: '#94a3b8',
-    status: 'none',
-    note: '2 mutual friends',
-  },
-  {
-    id: 'ella',
-    name: 'Ella Moon',
-    username: 'ella',
-    accent: '#fb7185',
-    status: 'none',
-    note: 'from Design Crit',
-  },
-];
-
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function FriendsTab() {
+  const { authRecord } = useAuth();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
   const searchRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollYValue = useRef(0);
   const [headerHeight, setHeaderHeight] = useState(0);
-  const [people, setPeople] = useState(initialPeople);
   const [activeFilter, setActiveFilter] = useState<FriendFilter>('Friends');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [query, setQuery] = useState('');
 
-  const friends = people.filter((person) => person.status === 'friend');
-  const incoming = people.filter((person) => person.status === 'incoming');
-  const searchablePeople =
-    activeFilter === 'Find'
-      ? people.filter((person) => person.status !== 'friend')
-      : activeFilter === 'Requests'
-        ? incoming
-        : friends;
-  const visiblePeople = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
+  const currentUserId = authRecord.id;
+  const normalizedQuery = normalizeUsername(query);
+  const shouldSearchProfiles = activeFilter === 'Find' && normalizedQuery.length >= 3;
 
-    if (!normalizedQuery) {
+  const friendshipsQuery = useQuery({
+    queryKey: ['friendships', currentUserId],
+    queryFn: () => listFriendships(pb),
+  });
+  const friendships = friendshipsQuery.data ?? [];
+
+  const relatedUserIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    for (const friendship of friendships) {
+      if (friendship.status !== 'accepted' && friendship.status !== 'pending') {
+        continue;
+      }
+
+      ids.add(friendship.requester === currentUserId ? friendship.recipient : friendship.requester);
+    }
+
+    return [...ids].sort();
+  }, [currentUserId, friendships]);
+
+  const relatedProfilesQuery = useQuery({
+    queryKey: ['profiles', 'related', relatedUserIds],
+    queryFn: () => listProfilesByUserIds(pb, relatedUserIds),
+    enabled: relatedUserIds.length > 0,
+  });
+
+  const searchProfilesQuery = useQuery({
+    queryKey: ['profiles', 'search', normalizedQuery],
+    queryFn: () => searchProfilesByUsername(pb, normalizedQuery),
+    enabled: shouldSearchProfiles,
+  });
+
+  const activeFriendshipByUserId = useMemo(() => {
+    const friendshipsByUserId = new Map<string, FriendshipRecord>();
+
+    for (const friendship of friendships) {
+      if (friendship.status !== 'accepted' && friendship.status !== 'pending') {
+        continue;
+      }
+
+      const otherUserId =
+        friendship.requester === currentUserId ? friendship.recipient : friendship.requester;
+      if (!friendshipsByUserId.has(otherUserId)) {
+        friendshipsByUserId.set(otherUserId, friendship);
+      }
+    }
+
+    return friendshipsByUserId;
+  }, [currentUserId, friendships]);
+
+  const peopleByUserId = useMemo(() => {
+    const people = new Map<string, Person>();
+
+    for (const profile of relatedProfilesQuery.data ?? []) {
+      people.set(
+        profile.user,
+        toPerson(profile, activeFriendshipByUserId.get(profile.user), currentUserId),
+      );
+    }
+
+    return people;
+  }, [activeFriendshipByUserId, currentUserId, relatedProfilesQuery.data]);
+
+  const friends = useMemo(
+    () => [...peopleByUserId.values()].filter((person) => person.status === 'friend'),
+    [peopleByUserId],
+  );
+  const incoming = useMemo(
+    () => [...peopleByUserId.values()].filter((person) => person.status === 'incoming'),
+    [peopleByUserId],
+  );
+  const findPeople = useMemo(() => {
+    if (!shouldSearchProfiles) {
+      return [];
+    }
+
+    return (searchProfilesQuery.data ?? [])
+      .map((profile) =>
+        toPerson(profile, activeFriendshipByUserId.get(profile.user), currentUserId),
+      )
+      .filter((person) => person.status !== 'friend');
+  }, [activeFriendshipByUserId, currentUserId, searchProfilesQuery.data, shouldSearchProfiles]);
+
+  const searchablePeople = useMemo(() => {
+    if (activeFilter === 'Find') {
+      return findPeople;
+    }
+
+    if (activeFilter === 'Requests') {
+      return incoming;
+    }
+
+    return friends;
+  }, [activeFilter, findPeople, friends, incoming]);
+
+  const visiblePeople = useMemo(() => {
+    if (activeFilter === 'Find' || !normalizedQuery) {
       return searchablePeople;
     }
 
     return searchablePeople.filter(
       (person) =>
         person.name.toLowerCase().includes(normalizedQuery) ||
-        person.username.toLowerCase().includes(normalizedQuery),
+        person.username.includes(normalizedQuery),
     );
-  }, [query, searchablePeople]);
+  }, [activeFilter, normalizedQuery, searchablePeople]);
+
+  const refreshFriendships = () => {
+    queryClient.invalidateQueries({ queryKey: ['friendships'] });
+  };
+
+  const sendRequestMutation = useMutation({
+    mutationFn: (recipientUserId: string) => sendFriendRequest(pb, recipientUserId),
+    onSuccess: refreshFriendships,
+  });
+  const acceptRequestMutation = useMutation({
+    mutationFn: (friendshipId: string) => acceptFriendRequest(pb, friendshipId),
+    onSuccess: refreshFriendships,
+  });
+  const declineRequestMutation = useMutation({
+    mutationFn: (friendshipId: string) => declineFriendRequest(pb, friendshipId),
+    onSuccess: refreshFriendships,
+  });
+  const cancelRequestMutation = useMutation({
+    mutationFn: (friendshipId: string) => cancelFriendRequest(pb, friendshipId),
+    onSuccess: refreshFriendships,
+  });
+  const isMutatingFriendship =
+    sendRequestMutation.isPending ||
+    acceptRequestMutation.isPending ||
+    declineRequestMutation.isPending ||
+    cancelRequestMutation.isPending;
 
   const titleHeight = scrollY.interpolate({
     inputRange: [0, 84],
@@ -286,12 +286,6 @@ export default function FriendsTab() {
     requestAnimationFrame(() => searchRef.current?.focus());
   };
 
-  const updateStatus = (personId: string, status: FriendStatus) => {
-    setPeople((currentPeople) =>
-      currentPeople.map((person) => (person.id === personId ? { ...person, status } : person)),
-    );
-  };
-
   const searchPlaceholder =
     activeFilter === 'Find'
       ? 'Search username'
@@ -307,9 +301,14 @@ export default function FriendsTab() {
       return incoming.length;
     }
 
-    return people.filter((person) => person.status === 'none' || person.status === 'pending')
-      .length;
+    return findPeople.length;
   };
+  const isLoading =
+    friendshipsQuery.isLoading ||
+    (relatedUserIds.length > 0 && relatedProfilesQuery.isLoading) ||
+    (shouldSearchProfiles && searchProfilesQuery.isLoading);
+  const hasError =
+    friendshipsQuery.isError || relatedProfilesQuery.isError || searchProfilesQuery.isError;
 
   return (
     <View className="flex-1 bg-background">
@@ -359,9 +358,11 @@ export default function FriendsTab() {
           >
             <Ionicons color="#64748b" name="search" size={18} />
             <TextInput
+              autoCapitalize="none"
+              autoCorrect={false}
               className="h-full min-w-0 flex-1 px-3 text-[17px] text-foreground"
-              onChangeText={setQuery}
               onBlur={() => setIsSearchFocused(false)}
+              onChangeText={setQuery}
               onFocus={() => setIsSearchFocused(true)}
               placeholder={searchPlaceholder}
               placeholderTextColor="#64748b"
@@ -440,29 +441,114 @@ export default function FriendsTab() {
         {activeFilter === 'Requests' ? (
           <SectionTitle label={query ? 'Matching requests' : 'Friend requests'} />
         ) : null}
-        {activeFilter === 'Find' ? <FindNotice hasQuery={Boolean(query.trim())} /> : null}
+        {activeFilter === 'Find' ? <FindNotice queryLength={normalizedQuery.length} /> : null}
 
-        {visiblePeople.length ? (
+        {hasError ? (
+          <EmptyState icon="cloud-offline" title="Could not load friends" />
+        ) : isLoading ? (
+          <EmptyState icon="people" title="Loading friends" />
+        ) : visiblePeople.length ? (
           visiblePeople.map((person, index) => (
             <PersonRow
-              key={person.id}
               index={index}
-              onAccept={() => updateStatus(person.id, 'friend')}
-              onAdd={() => updateStatus(person.id, 'pending')}
+              isBusy={isMutatingFriendship}
+              key={person.id}
+              onAccept={() => {
+                if (person.friendshipId) {
+                  acceptRequestMutation.mutate(person.friendshipId);
+                }
+              }}
+              onAdd={() => sendRequestMutation.mutate(person.userId)}
+              onCancel={() => {
+                if (person.friendshipId) {
+                  cancelRequestMutation.mutate(person.friendshipId);
+                }
+              }}
+              onDecline={() => {
+                if (person.friendshipId) {
+                  declineRequestMutation.mutate(person.friendshipId);
+                }
+              }}
               onDismissKeyboard={Keyboard.dismiss}
-              onDecline={() => updateStatus(person.id, 'none')}
               person={person}
             />
           ))
         ) : (
           <EmptyState
             icon={activeFilter === 'Find' ? 'person-add' : 'search'}
-            title={activeFilter === 'Find' ? 'No one found' : 'No matches'}
+            title={getEmptyTitle(activeFilter, normalizedQuery.length)}
           />
         )}
       </Animated.ScrollView>
     </View>
   );
+}
+
+function toPerson(
+  profile: ProfileRecord,
+  friendship: FriendshipRecord | undefined,
+  currentUserId: string,
+): Person {
+  const name = profile.display_name || profile.username;
+  const status = getFriendStatus(friendship, currentUserId);
+
+  return {
+    id: profile.id,
+    userId: profile.user,
+    friendshipId: friendship?.id,
+    name,
+    username: profile.username,
+    accent: getAvatarColor(profile.user),
+    status,
+    note: getFriendNote(status),
+  };
+}
+
+function getFriendStatus(
+  friendship: FriendshipRecord | undefined,
+  currentUserId: string,
+): FriendStatus {
+  if (!friendship) {
+    return 'none';
+  }
+
+  if (friendship.status === 'accepted') {
+    return 'friend';
+  }
+
+  if (friendship.status === 'pending') {
+    return friendship.recipient === currentUserId ? 'incoming' : 'pending';
+  }
+
+  return 'none';
+}
+
+function getFriendNote(status: FriendStatus): string {
+  if (status === 'friend') {
+    return 'friend';
+  }
+
+  if (status === 'incoming') {
+    return 'sent you a request';
+  }
+
+  if (status === 'pending') {
+    return 'request sent';
+  }
+
+  return 'tap to add';
+}
+
+function getEmptyTitle(activeFilter: FriendFilter, queryLength: number): string {
+  if (activeFilter === 'Find' && queryLength < 3) {
+    return 'Type 3 letters';
+  }
+
+  if (activeFilter === 'Find') {
+    return 'No one found';
+  }
+
+  return 'No matches';
 }
 
 function RoundIcon({
@@ -487,16 +573,14 @@ function RoundIcon({
   );
 }
 
-function FindNotice({ hasQuery }: { hasQuery: boolean }) {
+function FindNotice({ queryLength }: { queryLength: number }) {
   return (
     <View className="mb-3 rounded-[20px] bg-muted px-4 py-3">
       <Text className="text-sm font-semibold text-foreground">
-        {hasQuery ? 'Search results' : 'Find by username'}
+        {queryLength >= 3 ? 'Search results' : 'Find by username'}
       </Text>
       <Text className="mt-0.5 text-xs font-medium text-muted-foreground">
-        {hasQuery
-          ? 'People outside your friends list.'
-          : 'Type a username or name to send a request.'}
+        {queryLength >= 3 ? 'People outside your friends list.' : 'Enter at least 3 characters.'}
       </Text>
     </View>
   );
@@ -512,15 +596,19 @@ function SectionTitle({ label }: { label: string }) {
 
 function PersonRow({
   index,
+  isBusy,
   onAccept,
   onAdd,
+  onCancel,
   onDecline,
   onDismissKeyboard,
   person,
 }: {
   index: number;
+  isBusy: boolean;
   onAccept: () => void;
   onAdd: () => void;
+  onCancel: () => void;
   onDecline: () => void;
   onDismissKeyboard: () => void;
   person: Person;
@@ -561,8 +649,10 @@ function PersonRow({
             {person.name}
           </Text>
           <FriendAction
+            isBusy={isBusy}
             onAccept={onAccept}
             onAdd={onAdd}
+            onCancel={onCancel}
             onDecline={onDecline}
             status={person.status}
           />
@@ -581,22 +671,25 @@ function Avatar({ person }: { person: Person }) {
       className="h-11 w-11 items-center justify-center rounded-full"
       style={{ backgroundColor: person.accent }}
     >
-      <Text className="text-base font-bold text-background">{person.name.slice(0, 1)}</Text>
-      {person.online ? (
-        <View className="absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 border-background bg-primary" />
-      ) : null}
+      <Text className="text-base font-bold text-background">
+        {getAvatarInitial(person.name, person.username)}
+      </Text>
     </View>
   );
 }
 
 function FriendAction({
+  isBusy,
   onAccept,
   onAdd,
+  onCancel,
   onDecline,
   status,
 }: {
+  isBusy: boolean;
   onAccept: () => void;
   onAdd: () => void;
+  onCancel: () => void;
   onDecline: () => void;
   status: FriendStatus;
 }) {
@@ -610,9 +703,13 @@ function FriendAction({
 
   if (status === 'pending') {
     return (
-      <View className="h-8 items-center justify-center rounded-full bg-muted px-3">
+      <Pressable
+        className="h-8 items-center justify-center rounded-full bg-muted px-3"
+        disabled={isBusy}
+        onPress={onCancel}
+      >
         <Text className="text-xs font-bold text-muted-foreground">Pending</Text>
-      </View>
+      </Pressable>
     );
   }
 
@@ -621,12 +718,14 @@ function FriendAction({
       <View className="flex-row items-center gap-2">
         <Pressable
           className="h-8 w-8 items-center justify-center rounded-full bg-muted"
+          disabled={isBusy}
           onPress={onDecline}
         >
           <Ionicons color="#94a3b8" name="close" size={16} />
         </Pressable>
         <Pressable
           className="h-8 w-8 items-center justify-center rounded-full bg-foreground"
+          disabled={isBusy}
           onPress={onAccept}
         >
           <Ionicons color="#080b12" name="checkmark" size={16} />
@@ -638,6 +737,7 @@ function FriendAction({
   return (
     <Pressable
       className="h-8 w-8 items-center justify-center rounded-full bg-foreground"
+      disabled={isBusy}
       onPress={onAdd}
     >
       <Ionicons color="#080b12" name="add" size={18} />

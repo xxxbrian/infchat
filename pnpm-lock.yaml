@@ -28,6 +28,9 @@ importers:
       "@infchat/shared":
         specifier: workspace:*
         version: link:../../packages/shared
+      "@tanstack/react-query":
+        specifier: ^5.100.5
+        version: 5.100.5(react@19.2.0)
       expo:
         specifier: ~55.0.17
         version: 55.0.17(@babel/core@7.29.0)(@expo/dom-webview@55.0.5)(@expo/metro-runtime@55.0.10)(expo-router@55.0.13)(react-dom@19.2.0(react@19.2.0))(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)(typescript@5.9.3)
@@ -95,6 +98,9 @@ importers:
       tailwind-merge:
         specifier: ^3.5.0
         version: 3.5.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
 
 packages:
   "@babel/code-frame@7.29.0":
@@ -1923,6 +1929,20 @@ packages:
         integrity: sha512-yv9jeEFWnjKCI6/T3Oq50yQEOqmpmpfzG1hcZsAOaXFQPfzWprWrlHSdGPEF3WQTi8zu8ohC9Mh9J470nT5pUw==,
       }
     engines: { node: ">= 20" }
+
+  "@tanstack/query-core@5.100.5":
+    resolution:
+      {
+        integrity: sha512-t20KrhKkf0HXzqQkPbJ5erhFesup68BAbwFgYmTrS7bxMF7O5MdmL8jUkik4thsG7Hg00fblz30h6yF1d5TxGg==,
+      }
+
+  "@tanstack/react-query@5.100.5":
+    resolution:
+      {
+        integrity: sha512-aNwj1mi2v2bQ9IxkyR1grLOUkv3BYWoykHy9KDyLNbjC3tsahbOHJibK+Wjtr1wRhG59/AvJhiJG5OlthaCgJA==,
+      }
+    peerDependencies:
+      react: ^18 || ^19
 
   "@types/babel__core@7.20.5":
     resolution:
@@ -5447,6 +5467,12 @@ packages:
         integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==,
       }
 
+  zod@4.3.6:
+    resolution:
+      {
+        integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==,
+      }
+
 snapshots:
   "@babel/code-frame@7.29.0":
     dependencies:
@@ -6975,6 +7001,13 @@ snapshots:
       "@tailwindcss/oxide-wasm32-wasi": 4.2.1
       "@tailwindcss/oxide-win32-arm64-msvc": 4.2.1
       "@tailwindcss/oxide-win32-x64-msvc": 4.2.1
+
+  "@tanstack/query-core@5.100.5": {}
+
+  "@tanstack/react-query@5.100.5(react@19.2.0)":
+    dependencies:
+      "@tanstack/query-core": 5.100.5
+      react: 19.2.0
 
   "@types/babel__core@7.20.5":
     dependencies:
@@ -9066,3 +9099,5 @@ snapshots:
       yargs-parser: 21.1.1
 
   zod@3.25.76: {}
+
+  zod@4.3.6: {}
