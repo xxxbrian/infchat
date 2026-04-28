@@ -22,6 +22,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -64,13 +65,18 @@ export default function FriendsTab() {
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const searchRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollYValue = useRef(0);
+  const listPositionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isLockingListPositionRef = useRef(false);
+  const lockedScrollOffsetRef = useRef(0);
   const [headerHeight, setHeaderHeight] = useState(0);
   const [activeFilter, setActiveFilter] = useState<FriendFilter>('Friends');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [isScrollEnabled, setIsScrollEnabled] = useState(true);
   const [query, setQuery] = useState('');
 
   const currentUserId = authRecord.id;
@@ -257,6 +263,14 @@ export default function FriendsTab() {
     };
   }, [isOnline, queryClient]);
 
+  useEffect(() => {
+    return () => {
+      if (listPositionTimeoutRef.current) {
+        clearTimeout(listPositionTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ['friendships'] });
     queryClient.invalidateQueries({ queryKey: ['profiles'] });
@@ -308,6 +322,30 @@ export default function FriendsTab() {
     scrollY.setValue(nextOffset);
   };
 
+  const preserveListPosition = () => {
+    if (listPositionTimeoutRef.current) {
+      clearTimeout(listPositionTimeoutRef.current);
+    }
+
+    const nextOffset = Math.min(scrollYValue.current, 96);
+    lockedScrollOffsetRef.current = nextOffset;
+    isLockingListPositionRef.current = true;
+    setIsScrollEnabled(false);
+    setHeaderOffset(nextOffset);
+    scrollViewRef.current?.scrollTo({ animated: false, y: nextOffset });
+    requestAnimationFrame(() => {
+      setHeaderOffset(nextOffset);
+      scrollViewRef.current?.scrollTo({ animated: false, y: nextOffset });
+    });
+
+    listPositionTimeoutRef.current = setTimeout(() => {
+      isLockingListPositionRef.current = false;
+      setIsScrollEnabled(true);
+      setHeaderOffset(nextOffset);
+      scrollViewRef.current?.scrollTo({ animated: false, y: nextOffset });
+    }, 120);
+  };
+
   const handleScroll = ({
     nativeEvent,
   }: {
@@ -317,6 +355,11 @@ export default function FriendsTab() {
       layoutMeasurement: { height: number };
     };
   }) => {
+    if (isLockingListPositionRef.current) {
+      setHeaderOffset(lockedScrollOffsetRef.current);
+      return;
+    }
+
     const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
     const isScrollable = contentSize.height > layoutMeasurement.height + 1;
 
@@ -342,6 +385,7 @@ export default function FriendsTab() {
   const openFind = () => {
     setActiveFilter('Find');
     setQuery('');
+    preserveListPosition();
     requestAnimationFrame(() => searchRef.current?.focus());
   };
 
@@ -453,6 +497,9 @@ export default function FriendsTab() {
                 onPress={() => {
                   setActiveFilter(filter);
                   setQuery('');
+                  if (!isActive) {
+                    preserveListPosition();
+                  }
                   if (filter === 'Find' || isSearchFocused) {
                     requestAnimationFrame(() => searchRef.current?.focus());
                   }
@@ -484,6 +531,7 @@ export default function FriendsTab() {
           paddingBottom: Math.max(insets.bottom, 16) + 48,
           paddingHorizontal: HEADER_SIDE_PADDING,
           paddingTop: headerHeight + 8,
+          minHeight: windowHeight + 160,
         }}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
@@ -500,6 +548,7 @@ export default function FriendsTab() {
         }
         ref={scrollViewRef}
         scrollEventThrottle={16}
+        scrollEnabled={isScrollEnabled}
         showsVerticalScrollIndicator={false}
       >
         {activeFilter === 'Friends' ? (
