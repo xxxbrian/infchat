@@ -443,9 +443,9 @@ export default function ChatDetailScreen() {
             <View className="flex-row items-center gap-2">
               <IconButton name="call" />
               <IconButton name="videocam" />
-              <IconButton
+              {/*<IconButton
                 name={conversation.kind === 'group' ? 'information-circle' : 'person-circle'}
-              />
+              />*/}
             </View>
           </View>
         </View>
@@ -672,8 +672,21 @@ function formatMessageTime(value: string): string {
 }
 
 function ConversationIdentity({ conversation }: { conversation: ConversationView }) {
+  const canOpenProfile = conversation.kind === 'private' && Boolean(conversation.avatarUserId);
+
   return (
-    <Pressable className="min-w-0 flex-1 flex-row items-center gap-3">
+    <Pressable
+      className="min-w-0 flex-1 flex-row items-center gap-3"
+      onPress={
+        canOpenProfile
+          ? () =>
+              router.push({
+                pathname: '/profile/[userId]',
+                params: { userId: conversation.avatarUserId },
+              })
+          : undefined
+      }
+    >
       <AvatarStack conversation={conversation} size="small" />
       <View className="min-w-0 flex-1">
         <Text className="text-lg font-bold text-foreground" numberOfLines={1}>

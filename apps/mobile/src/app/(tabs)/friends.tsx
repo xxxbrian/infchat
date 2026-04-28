@@ -610,6 +610,12 @@ export default function FriendsTab() {
               }}
               onChat={() => startPrivateChatMutation.mutate(person.userId)}
               onDismissKeyboard={Keyboard.dismiss}
+              onOpenProfile={() =>
+                router.push({
+                  pathname: '/profile/[userId]',
+                  params: { userId: person.userId },
+                })
+              }
               person={person}
             />
           ))
@@ -744,6 +750,7 @@ function PersonRow({
   onChat,
   onDecline,
   onDismissKeyboard,
+  onOpenProfile,
   person,
 }: {
   index: number;
@@ -754,6 +761,7 @@ function PersonRow({
   onChat: () => void;
   onDecline: () => void;
   onDismissKeyboard: () => void;
+  onOpenProfile: () => void;
   person: Person;
 }) {
   const opacity = useRef(new Animated.Value(0)).current;
@@ -779,7 +787,10 @@ function PersonRow({
   return (
     <AnimatedPressable
       className="flex-row items-center gap-3"
-      onPress={onDismissKeyboard}
+      onPress={() => {
+        onDismissKeyboard();
+        onOpenProfile();
+      }}
       style={{ opacity, transform: [{ translateY }] }}
     >
       <Avatar person={person} />

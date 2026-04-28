@@ -84,6 +84,23 @@ export function getCachedCurrentProfile(pb: PocketBase): Promise<ProfileRecord> 
   return readThroughCache(`${getAuthCachePrefix(pb)}:profile:current`, () => getCurrentProfile(pb));
 }
 
+export async function getCachedProfileByUserId(
+  pb: PocketBase,
+  userId: string,
+): Promise<ProfileRecord> {
+  const key = `${getAuthCachePrefix(pb)}:profile:${userId}`;
+
+  return readThroughCache(key, async () => {
+    const [profile] = await listProfilesByUserIds(pb, [userId]);
+
+    if (!profile) {
+      throw new Error('Profile was not found');
+    }
+
+    return profile;
+  });
+}
+
 export function listCachedProfilesByUserIds(
   pb: PocketBase,
   userIds: string[],
