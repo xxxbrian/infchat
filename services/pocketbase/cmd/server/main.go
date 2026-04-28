@@ -101,8 +101,23 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		if !e.HasSuperuserAuth() {
 			e.Record.Set("sender", e.Auth.Id)
 		}
-		if e.Record.GetString("kind") == "" {
+		kind := e.Record.GetString("kind")
+		if kind == "" {
+			kind = "text"
 			e.Record.Set("kind", "text")
+		}
+		body := strings.TrimSpace(e.Record.GetString("body"))
+		e.Record.Set("body", body)
+
+		switch kind {
+		case "text":
+			if body == "" {
+				return router.NewBadRequestError("Message text is required.", nil)
+			}
+		case "image", "file", "voice":
+			// Body is an optional caption for attachment-backed messages.
+		default:
+			return router.NewBadRequestError("Invalid message kind.", nil)
 		}
 
 		return e.Next()
@@ -114,7 +129,7 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 			return err
 		}
 
-		conversation.Set("last_message_text", e.Record.GetString("body"))
+		conversation.Set("last_message_text", getMessagePreview(e.Record))
 		conversation.Set("last_message_at", e.Record.GetString("created"))
 
 		if err := e.App.Save(conversation); err != nil {
@@ -123,6 +138,61 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 
 		return e.Next()
 	})
+}
+
+func getMessagePreview(record *core.Record) string {
+	body := strings.TrimSpace(record.GetString("body"))
+	if body != "" {
+		return body
+	}
+
+	switch record.GetString("kind") {
+	case "image":
+		return "Photo"
+	case "file":
+		attachments := record.GetStringSlice("attachments")
+		if len(attachments) > 0 {
+			return formatStoredAttachmentName(attachments[0])
+		}
+
+		return "File"
+	case "voice":
+		return "Voice message"
+	default:
+		return "Message"
+	}
+}
+
+func formatStoredAttachmentName(name string) string {
+	base := name
+	ext := ""
+	if dot := strings.LastIndex(base, "."); dot > 0 {
+		ext = base[dot:]
+		base = base[:dot]
+	}
+
+	if underscore := strings.LastIndex(base, "_"); underscore >= 0 {
+		suffix := base[underscore+1:]
+		if len(suffix) == 10 && isAlphaNumeric(suffix) {
+			base = base[:underscore]
+		}
+	}
+
+	if strings.TrimSpace(base) == "" {
+		return name
+	}
+
+	return base + ext
+}
+
+func isAlphaNumeric(value string) bool {
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') {
+			return false
+		}
+	}
+
+	return value != ""
 }
 
 func prepareConversationRecord(record *core.Record) {

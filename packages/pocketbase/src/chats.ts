@@ -1,7 +1,13 @@
 import type PocketBase from 'pocketbase';
 
 export type ConversationKind = 'private' | 'group';
-export type MessageKind = 'text' | 'image' | 'voice';
+export type MessageKind = 'text' | 'image' | 'file' | 'voice';
+
+export type MessageUploadFile = {
+  uri: string;
+  name: string;
+  type: string;
+};
 
 export type ConversationRecord = {
   id: string;
@@ -22,6 +28,9 @@ export type MessageRecord = {
   sender: string;
   kind: MessageKind;
   body: string;
+  attachments?: string[];
+  collectionId: string;
+  collectionName: string;
   created: string;
   updated: string;
 };
@@ -79,6 +88,53 @@ export function sendTextMessage(pb: PocketBase, conversationId: string, body: st
     conversation: conversationId,
     kind: 'text',
   });
+}
+
+export function sendImageMessage(
+  pb: PocketBase,
+  conversationId: string,
+  file: MessageUploadFile,
+  caption = '',
+) {
+  return sendAttachmentMessage(pb, conversationId, 'image', file, caption);
+}
+
+export function sendFileMessage(
+  pb: PocketBase,
+  conversationId: string,
+  file: MessageUploadFile,
+  caption = '',
+) {
+  return sendAttachmentMessage(pb, conversationId, 'file', file, caption || file.name);
+}
+
+export function getMessageAttachmentUrl(
+  pb: PocketBase,
+  message: MessageRecord,
+  attachment: string,
+  fileToken?: string,
+  thumb?: string,
+): string {
+  return pb.files.getURL(message, attachment, {
+    ...(fileToken ? { token: fileToken } : {}),
+    ...(thumb ? { thumb } : {}),
+  });
+}
+
+function sendAttachmentMessage(
+  pb: PocketBase,
+  conversationId: string,
+  kind: Extract<MessageKind, 'image' | 'file'>,
+  file: MessageUploadFile,
+  caption: string,
+) {
+  const formData = new FormData();
+  formData.append('conversation', conversationId);
+  formData.append('kind', kind);
+  formData.append('body', caption.trim());
+  formData.append('attachments', file as unknown as Blob);
+
+  return pb.collection('messages').create<MessageRecord>(formData);
 }
 
 function getPairKey(firstUserId: string, secondUserId: string): string {

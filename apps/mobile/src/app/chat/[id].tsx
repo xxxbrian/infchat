@@ -1,21 +1,32 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
 import {
+  getMessageAttachmentUrl,
   getProfileAvatarUrl,
+  sendFileMessage,
+  sendImageMessage,
   sendTextMessage,
   type ConversationRecord,
   type MessageRecord,
+  type MessageUploadFile,
   type ProfileRecord,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Easing,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -26,6 +37,7 @@ import {
   Text,
   TextInput,
   type TextInputContentSizeChangeEventData,
+  useWindowDimensions,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -55,10 +67,20 @@ type ConversationView = {
 type ChatMessage = {
   id: string;
   author: 'me' | 'them';
+  attachments: MessageAttachment[];
+  kind: MessageRecord['kind'];
   sender?: string;
   text: string;
   time: string;
 };
+
+type MessageAttachment = {
+  name: string;
+  thumbUrl?: string;
+  url: string;
+};
+
+type FileDownloadState = 'idle' | 'checking' | 'downloading' | 'downloaded';
 
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
@@ -69,6 +91,7 @@ const COMPOSER_INPUT_MAX_CONTENT_HEIGHT = COMPOSER_INPUT_LINE_HEIGHT * 5;
 const JUMP_BUTTON_FAR_FROM_BOTTOM = 420;
 const JUMP_BUTTON_NEAR_BOTTOM = 120;
 const SCROLL_DIRECTION_THRESHOLD = 6;
+const FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -142,9 +165,9 @@ export default function ChatDetailScreen() {
   const messages = useMemo(
     () =>
       (messagesQuery.data ?? []).map((message) =>
-        toChatMessage(message, profilesByUserId, authRecord.id),
+        toChatMessage(message, profilesByUserId, authRecord.id, fileTokenQuery.data),
       ),
-    [authRecord.id, messagesQuery.data, profilesByUserId],
+    [authRecord.id, fileTokenQuery.data, messagesQuery.data, profilesByUserId],
   );
   const sendMessageMutation = useMutation({
     mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
@@ -156,6 +179,29 @@ export default function ChatDetailScreen() {
       queryClient.invalidateQueries({
         queryKey: ['conversation', conversationId],
       });
+    },
+  });
+  const sendAttachmentMutation = useMutation({
+    mutationFn: ({
+      file,
+      kind,
+    }: {
+      file: MessageUploadFile;
+      kind: Extract<MessageRecord['kind'], 'image' | 'file'>;
+    }) =>
+      kind === 'image'
+        ? sendImageMessage(pb, conversationId, file)
+        : sendFileMessage(pb, conversationId, file),
+    onSuccess: () => {
+      didScrollToEnd.current = false;
+      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({
+        queryKey: ['conversation', conversationId],
+      });
+    },
+    onError: () => {
+      Alert.alert('Could not send attachment', 'Check your connection and try again.');
     },
   });
   const isRefreshing =
@@ -420,11 +466,68 @@ export default function ChatDetailScreen() {
 
   const handleSendMessage = () => {
     const body = composerText.trim();
-    if (!body || sendMessageMutation.isPending) {
+    if (!body || sendMessageMutation.isPending || sendAttachmentMutation.isPending) {
       return;
     }
 
     sendMessageMutation.mutate(body);
+  };
+
+  const handlePickImage = async () => {
+    if (sendAttachmentMutation.isPending) {
+      return;
+    }
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Photos access needed', 'Allow photos access to send an image.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.9,
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    const asset = result.assets[0];
+    if (!asset) {
+      return;
+    }
+
+    sendAttachmentMutation.mutate({
+      file: imageAssetToUploadFile(asset),
+      kind: 'image',
+    });
+  };
+
+  const handlePickFile = async () => {
+    if (sendAttachmentMutation.isPending) {
+      return;
+    }
+
+    const result = await DocumentPicker.getDocumentAsync({
+      copyToCacheDirectory: true,
+      multiple: false,
+      type: '*/*',
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    const asset = result.assets[0];
+    if (!asset) {
+      return;
+    }
+
+    sendAttachmentMutation.mutate({
+      file: documentAssetToUploadFile(asset),
+      kind: asset.mimeType?.startsWith('image/') ? 'image' : 'file',
+    });
   };
 
   return (
@@ -574,8 +677,8 @@ export default function ChatDetailScreen() {
                   transform: [{ translateY: composerToolTranslateY }, { scale: composerToolScale }],
                 }}
               >
-                <ComposerTool name="image" />
-                <ComposerTool name="document-text" />
+                <ComposerTool name="image" onPress={handlePickImage} />
+                <ComposerTool name="document-text" onPress={handlePickFile} />
               </Animated.View>
               <Animated.View
                 className="absolute right-2 h-9 w-9 overflow-hidden rounded-full"
@@ -649,12 +752,23 @@ function toChatMessage(
   message: MessageRecord,
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
+  fileToken?: string,
 ): ChatMessage {
   const senderProfile = profilesByUserId.get(message.sender);
+  const attachments = (message.attachments ?? []).map((attachment) => ({
+    name: attachment,
+    thumbUrl:
+      message.kind === 'image'
+        ? getMessageAttachmentUrl(pb, message, attachment, fileToken, '720x720')
+        : undefined,
+    url: getMessageAttachmentUrl(pb, message, attachment, fileToken),
+  }));
 
   return {
     id: message.id,
     author: message.sender === currentUserId ? 'me' : 'them',
+    attachments,
+    kind: message.kind,
     sender: senderProfile?.display_name || senderProfile?.username,
     text: message.body,
     time: formatMessageTime(message.created),
@@ -669,6 +783,106 @@ function formatMessageTime(value: string): string {
   }
 
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function formatAttachmentName(name: string): string {
+  return name.replace(/_[a-z0-9]{10}(\.[^.]+)$/i, '$1').replace(/_[a-z0-9]{10}$/i, '');
+}
+
+function getFileDisplayName(message: ChatMessage, attachment: MessageAttachment): string {
+  const bodyName = message.text.trim();
+  if (bodyName) {
+    return bodyName;
+  }
+
+  const attachmentName = formatAttachmentName(attachment.name).trim();
+  if (attachmentName) {
+    return attachmentName;
+  }
+
+  const urlName = formatAttachmentName(getFileNameFromUri(attachment.url)).trim();
+  if (urlName && urlName !== 'file') {
+    return urlName;
+  }
+
+  return 'File attachment';
+}
+
+function getMessageFileCacheDirectory(): string | null {
+  return FileSystem.cacheDirectory ? `${FileSystem.cacheDirectory}infchat-message-files/` : null;
+}
+
+function getLocalMessageFileUri(messageId: string, fileName: string): string | null {
+  const directory = getMessageFileCacheDirectory();
+
+  if (!directory) {
+    return null;
+  }
+
+  return `${directory}${messageId}-${sanitizeFileName(fileName)}`;
+}
+
+function sanitizeFileName(name: string): string {
+  const safeName = name
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .slice(0, 120);
+
+  return safeName || 'file';
+}
+
+function fitImageSize(width: number, height: number, windowWidth: number) {
+  const maxWidth = Math.min(windowWidth * 0.74, 300);
+  const maxHeight = 380;
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+
+  return {
+    height: Math.max(1, Math.round(height * ratio)),
+    width: Math.max(1, Math.round(width * ratio)),
+  };
+}
+
+function imageAssetToUploadFile(asset: ImagePicker.ImagePickerAsset): MessageUploadFile {
+  const type = asset.mimeType || 'image/jpeg';
+  const extension = type.split('/')[1] || 'jpg';
+
+  return {
+    name: asset.fileName || `image.${extension}`,
+    type,
+    uri: asset.uri,
+  };
+}
+
+function documentAssetToUploadFile(asset: DocumentPicker.DocumentPickerAsset): MessageUploadFile {
+  return {
+    name: asset.name || getFileNameFromUri(asset.uri),
+    type: asset.mimeType || 'application/octet-stream',
+    uri: asset.uri,
+  };
+}
+
+function getFileNameFromUri(uri: string): string {
+  const name = decodeURIComponent(uri.split('?')[0]?.split('/').pop() ?? '').trim();
+
+  return name || 'file';
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error('Timed out'));
+    }, timeoutMs);
+
+    promise
+      .then(resolve)
+      .catch(reject)
+      .finally(() => clearTimeout(timeoutId));
+  });
+}
+
+function canUseSystemShareSheet(): boolean {
+  return !(Platform.OS === 'ios' && __DEV__);
 }
 
 function ConversationIdentity({ conversation }: { conversation: ConversationView }) {
@@ -711,9 +925,19 @@ function MessageBubble({
   message: ChatMessage;
   totalMessages: number;
 }) {
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(12)).current;
+  const imageAttachment = message.kind === 'image' ? message.attachments[0] : undefined;
+  const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
   const isMine = message.author === 'me';
+  const hasText = message.text.trim().length > 0;
+  const fileName = fileAttachment ? getFileDisplayName(message, fileAttachment) : '';
+  const localFileUri = fileAttachment ? getLocalMessageFileUri(message.id, fileName) : null;
+  const [imageSize, setImageSize] = useState({ height: 210, width: 250 });
+  const [isImageViewerVisible, setIsImageViewerVisible] = useState(false);
+  const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
+  const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>('idle');
 
   useEffect(() => {
     Animated.parallel([
@@ -732,6 +956,274 @@ function MessageBubble({
     ]).start();
   }, [index, opacity, totalMessages, translateY]);
 
+  useEffect(() => {
+    const uri = imageAttachment?.url;
+    if (!uri) {
+      return;
+    }
+
+    Image.getSize(
+      uri,
+      (width, height) => setImageSize(fitImageSize(width, height, windowWidth)),
+      () => setImageSize(fitImageSize(250, 210, windowWidth)),
+    );
+  }, [imageAttachment?.url, windowWidth]);
+
+  useEffect(() => {
+    if (!localFileUri) {
+      setFileDownloadState('idle');
+      return;
+    }
+
+    let isMounted = true;
+    setFileDownloadState('checking');
+
+    FileSystem.getInfoAsync(localFileUri)
+      .then((info) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setFileDownloadState(info.exists ? 'downloaded' : 'idle');
+      })
+      .catch(() => {
+        if (isMounted) {
+          setFileDownloadState('idle');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [localFileUri]);
+
+  const handleDownloadFile = async () => {
+    if (!fileAttachment || !localFileUri) {
+      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
+      return;
+    }
+
+    const cacheDirectory = getMessageFileCacheDirectory();
+    if (!cacheDirectory) {
+      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
+      return;
+    }
+
+    try {
+      setFileDownloadState('downloading');
+
+      const info = await FileSystem.getInfoAsync(localFileUri);
+
+      if (info.exists) {
+        setFileDownloadState('downloaded');
+        return;
+      }
+
+      await FileSystem.makeDirectoryAsync(cacheDirectory, {
+        intermediates: true,
+      });
+      await withTimeout(
+        FileSystem.downloadAsync(fileAttachment.url, localFileUri),
+        FILE_DOWNLOAD_TIMEOUT_MS,
+      );
+      setFileDownloadState('downloaded');
+    } catch {
+      setFileDownloadState('idle');
+      Alert.alert('Could not download file', 'The file could not be downloaded. Try again later.');
+    }
+  };
+
+  const handleOpenDownloadedFile = async () => {
+    if (!localFileUri) {
+      Alert.alert('Could not open file', 'Local file storage is not available on this device.');
+      return;
+    }
+
+    try {
+      const info = await FileSystem.getInfoAsync(localFileUri);
+
+      if (!info.exists) {
+        setFileDownloadState('idle');
+        Alert.alert('Download file first', 'This file is not available locally yet.');
+        return;
+      }
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        Alert.alert('Could not open file', 'This device cannot open local files from InfChat yet.');
+        return;
+      }
+
+      await Sharing.shareAsync(localFileUri, { dialogTitle: fileName });
+      setIsFilePreviewVisible(false);
+    } catch {
+      Alert.alert('Could not open file', 'The downloaded file could not be opened.');
+    }
+  };
+
+  const handleFileAction = () => {
+    if (fileDownloadState === 'downloaded' && !canUseSystemShareSheet()) {
+      return;
+    }
+
+    if (fileDownloadState === 'downloaded') {
+      void handleOpenDownloadedFile();
+      return;
+    }
+
+    void handleDownloadFile();
+  };
+
+  if (imageAttachment) {
+    return (
+      <Animated.View
+        className={`mb-2 overflow-hidden rounded-[24px] bg-muted ${isMine ? 'self-end' : 'self-start'}`}
+        style={{ opacity, transform: [{ translateY }] }}
+      >
+        <Pressable onPress={() => setIsImageViewerVisible(true)}>
+          <Image
+            resizeMode="cover"
+            source={{ uri: imageAttachment.url }}
+            style={{ height: imageSize.height, width: imageSize.width }}
+          />
+          <View className="absolute bottom-2 right-2 rounded-full bg-black/45 px-2 py-1">
+            <Text className="text-[11px] font-semibold text-white/90">{message.time}</Text>
+          </View>
+        </Pressable>
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setIsImageViewerVisible(false)}
+          transparent
+          visible={isImageViewerVisible}
+        >
+          <View className="flex-1 bg-black">
+            <Pressable
+              className="absolute right-5 top-14 z-10 h-11 w-11 items-center justify-center rounded-full bg-white/10"
+              onPress={() => setIsImageViewerVisible(false)}
+            >
+              <Ionicons color="#fff" name="close" size={24} />
+            </Pressable>
+            <Pressable
+              className="flex-1 items-center justify-center"
+              onPress={() => setIsImageViewerVisible(false)}
+            >
+              <Image
+                resizeMode="contain"
+                source={{ uri: imageAttachment.url }}
+                style={{ height: windowHeight, width: windowWidth }}
+              />
+            </Pressable>
+          </View>
+        </Modal>
+      </Animated.View>
+    );
+  }
+
+  if (fileAttachment) {
+    const fileBubbleMinWidth = Math.min(windowWidth * 0.72, 280);
+    const isFileActionBusy =
+      fileDownloadState === 'checking' ||
+      fileDownloadState === 'downloading' ||
+      (fileDownloadState === 'downloaded' && !canUseSystemShareSheet());
+    const fileActionLabel =
+      fileDownloadState === 'downloading'
+        ? 'Downloading...'
+        : fileDownloadState === 'downloaded'
+          ? canUseSystemShareSheet()
+            ? 'Open downloaded file'
+            : 'Downloaded locally'
+          : 'Download file';
+    const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
+
+    return (
+      <Animated.View
+        className={`mb-2 max-w-[78%] overflow-hidden rounded-[24px] ${isMine ? 'self-end bg-foreground' : 'self-start bg-muted'}`}
+        style={{
+          minWidth: fileBubbleMinWidth,
+          opacity,
+          transform: [{ translateY }],
+        }}
+      >
+        <Pressable
+          className="flex-row items-center gap-3 px-3 py-2.5"
+          onPress={() => setIsFilePreviewVisible(true)}
+        >
+          <View
+            className={`h-11 w-11 items-center justify-center rounded-[16px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+          >
+            <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="document-text" size={21} />
+          </View>
+          <View className="min-w-0 flex-1 pr-2">
+            <Text
+              className={`text-[15px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+              numberOfLines={2}
+            >
+              {fileName}
+            </Text>
+            <Text
+              className={`mt-0.5 text-[11px] font-semibold ${isMine ? 'text-background/55' : 'text-muted-foreground'}`}
+            >
+              {fileStatusLabel} · {message.time}
+            </Text>
+          </View>
+          <View
+            className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+          >
+            <Ionicons
+              color={isMine ? '#080b12' : '#f8fafc'}
+              name={fileDownloadState === 'downloaded' ? 'open-outline' : 'download-outline'}
+              size={17}
+            />
+          </View>
+        </Pressable>
+        <Modal
+          animationType="fade"
+          onRequestClose={() => setIsFilePreviewVisible(false)}
+          transparent
+          visible={isFilePreviewVisible}
+        >
+          <View className="flex-1 justify-end bg-black/70">
+            <Pressable className="flex-1" onPress={() => setIsFilePreviewVisible(false)} />
+            <View className="rounded-t-[34px] bg-background px-5 pb-8 pt-5">
+              <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
+              <View className="items-center">
+                <View className="h-16 w-16 items-center justify-center rounded-[24px] bg-muted">
+                  <Ionicons color="#f8fafc" name="document-text" size={30} />
+                </View>
+                <Text
+                  className="mt-4 text-center text-xl font-bold text-foreground"
+                  numberOfLines={3}
+                >
+                  {fileName}
+                </Text>
+                <Text className="mt-2 text-sm font-semibold text-muted-foreground">
+                  File preview is not available yet.
+                </Text>
+              </View>
+              <Pressable
+                className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-muted' : 'bg-foreground'}`}
+                disabled={isFileActionBusy}
+                onPress={handleFileAction}
+              >
+                <Text
+                  className={`text-base font-bold ${isFileActionBusy ? 'text-muted-foreground' : 'text-background'}`}
+                >
+                  {fileActionLabel}
+                </Text>
+              </Pressable>
+              <Pressable
+                className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
+                onPress={() => setIsFilePreviewVisible(false)}
+              >
+                <Text className="text-base font-bold text-foreground">Close</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
+      </Animated.View>
+    );
+  }
+
   return (
     <Animated.View
       className={`mb-2 max-w-[82%] ${isMine ? 'self-end' : 'self-start'}`}
@@ -744,10 +1236,16 @@ function MessageBubble({
         {!isMine && conversation.kind === 'group' && message.sender ? (
           <Text className="mb-1 text-xs font-bold text-primary">{message.sender}</Text>
         ) : null}
-        <Text className={`text-[16px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}>
-          {message.text}
+        {hasText || message.kind === 'text' ? (
+          <Text
+            className={`text-[16px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+          >
+            {message.text}
+            <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
+          </Text>
+        ) : (
           <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
-        </Text>
+        )}
         <Text
           className={`absolute bottom-3 right-4 text-[11px] font-medium ${
             isMine ? 'text-background/55' : 'text-muted-foreground'
@@ -847,13 +1345,16 @@ function IconButton({
 function ComposerTool({
   isPrimary,
   name,
+  onPress,
 }: {
   isPrimary?: boolean;
   name: keyof typeof Ionicons.glyphMap;
+  onPress?: () => void;
 }) {
   return (
     <Pressable
       className={`h-9 w-9 items-center justify-center rounded-full ${isPrimary ? 'bg-foreground' : 'bg-background/50'}`}
+      onPress={onPress}
     >
       <Ionicons color={isPrimary ? '#080b12' : '#f8fafc'} name={name} size={18} />
     </Pressable>
