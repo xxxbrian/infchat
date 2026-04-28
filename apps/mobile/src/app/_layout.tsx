@@ -1,4 +1,5 @@
 import '../../global.css';
+import '../lib/event-source';
 import '../lib/livekit';
 
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -124,6 +125,55 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
   const seenCallIds = useRef(new Set<string>());
   const [incomingCall, setIncomingCall] = useState<CallRoomRecord | null>(null);
 
+  const showIncomingCall = (callRoom: CallRoomRecord | null | undefined) => {
+    if (
+      !callRoom ||
+      callRoom.status !== 'ringing' ||
+      callRoom.created_by === authRecord.id ||
+      seenCallIds.current.has(callRoom.id)
+    ) {
+      return;
+    }
+
+    seenCallIds.current.add(callRoom.id);
+    setIncomingCall(callRoom);
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadPendingIncomingCall = async () => {
+      try {
+        const callRooms = await pb.collection('call_rooms').getFullList<CallRoomRecord>({
+          filter: pb.filter('status={:status} && created_by!={:userId}', {
+            status: 'ringing',
+            userId: authRecord.id,
+          }),
+          sort: '-created',
+        });
+
+        if (isMounted) {
+          showIncomingCall(callRooms[0]);
+        }
+      } catch {
+        // Realtime remains the primary path; foreground refetch will retry later.
+      }
+    };
+
+    void loadPendingIncomingCall();
+
+    const subscription = AppState.addEventListener('change', (status) => {
+      if (status === 'active') {
+        void loadPendingIncomingCall();
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.remove();
+    };
+  }, [authRecord.id]);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -139,16 +189,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
           return;
         }
 
-        if (
-          callRoom.status !== 'ringing' ||
-          callRoom.created_by === authRecord.id ||
-          seenCallIds.current.has(callRoom.id)
-        ) {
-          return;
-        }
-
-        seenCallIds.current.add(callRoom.id);
-        setIncomingCall(callRoom);
+        showIncomingCall(callRoom);
       })
       .catch(() => {
         // Query refetch on reconnect covers temporary realtime connection failures.
