@@ -14,6 +14,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  type TextInputContentSizeChangeEventData,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -29,6 +30,9 @@ import {
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
 const COMPOSER_EXPANDED_HEIGHT = 92;
+const COMPOSER_INPUT_LINE_HEIGHT = 22;
+const COMPOSER_INPUT_MIN_CONTENT_HEIGHT = COMPOSER_INPUT_LINE_HEIGHT;
+const COMPOSER_INPUT_MAX_CONTENT_HEIGHT = COMPOSER_INPUT_LINE_HEIGHT * 5;
 const JUMP_BUTTON_FAR_FROM_BOTTOM = 420;
 const JUMP_BUTTON_NEAR_BOTTOM = 120;
 const SCROLL_DIRECTION_THRESHOLD = 6;
@@ -43,9 +47,13 @@ export default function ChatDetailScreen() {
   const isJumpButtonVisible = useRef(false);
   const lastScrollY = useRef(0);
   const composerProgress = useRef(new Animated.Value(0)).current;
+  const composerInputExtraHeight = useRef(new Animated.Value(0)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
+  const composerInputExtraHeightValue = useRef(0);
+  const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
+  const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
   };
@@ -99,10 +107,11 @@ export default function ChatDetailScreen() {
     };
   }, [composerProgress]);
 
-  const composerHeight = composerProgress.interpolate({
+  const composerBaseHeight = composerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [COMPOSER_HEIGHT, COMPOSER_EXPANDED_HEIGHT],
   });
+  const composerHeight = Animated.add(composerBaseHeight, composerInputExtraHeight);
   const sideActionsOpacity = composerProgress.interpolate({
     inputRange: [0, 0.45],
     outputRange: [1, 0],
@@ -125,13 +134,14 @@ export default function ChatDetailScreen() {
     inputRange: [0, 1],
     outputRange: [1, 0.82],
   });
-  const jumpButtonBottom = composerProgress.interpolate({
+  const jumpButtonBaseBottom = composerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [
       Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 18,
       Math.max(insets.bottom, 10) + COMPOSER_EXPANDED_HEIGHT + 18,
     ],
   });
+  const jumpButtonBottom = Animated.add(jumpButtonBaseBottom, composerInputExtraHeight);
   const jumpButtonTranslateY = jumpButtonProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [10, 0],
@@ -175,6 +185,47 @@ export default function ChatDetailScreen() {
     lastScrollY.current = y;
   };
 
+  const handleComposerContentSizeChange = (
+    event: NativeSyntheticEvent<TextInputContentSizeChangeEventData>,
+  ) => {
+    const contentHeight = event.nativeEvent.contentSize.height;
+    if (composerText.length === 0) {
+      if (composerInputExtraHeightValue.current === 0) {
+        return;
+      }
+
+      composerInputExtraHeightValue.current = 0;
+      setIsComposerInputScrollable(false);
+      Animated.timing(composerInputExtraHeight, {
+        toValue: 0,
+        duration: 120,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false,
+      }).start(() => syncMessagesToBottom());
+      return;
+    }
+
+    const clampedContentHeight = Math.min(
+      Math.max(contentHeight, COMPOSER_INPUT_MIN_CONTENT_HEIGHT),
+      COMPOSER_INPUT_MAX_CONTENT_HEIGHT,
+    );
+    const nextExtraHeight = clampedContentHeight - COMPOSER_INPUT_MIN_CONTENT_HEIGHT;
+
+    if (Math.abs(nextExtraHeight - composerInputExtraHeightValue.current) < 1) {
+      setIsComposerInputScrollable(contentHeight > COMPOSER_INPUT_MAX_CONTENT_HEIGHT);
+      return;
+    }
+
+    composerInputExtraHeightValue.current = nextExtraHeight;
+    setIsComposerInputScrollable(contentHeight > COMPOSER_INPUT_MAX_CONTENT_HEIGHT);
+    Animated.timing(composerInputExtraHeight, {
+      toValue: nextExtraHeight,
+      duration: 120,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start(() => syncMessagesToBottom());
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -202,7 +253,12 @@ export default function ChatDetailScreen() {
           className="flex-1"
           contentContainerStyle={{
             flexGrow: 1,
-            paddingBottom: Math.max(insets.bottom, 12) + 100,
+            paddingBottom:
+              Math.max(insets.bottom, 12) +
+              COMPOSER_EXPANDED_HEIGHT +
+              COMPOSER_INPUT_MAX_CONTENT_HEIGHT -
+              COMPOSER_INPUT_MIN_CONTENT_HEIGHT +
+              12,
             paddingHorizontal: 14,
             paddingTop: 14,
           }}
@@ -266,8 +322,10 @@ export default function ChatDetailScreen() {
               style={{ height: composerHeight }}
             >
               <TextInput
-                className="min-h-[50px] px-4 pt-[13px] text-[17px] text-foreground"
+                className="px-4 pt-[13px] text-[17px] text-foreground"
                 multiline
+                onChangeText={setComposerText}
+                onContentSizeChange={handleComposerContentSizeChange}
                 onBlur={() => {
                   setIsComposerExpanded(false);
                   animateComposer(0, 180);
@@ -279,11 +337,17 @@ export default function ChatDetailScreen() {
                 }}
                 placeholder="Message"
                 placeholderTextColor="#64748b"
+                scrollEnabled={isComposerInputScrollable}
                 selectionColor="#f8fafc"
                 style={{
+                  lineHeight: COMPOSER_INPUT_LINE_HEIGHT,
+                  maxHeight: COMPOSER_INPUT_MAX_CONTENT_HEIGHT + 56,
+                  minHeight: COMPOSER_HEIGHT,
                   paddingBottom: isComposerExpanded ? 42 : 13,
                   paddingRight: 56,
+                  textAlignVertical: 'top',
                 }}
+                value={composerText}
               />
               <Animated.View
                 className="absolute bottom-2 left-3 flex-row items-center gap-2"
