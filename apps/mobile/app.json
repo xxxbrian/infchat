@@ -13,7 +13,10 @@
       "backgroundColor": "#000000"
     },
     "ios": {
-      "bundleIdentifier": "com.infchat.app",
+      "bundleIdentifier": "app.infchat",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      },
       "supportsTablet": true
     },
     "android": {

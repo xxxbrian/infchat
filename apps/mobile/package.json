@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "expo start",
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "release:ios:local": "bun ./scripts/release-ios-local.ts",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit"
   },
