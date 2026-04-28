@@ -1,5 +1,14 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Animated,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type ViewStyle,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const SEARCH_HEIGHT = 40;
@@ -71,6 +80,8 @@ const conversations = [
 
 const filters = ['All', 'Unread', 'Groups'];
 
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+
 export default function ChatTab() {
   const insets = useSafeAreaInsets();
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -116,6 +127,16 @@ export default function ChatTab() {
     outputRange: [0, 1],
     extrapolate: 'clamp',
   });
+  const topSearchOpacity = scrollY.interpolate({
+    inputRange: [16, 64],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+  const topSearchScale = scrollY.interpolate({
+    inputRange: [16, 64],
+    outputRange: [0.86, 1],
+    extrapolate: 'clamp',
+  });
 
   const handleScroll = Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
     useNativeDriver: false,
@@ -144,8 +165,14 @@ export default function ChatTab() {
           </Animated.Text>
 
           <View className="flex-row items-center gap-3">
-            <RoundIcon label="⌕" />
-            <RoundIcon label="＋" isPrimary />
+            <RoundIcon
+              animatedStyle={{
+                opacity: topSearchOpacity,
+                transform: [{ scale: topSearchScale }],
+              }}
+              name="search"
+            />
+            <RoundIcon isPrimary name="add" />
           </View>
         </View>
 
@@ -170,7 +197,7 @@ export default function ChatTab() {
           style={[styles.search, { height: searchHeight, marginBottom: searchMarginBottom }]}
         >
           <Animated.View className="h-full justify-center" style={{ opacity: searchOpacity }}>
-            <Text className="absolute left-4 text-base text-muted-foreground">⌕</Text>
+            <Ionicons color="#64748b" name="search" size={18} style={styles.searchIcon} />
             <TextInput
               className="h-full px-11 text-[17px] text-foreground"
               placeholder="Search"
@@ -217,17 +244,22 @@ export default function ChatTab() {
   );
 }
 
-function RoundIcon({ label, isPrimary }: { label: string; isPrimary?: boolean }) {
+function RoundIcon({
+  animatedStyle,
+  isPrimary,
+  name,
+}: {
+  animatedStyle?: Animated.WithAnimatedValue<ViewStyle>;
+  isPrimary?: boolean;
+  name: keyof typeof Ionicons.glyphMap;
+}) {
   return (
-    <Pressable
+    <AnimatedPressable
       className={`h-10 w-10 items-center justify-center rounded-full ${isPrimary ? 'bg-foreground' : 'bg-muted'}`}
+      style={animatedStyle}
     >
-      <Text
-        className={`text-xl font-semibold ${isPrimary ? 'text-background' : 'text-foreground'}`}
-      >
-        {label}
-      </Text>
-    </Pressable>
+      <Ionicons color={isPrimary ? '#080b12' : '#f8fafc'} name={name} size={22} />
+    </AnimatedPressable>
   );
 }
 
@@ -302,5 +334,9 @@ const styles = StyleSheet.create({
   },
   search: {
     borderCurve: 'continuous',
+  },
+  searchIcon: {
+    left: 16,
+    position: 'absolute',
   },
 });

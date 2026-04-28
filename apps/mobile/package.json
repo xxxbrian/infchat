@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
     "@infchat/pocketbase": "workspace:*",
     "@infchat/shared": "workspace:*",
     "expo": "~55.0.17",
