@@ -57,6 +57,12 @@ const SETTINGS_SECTIONS: SettingsRowItem[][] = [
     { icon: 'lock-closed', label: 'Privacy and Security' },
     { icon: 'server', label: 'Data and Storage' },
     { icon: 'color-palette', label: 'Appearance' },
+    {
+      icon: 'bug',
+      label: 'Debug',
+      onPress: () => router.push('/debug'),
+      value: 'Env',
+    },
   ],
 ];
 
