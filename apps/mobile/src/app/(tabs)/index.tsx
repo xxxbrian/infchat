@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
@@ -11,6 +12,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { conversations, type Conversation } from '../../lib/mock-chats';
+
 const SEARCH_HEIGHT = 40;
 const SEARCH_MARGIN_MAX = 18;
 const SEARCH_MARGIN_MIN = 8;
@@ -18,65 +21,6 @@ const HEADER_SIDE_PADDING = 20;
 const TOP_BAR_HEIGHT = 48;
 const TITLE_HEIGHT = 52;
 const TITLE_MARGIN_BOTTOM = 12;
-
-const conversations = [
-  {
-    id: '1',
-    name: 'Mira Chen',
-    message: 'Voice note sounds good. Send it over.',
-    time: '9:42',
-    unread: 2,
-    accent: '#60a5fa',
-  },
-  {
-    id: '2',
-    name: 'Noah',
-    message: 'I pushed the new mockups.',
-    time: '9:18',
-    unread: 0,
-    accent: '#a78bfa',
-  },
-  {
-    id: '3',
-    name: 'Design Crit',
-    message: 'Ari: the dark version is cleaner.',
-    time: 'Yesterday',
-    unread: 5,
-    accent: '#f472b6',
-  },
-  {
-    id: '4',
-    name: 'Brian',
-    message: 'Let’s keep this native, not webby.',
-    time: 'Yesterday',
-    unread: 0,
-    accent: '#34d399',
-  },
-  {
-    id: '5',
-    name: 'Weekend',
-    message: 'Dinner at 7?',
-    time: 'Mon',
-    unread: 0,
-    accent: '#f59e0b',
-  },
-  {
-    id: '6',
-    name: 'Product',
-    message: 'Native tabs landed.',
-    time: 'Sun',
-    unread: 1,
-    accent: '#22d3ee',
-  },
-  {
-    id: '7',
-    name: 'Kai',
-    message: 'Ship the skeleton first.',
-    time: 'Sat',
-    unread: 0,
-    accent: '#fb7185',
-  },
-];
 
 const filters = ['All', 'Unread', 'Groups'];
 
@@ -263,13 +207,7 @@ function RoundIcon({
   );
 }
 
-function ConversationRow({
-  conversation,
-  index,
-}: {
-  conversation: (typeof conversations)[number];
-  index: number;
-}) {
+function ConversationRow({ conversation, index }: { conversation: Conversation; index: number }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(14)).current;
 
@@ -291,8 +229,9 @@ function ConversationRow({
   }, [index, opacity, translateY]);
 
   return (
-    <Animated.View
+    <AnimatedPressable
       className="mb-3 flex-row items-center gap-3"
+      onPress={() => router.push({ pathname: '/chat/[id]', params: { id: conversation.id } })}
       style={{ opacity, transform: [{ translateY }] }}
     >
       <View
@@ -322,7 +261,7 @@ function ConversationRow({
           ) : null}
         </View>
       </View>
-    </Animated.View>
+    </AnimatedPressable>
   );
 }
 

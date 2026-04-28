@@ -42,6 +42,7 @@ export default function RootLayout() {
             }}
           >
             <Stack.Screen name="(tabs)" />
+            <Stack.Screen name="chat/[id]" />
           </Stack>
         </AuthContext.Provider>
       ) : route === 'login' ? (
