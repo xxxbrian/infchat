@@ -25,11 +25,16 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
+      "bundler": "metro",
       "favicon": "./assets/favicon.png"
     },
     "extra": {
       "pocketbaseUrl": "http://127.0.0.1:8090",
       "livekitUrl": "ws://127.0.0.1:7880"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
     }
   }
 }
