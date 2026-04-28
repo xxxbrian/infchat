@@ -78,6 +78,7 @@ export default function FriendsTab() {
   const [headerHeight, setHeaderHeight] = useState(0);
   const [activeFilter, setActiveFilter] = useState<FriendFilter>('Friends');
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isScrollEnabled, setIsScrollEnabled] = useState(true);
   const [query, setQuery] = useState('');
 
@@ -247,11 +248,6 @@ export default function FriendsTab() {
     declineRequestMutation.isPending ||
     cancelRequestMutation.isPending ||
     startPrivateChatMutation.isPending;
-  const isRefreshing =
-    friendshipsQuery.isRefetching ||
-    relatedProfilesQuery.isRefetching ||
-    searchProfilesQuery.isRefetching;
-
   useEffect(() => {
     if (!isOnline) {
       return;
@@ -294,9 +290,20 @@ export default function FriendsTab() {
     };
   }, []);
 
-  const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['friendships'] });
-    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  const handleRefresh = async () => {
+    if (isPullRefreshing) {
+      return;
+    }
+
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['friendships'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
   };
 
   const titleHeight = scrollY.interpolate({
@@ -565,7 +572,7 @@ export default function FriendsTab() {
           <RefreshControl
             colors={['#f8fafc']}
             onRefresh={handleRefresh}
-            refreshing={isRefreshing}
+            refreshing={isPullRefreshing}
             tintColor="#f8fafc"
           />
         }

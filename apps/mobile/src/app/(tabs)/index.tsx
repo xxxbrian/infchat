@@ -64,6 +64,7 @@ export default function ChatTab() {
   const [headerHeight, setHeaderHeight] = useState(0);
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const conversationsQuery = useQuery({
@@ -130,7 +131,6 @@ export default function ChatTab() {
   const isLoading =
     conversationsQuery.isLoading || (relatedUserIds.length > 0 && profilesQuery.isLoading);
   const hasError = conversationsQuery.isError || profilesQuery.isError;
-  const isRefreshing = conversationsQuery.isRefetching || profilesQuery.isRefetching;
 
   useEffect(() => {
     if (!isOnline) {
@@ -169,9 +169,20 @@ export default function ChatTab() {
     };
   }, [isOnline, queryClient]);
 
-  const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['conversations'] });
-    queryClient.invalidateQueries({ queryKey: ['profiles'] });
+  const handleRefresh = async () => {
+    if (isPullRefreshing) {
+      return;
+    }
+
+    setIsPullRefreshing(true);
+    try {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      ]);
+    } finally {
+      setIsPullRefreshing(false);
+    }
   };
 
   const titleHeight = scrollY.interpolate({
@@ -343,7 +354,7 @@ export default function ChatTab() {
           <RefreshControl
             colors={['#f8fafc']}
             onRefresh={handleRefresh}
-            refreshing={isRefreshing}
+            refreshing={isPullRefreshing}
             tintColor="#f8fafc"
           />
         }
