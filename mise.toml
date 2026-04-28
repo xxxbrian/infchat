@@ -4,6 +4,12 @@ go = "1.26"
 node = "24"
 pnpm = "10"
 prek = "latest"
+ruby = "3"
+"gem:cocoapods" = "latest"
+
+[tools."github:rudrankriyam/App-Store-Connect-CLI"]
+version = "1"
+bin = "asc"
 
 [tasks.setup]
 description = "Install dependencies and git hooks"
