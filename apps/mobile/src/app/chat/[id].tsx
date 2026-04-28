@@ -48,12 +48,14 @@ export default function ChatDetailScreen() {
   const lastScrollY = useRef(0);
   const composerProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeight = useRef(new Animated.Value(0)).current;
+  const composerAttachmentProgress = useRef(new Animated.Value(1)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeightValue = useRef(0);
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
+  const hasComposerText = composerText.trim().length > 0;
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
   };
@@ -107,6 +109,15 @@ export default function ChatDetailScreen() {
     };
   }, [composerProgress]);
 
+  useEffect(() => {
+    Animated.timing(composerAttachmentProgress, {
+      toValue: hasComposerText ? 0 : 1,
+      duration: hasComposerText ? 140 : 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false,
+    }).start();
+  }, [composerAttachmentProgress, hasComposerText]);
+
   const composerBaseHeight = composerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [COMPOSER_HEIGHT, COMPOSER_EXPANDED_HEIGHT],
@@ -121,6 +132,15 @@ export default function ChatDetailScreen() {
     inputRange: [0.45, 1],
     outputRange: [0, 1],
     extrapolate: 'clamp',
+  });
+  const composerToolOpacity = Animated.multiply(lowerActionsOpacity, composerAttachmentProgress);
+  const composerToolTranslateY = composerToolOpacity.interpolate({
+    inputRange: [0, 1],
+    outputRange: [6, 0],
+  });
+  const composerToolScale = composerAttachmentProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.92, 1],
   });
   const addButtonWidth = composerProgress.interpolate({
     inputRange: [0, 1],
@@ -351,7 +371,11 @@ export default function ChatDetailScreen() {
               />
               <Animated.View
                 className="absolute bottom-2 left-3 flex-row items-center gap-2"
-                style={{ opacity: lowerActionsOpacity }}
+                pointerEvents={hasComposerText ? 'none' : 'auto'}
+                style={{
+                  opacity: composerToolOpacity,
+                  transform: [{ translateY: composerToolTranslateY }, { scale: composerToolScale }],
+                }}
               >
                 <ComposerTool name="image" />
                 <ComposerTool name="document-text" />
