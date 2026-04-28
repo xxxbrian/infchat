@@ -4,12 +4,13 @@ import {
   acceptFriendRequest,
   cancelFriendRequest,
   declineFriendRequest,
+  getProfileAvatarUrl,
   sendFriendRequest,
   startPrivateConversation,
   type FriendshipRecord,
   type ProfileRecord,
 } from '@infchat/pocketbase';
-import { getAvatarColor, getAvatarInitial, normalizeUsername } from '@infchat/shared';
+import { normalizeUsername } from '@infchat/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -28,6 +29,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import {
   listCachedFriendships,
@@ -45,7 +47,7 @@ type Person = {
   friendshipId?: string;
   name: string;
   username: string;
-  accent: string;
+  avatarUrl?: string | null;
   status: FriendStatus;
   note: string;
 };
@@ -87,6 +89,11 @@ export default function FriendsTab() {
   const friendshipsQuery = useQuery({
     queryKey: ['friendships', currentUserId],
     queryFn: () => listCachedFriendships(pb),
+  });
+  const fileTokenQuery = useQuery({
+    queryKey: ['file-token', currentUserId],
+    queryFn: () => pb.files.getToken(),
+    staleTime: 1000 * 60 * 5,
   });
   const friendships = friendshipsQuery.data ?? [];
 
@@ -140,12 +147,17 @@ export default function FriendsTab() {
     for (const profile of relatedProfilesQuery.data ?? []) {
       people.set(
         profile.user,
-        toPerson(profile, activeFriendshipByUserId.get(profile.user), currentUserId),
+        toPerson(
+          profile,
+          activeFriendshipByUserId.get(profile.user),
+          currentUserId,
+          fileTokenQuery.data,
+        ),
       );
     }
 
     return people;
-  }, [activeFriendshipByUserId, currentUserId, relatedProfilesQuery.data]);
+  }, [activeFriendshipByUserId, currentUserId, fileTokenQuery.data, relatedProfilesQuery.data]);
 
   const friends = useMemo(
     () => [...peopleByUserId.values()].filter((person) => person.status === 'friend'),
@@ -162,10 +174,21 @@ export default function FriendsTab() {
 
     return (searchProfilesQuery.data ?? [])
       .map((profile) =>
-        toPerson(profile, activeFriendshipByUserId.get(profile.user), currentUserId),
+        toPerson(
+          profile,
+          activeFriendshipByUserId.get(profile.user),
+          currentUserId,
+          fileTokenQuery.data,
+        ),
       )
       .filter((person) => person.status !== 'friend');
-  }, [activeFriendshipByUserId, currentUserId, searchProfilesQuery.data, shouldSearchProfiles]);
+  }, [
+    activeFriendshipByUserId,
+    currentUserId,
+    fileTokenQuery.data,
+    searchProfilesQuery.data,
+    shouldSearchProfiles,
+  ]);
 
   const searchablePeople = useMemo(() => {
     if (activeFilter === 'Find') {
@@ -605,6 +628,7 @@ function toPerson(
   profile: ProfileRecord,
   friendship: FriendshipRecord | undefined,
   currentUserId: string,
+  fileToken?: string,
 ): Person {
   const name = profile.display_name || profile.username;
   const status = getFriendStatus(friendship, currentUserId);
@@ -615,7 +639,7 @@ function toPerson(
     friendshipId: friendship?.id,
     name,
     username: profile.username,
-    accent: getAvatarColor(profile.user),
+    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
     status,
     note: getFriendNote(status),
   };
@@ -787,14 +811,13 @@ function PersonRow({
 
 function Avatar({ person }: { person: Person }) {
   return (
-    <View
-      className="h-11 w-11 items-center justify-center rounded-full"
-      style={{ backgroundColor: person.accent }}
-    >
-      <Text className="text-base font-bold text-background">
-        {getAvatarInitial(person.name, person.username)}
-      </Text>
-    </View>
+    <ProfileAvatar
+      avatarUrl={person.avatarUrl}
+      name={person.name}
+      size={44}
+      userId={person.userId}
+      username={person.username}
+    />
   );
 }
 

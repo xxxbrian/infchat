@@ -1,7 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
-import { type ConversationRecord, type ProfileRecord } from '@infchat/pocketbase';
-import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
+import {
+  getProfileAvatarUrl,
+  type ConversationRecord,
+  type ProfileRecord,
+} from '@infchat/pocketbase';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -18,6 +21,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { listCachedConversations, listCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
@@ -29,8 +33,10 @@ type ConversationView = {
   message: string;
   time: string;
   unread: number;
-  accent: string;
   subtitle: string;
+  avatarUrl?: string | null;
+  avatarUserId: string;
+  avatarUsername: string;
   members?: string[];
 };
 
@@ -64,6 +70,11 @@ export default function ChatTab() {
     queryKey: ['conversations', authRecord.id],
     queryFn: () => listCachedConversations(pb),
   });
+  const fileTokenQuery = useQuery({
+    queryKey: ['file-token', authRecord.id],
+    queryFn: () => pb.files.getToken(),
+    staleTime: 1000 * 60 * 5,
+  });
   const conversations = conversationsQuery.data ?? [];
   const relatedUserIds = useMemo(() => {
     const ids = new Set<string>();
@@ -95,9 +106,9 @@ export default function ChatTab() {
   const conversationViews = useMemo(
     () =>
       conversations.map((conversation) =>
-        toConversationView(conversation, profilesByUserId, authRecord.id),
+        toConversationView(conversation, profilesByUserId, authRecord.id, fileTokenQuery.data),
       ),
-    [authRecord.id, conversations, profilesByUserId],
+    [authRecord.id, conversations, fileTokenQuery.data, profilesByUserId],
   );
   const visibleConversations = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -360,6 +371,7 @@ function toConversationView(
   conversation: ConversationRecord,
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
+  fileToken?: string,
 ): ConversationView {
   const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
   const otherProfiles = otherMemberIds
@@ -382,8 +394,10 @@ function toConversationView(
     message: conversation.last_message_text || 'No messages yet',
     time: formatConversationTime(conversation.last_message_at || conversation.updated),
     unread: 0,
-    accent: getAvatarColor(firstProfile?.user || conversation.id),
     subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
+    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
+    avatarUserId: firstProfile?.user || conversation.id,
+    avatarUsername: firstProfile?.username || name,
     members: otherProfiles.map((profile) => profile.display_name || profile.username),
   };
 }
@@ -468,14 +482,13 @@ function ConversationRow({
       onPress={() => router.push({ pathname: '/chat/[id]', params: { id: conversation.id } })}
       style={{ opacity, transform: [{ translateY }] }}
     >
-      <View
-        className="h-14 w-14 items-center justify-center rounded-full"
-        style={{ backgroundColor: conversation.accent }}
-      >
-        <Text className="text-xl font-bold text-background">
-          {getAvatarInitial(conversation.name, conversation.name)}
-        </Text>
-      </View>
+      <ProfileAvatar
+        avatarUrl={conversation.avatarUrl}
+        name={conversation.name}
+        size={56}
+        userId={conversation.avatarUserId}
+        username={conversation.avatarUsername}
+      />
 
       <View className="min-w-0 flex-1 border-b border-border/60 pb-3">
         <View className="flex-row items-center justify-between gap-3">

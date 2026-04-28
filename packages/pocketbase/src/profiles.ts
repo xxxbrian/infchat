@@ -1,4 +1,4 @@
-import { friendSearchSchema } from '@infchat/shared';
+import { displayNameSchema, friendSearchSchema } from '@infchat/shared';
 import type PocketBase from 'pocketbase';
 
 export type ProfileRecord = {
@@ -9,6 +9,17 @@ export type ProfileRecord = {
   avatar?: string;
   collectionId: string;
   collectionName: string;
+};
+
+export type ProfileUploadFile = {
+  uri: string;
+  name: string;
+  type: string;
+};
+
+export type UpdateProfileInput = {
+  displayName: string;
+  avatar?: ProfileUploadFile;
 };
 
 export async function getCurrentProfile(pb: PocketBase): Promise<ProfileRecord> {
@@ -51,10 +62,38 @@ export async function searchProfilesByUsername(
   });
 }
 
-export function getProfileAvatarUrl(pb: PocketBase, profile: ProfileRecord): string | null {
+export async function updateProfile(
+  pb: PocketBase,
+  profileId: string,
+  input: UpdateProfileInput,
+): Promise<ProfileRecord> {
+  const displayName = displayNameSchema.parse(input.displayName);
+
+  if (!input.avatar) {
+    return pb.collection('profiles').update<ProfileRecord>(profileId, {
+      display_name: displayName,
+    });
+  }
+
+  const formData = new FormData();
+  formData.append('display_name', displayName);
+  formData.append('avatar', input.avatar as unknown as Blob);
+
+  return pb.collection('profiles').update<ProfileRecord>(profileId, formData);
+}
+
+export function getProfileAvatarUrl(
+  pb: PocketBase,
+  profile: ProfileRecord,
+  fileToken?: string,
+): string | null {
   if (!profile.avatar) {
     return null;
   }
 
-  return pb.files.getURL(profile, profile.avatar, { thumb: '160x160' });
+  return pb.files.getURL(
+    profile,
+    profile.avatar,
+    fileToken ? { thumb: '160x160', token: fileToken } : { thumb: '160x160' },
+  );
 }

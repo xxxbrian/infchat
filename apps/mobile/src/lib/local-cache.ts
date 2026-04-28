@@ -1,4 +1,5 @@
 import {
+  getCurrentProfile,
   getConversation,
   listConversations,
   listFriendships,
@@ -77,6 +78,10 @@ function getAuthCachePrefix(pb: PocketBase): string {
 
 export function listCachedFriendships(pb: PocketBase): Promise<FriendshipRecord[]> {
   return readThroughCache(`${getAuthCachePrefix(pb)}:friendships`, () => listFriendships(pb));
+}
+
+export function getCachedCurrentProfile(pb: PocketBase): Promise<ProfileRecord> {
+  return readThroughCache(`${getAuthCachePrefix(pb)}:profile:current`, () => getCurrentProfile(pb));
 }
 
 export function listCachedProfilesByUserIds(

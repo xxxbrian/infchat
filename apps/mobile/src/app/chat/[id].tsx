@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
 import {
+  getProfileAvatarUrl,
   sendTextMessage,
   type ConversationRecord,
   type MessageRecord,
@@ -30,6 +31,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import {
   getCachedConversation,
@@ -44,6 +46,9 @@ type ConversationView = {
   name: string;
   subtitle: string;
   accent: string;
+  avatarUrl?: string | null;
+  avatarUserId: string;
+  avatarUsername: string;
   members: string[];
 };
 
@@ -93,6 +98,11 @@ export default function ChatDetailScreen() {
     queryFn: () => getCachedConversation(pb, conversationId),
     enabled: Boolean(conversationId),
   });
+  const fileTokenQuery = useQuery({
+    queryKey: ['file-token', authRecord.id],
+    queryFn: () => pb.files.getToken(),
+    staleTime: 1000 * 60 * 5,
+  });
   const messagesQuery = useQuery({
     queryKey: ['messages', conversationId],
     queryFn: () => listCachedMessages(pb, conversationId),
@@ -120,8 +130,14 @@ export default function ChatDetailScreen() {
     return profiles;
   }, [profilesQuery.data]);
   const conversation = useMemo(
-    () => toConversationView(conversationQuery.data, profilesByUserId, authRecord.id),
-    [authRecord.id, conversationQuery.data, profilesByUserId],
+    () =>
+      toConversationView(
+        conversationQuery.data,
+        profilesByUserId,
+        authRecord.id,
+        fileTokenQuery.data,
+      ),
+    [authRecord.id, conversationQuery.data, fileTokenQuery.data, profilesByUserId],
   );
   const messages = useMemo(
     () =>
@@ -588,6 +604,7 @@ function toConversationView(
   conversation: ConversationRecord | undefined,
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
+  fileToken?: string,
 ): ConversationView {
   if (!conversation) {
     return {
@@ -596,6 +613,9 @@ function toConversationView(
       name: 'Chat',
       subtitle: '',
       accent: '#64748b',
+      avatarUrl: null,
+      avatarUserId: '',
+      avatarUsername: 'Chat',
       members: [],
     };
   }
@@ -618,6 +638,9 @@ function toConversationView(
     name,
     subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
     accent: getAvatarColor(firstProfile?.user || conversation.id),
+    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
+    avatarUserId: firstProfile?.user || conversation.id,
+    avatarUsername: firstProfile?.username || name,
     members: otherProfiles.map((profile) => profile.display_name || profile.username),
   };
 }
@@ -737,18 +760,13 @@ function AvatarStack({
 
   if (conversation.kind === 'private') {
     return (
-      <View
-        className="items-center justify-center rounded-full"
-        style={{
-          backgroundColor: conversation.accent,
-          height: avatarSize,
-          width: avatarSize,
-        }}
-      >
-        <Text className={`${isLarge ? 'text-3xl' : 'text-base'} font-bold text-background`}>
-          {getAvatarInitial(conversation.name, conversation.name)}
-        </Text>
-      </View>
+      <ProfileAvatar
+        avatarUrl={conversation.avatarUrl}
+        name={conversation.name}
+        size={avatarSize}
+        userId={conversation.avatarUserId}
+        username={conversation.avatarUsername}
+      />
     );
   }
 
