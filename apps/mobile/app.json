@@ -10,7 +10,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#000000"
     },
     "ios": {
       "bundleIdentifier": "com.infchat.app",
@@ -19,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#000000"
       },
       "package": "com.infchat.app",
       "predictiveBackGestureEnabled": false
@@ -32,7 +32,23 @@
       "pocketbaseUrl": "http://127.0.0.1:8090",
       "livekitUrl": "ws://127.0.0.1:7880"
     },
-    "plugins": ["expo-router", "expo-sqlite"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#000000",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 260,
+          "resizeMode": "contain",
+          "dark": {
+            "backgroundColor": "#000000",
+            "image": "./assets/splash-icon.png"
+          }
+        }
+      ],
+      "expo-sqlite"
+    ],
     "experiments": {
       "typedRoutes": true
     }
