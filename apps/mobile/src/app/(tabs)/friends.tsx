@@ -7,11 +7,13 @@ import {
   listProfilesByUserIds,
   searchProfilesByUsername,
   sendFriendRequest,
+  startPrivateConversation,
   type FriendshipRecord,
   type ProfileRecord,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial, normalizeUsername } from '@infchat/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
@@ -197,11 +199,19 @@ export default function FriendsTab() {
     mutationFn: (friendshipId: string) => cancelFriendRequest(pb, friendshipId),
     onSuccess: refreshFriendships,
   });
+  const startPrivateChatMutation = useMutation({
+    mutationFn: (recipientUserId: string) => startPrivateConversation(pb, recipientUserId),
+    onSuccess: (conversation) => {
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
+    },
+  });
   const isMutatingFriendship =
     sendRequestMutation.isPending ||
     acceptRequestMutation.isPending ||
     declineRequestMutation.isPending ||
-    cancelRequestMutation.isPending;
+    cancelRequestMutation.isPending ||
+    startPrivateChatMutation.isPending;
 
   const titleHeight = scrollY.interpolate({
     inputRange: [0, 84],
@@ -469,6 +479,7 @@ export default function FriendsTab() {
                   declineRequestMutation.mutate(person.friendshipId);
                 }
               }}
+              onChat={() => startPrivateChatMutation.mutate(person.userId)}
               onDismissKeyboard={Keyboard.dismiss}
               person={person}
             />
@@ -600,6 +611,7 @@ function PersonRow({
   onAccept,
   onAdd,
   onCancel,
+  onChat,
   onDecline,
   onDismissKeyboard,
   person,
@@ -609,6 +621,7 @@ function PersonRow({
   onAccept: () => void;
   onAdd: () => void;
   onCancel: () => void;
+  onChat: () => void;
   onDecline: () => void;
   onDismissKeyboard: () => void;
   person: Person;
@@ -653,6 +666,7 @@ function PersonRow({
             onAccept={onAccept}
             onAdd={onAdd}
             onCancel={onCancel}
+            onChat={onChat}
             onDecline={onDecline}
             status={person.status}
           />
@@ -683,6 +697,7 @@ function FriendAction({
   onAccept,
   onAdd,
   onCancel,
+  onChat,
   onDecline,
   status,
 }: {
@@ -690,14 +705,19 @@ function FriendAction({
   onAccept: () => void;
   onAdd: () => void;
   onCancel: () => void;
+  onChat: () => void;
   onDecline: () => void;
   status: FriendStatus;
 }) {
   if (status === 'friend') {
     return (
-      <View className="h-8 w-8 items-center justify-center rounded-full bg-muted">
+      <Pressable
+        className="h-8 w-8 items-center justify-center rounded-full bg-muted"
+        disabled={isBusy}
+        onPress={onChat}
+      >
         <Ionicons color="#f8fafc" name="chatbubble" size={15} />
-      </View>
+      </Pressable>
     );
   }
 

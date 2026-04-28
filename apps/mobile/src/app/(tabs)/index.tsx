@@ -1,6 +1,14 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import {
+  listConversations,
+  listProfilesByUserIds,
+  type ConversationRecord,
+  type ProfileRecord,
+} from '@infchat/pocketbase';
+import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
+import { useQuery } from '@tanstack/react-query';
 import { router } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Pressable,
@@ -13,7 +21,20 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { conversations, type Conversation } from '../../lib/mock-chats';
+import { useAuth } from '../../lib/auth-context';
+import { pb } from '../../lib/pocketbase';
+
+type ConversationView = {
+  id: string;
+  kind: ConversationRecord['kind'];
+  name: string;
+  message: string;
+  time: string;
+  unread: number;
+  accent: string;
+  subtitle: string;
+  members?: string[];
+};
 
 const SEARCH_HEIGHT = 40;
 const SEARCH_MARGIN_MAX = 18;
@@ -28,12 +49,75 @@ const filters = ['All', 'Unread', 'Groups'];
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function ChatTab() {
+  const { authRecord } = useAuth();
   const insets = useSafeAreaInsets();
   const searchRef = useRef<TextInput>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const scrollYValue = useRef(0);
   const [headerHeight, setHeaderHeight] = useState(0);
+  const [query, setQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState('All');
+
+  const conversationsQuery = useQuery({
+    queryKey: ['conversations', authRecord.id],
+    queryFn: () => listConversations(pb),
+  });
+  const conversations = conversationsQuery.data ?? [];
+  const relatedUserIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    for (const conversation of conversations) {
+      for (const memberId of conversation.members) {
+        if (memberId !== authRecord.id) {
+          ids.add(memberId);
+        }
+      }
+    }
+
+    return [...ids].sort();
+  }, [authRecord.id, conversations]);
+  const profilesQuery = useQuery({
+    queryKey: ['profiles', 'chat-members', relatedUserIds],
+    queryFn: () => listProfilesByUserIds(pb, relatedUserIds),
+    enabled: relatedUserIds.length > 0,
+  });
+  const profilesByUserId = useMemo(() => {
+    const profiles = new Map<string, ProfileRecord>();
+
+    for (const profile of profilesQuery.data ?? []) {
+      profiles.set(profile.user, profile);
+    }
+
+    return profiles;
+  }, [profilesQuery.data]);
+  const conversationViews = useMemo(
+    () =>
+      conversations.map((conversation) =>
+        toConversationView(conversation, profilesByUserId, authRecord.id),
+      ),
+    [authRecord.id, conversations, profilesByUserId],
+  );
+  const visibleConversations = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+
+    return conversationViews.filter((conversation) => {
+      if (activeFilter === 'Unread' && conversation.unread === 0) {
+        return false;
+      }
+      if (activeFilter === 'Groups' && conversation.kind !== 'group') {
+        return false;
+      }
+      if (!normalizedQuery) {
+        return true;
+      }
+
+      return conversation.name.toLowerCase().includes(normalizedQuery);
+    });
+  }, [activeFilter, conversationViews, query]);
+  const isLoading =
+    conversationsQuery.isLoading || (relatedUserIds.length > 0 && profilesQuery.isLoading);
+  const hasError = conversationsQuery.isError || profilesQuery.isError;
 
   const titleHeight = scrollY.interpolate({
     inputRange: [0, 84],
@@ -109,15 +193,10 @@ export default function ChatTab() {
     <View className="flex-1 bg-background">
       <Animated.View
         className="absolute left-0 right-0 z-10 border-border/60 bg-background/95"
-        style={[
-          styles.header,
-          {
-            paddingTop: insets.top,
-          },
-        ]}
         onLayout={({ nativeEvent }) =>
           setHeaderHeight((currentHeight) => Math.max(currentHeight, nativeEvent.layout.height))
         }
+        style={[styles.header, { paddingTop: insets.top }]}
       >
         <View className="flex-row items-center justify-between" style={{ height: TOP_BAR_HEIGHT }}>
           <Animated.Text
@@ -136,7 +215,7 @@ export default function ChatTab() {
               name="search"
               onPress={revealSearch}
             />
-            <RoundIcon isPrimary name="add" />
+            <RoundIcon isPrimary name="add" onPress={() => router.push('/friends')} />
           </View>
         </View>
 
@@ -164,29 +243,36 @@ export default function ChatTab() {
             <Ionicons color="#64748b" name="search" size={18} style={styles.searchIcon} />
             <TextInput
               className="h-full px-11 text-[17px] text-foreground"
+              onChangeText={setQuery}
               placeholder="Search"
               placeholderTextColor="#64748b"
               ref={searchRef}
               selectionColor="#f8fafc"
+              value={query}
             />
           </Animated.View>
         </Animated.View>
 
         <View className="flex-row items-center gap-2">
-          {filters.map((filter, index) => (
-            <Pressable
-              className={`h-9 items-center justify-center rounded-full px-4 ${
-                index === 0 ? 'bg-foreground' : 'bg-muted'
-              }`}
-              key={filter}
-            >
-              <Text
-                className={`text-sm font-semibold ${index === 0 ? 'text-background' : 'text-muted-foreground'}`}
+          {filters.map((filter) => {
+            const isActive = activeFilter === filter;
+
+            return (
+              <Pressable
+                className={`h-9 items-center justify-center rounded-full px-4 ${
+                  isActive ? 'bg-foreground' : 'bg-muted'
+                }`}
+                key={filter}
+                onPress={() => setActiveFilter(filter)}
               >
-                {filter}
-              </Text>
-            </Pressable>
-          ))}
+                <Text
+                  className={`text-sm font-semibold ${isActive ? 'text-background' : 'text-muted-foreground'}`}
+                >
+                  {filter}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
       </Animated.View>
 
@@ -202,12 +288,77 @@ export default function ChatTab() {
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
       >
-        {conversations.map((conversation, index) => (
-          <ConversationRow conversation={conversation} index={index} key={conversation.id} />
-        ))}
+        {hasError ? (
+          <EmptyState icon="cloud-offline" title="Could not load chats" />
+        ) : isLoading ? (
+          <EmptyState icon="chatbubbles" title="Loading chats" />
+        ) : visibleConversations.length ? (
+          visibleConversations.map((conversation, index) => (
+            <ConversationRow conversation={conversation} index={index} key={conversation.id} />
+          ))
+        ) : (
+          <EmptyState icon="chatbubble-ellipses" title="No chats yet" />
+        )}
       </Animated.ScrollView>
     </View>
   );
+}
+
+function toConversationView(
+  conversation: ConversationRecord,
+  profilesByUserId: Map<string, ProfileRecord>,
+  currentUserId: string,
+): ConversationView {
+  const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
+  const otherProfiles = otherMemberIds
+    .map((memberId) => profilesByUserId.get(memberId))
+    .filter((profile): profile is ProfileRecord => Boolean(profile));
+  const firstProfile = otherProfiles[0];
+  const fallbackName =
+    conversation.kind === 'group' ? conversation.title || 'Group chat' : 'Private chat';
+  const name =
+    conversation.kind === 'group'
+      ? conversation.title ||
+        otherProfiles.map((profile) => profile.display_name).join(', ') ||
+        fallbackName
+      : firstProfile?.display_name || firstProfile?.username || fallbackName;
+
+  return {
+    id: conversation.id,
+    kind: conversation.kind,
+    name,
+    message: conversation.last_message_text || 'No messages yet',
+    time: formatConversationTime(conversation.last_message_at || conversation.updated),
+    unread: 0,
+    accent: getAvatarColor(firstProfile?.user || conversation.id),
+    subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
+    members: otherProfiles.map((profile) => profile.display_name || profile.username),
+  };
+}
+
+function formatConversationTime(value?: string): string {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const now = new Date();
+  const isToday = date.toDateString() === now.toDateString();
+  if (isToday) {
+    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday';
+  }
+
+  return date.toLocaleDateString([], { weekday: 'short' });
 }
 
 function RoundIcon({
@@ -232,7 +383,13 @@ function RoundIcon({
   );
 }
 
-function ConversationRow({ conversation, index }: { conversation: Conversation; index: number }) {
+function ConversationRow({
+  conversation,
+  index,
+}: {
+  conversation: ConversationView;
+  index: number;
+}) {
   const opacity = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(14)).current;
 
@@ -263,7 +420,9 @@ function ConversationRow({ conversation, index }: { conversation: Conversation; 
         className="h-14 w-14 items-center justify-center rounded-full"
         style={{ backgroundColor: conversation.accent }}
       >
-        <Text className="text-xl font-bold text-background">{conversation.name.slice(0, 1)}</Text>
+        <Text className="text-xl font-bold text-background">
+          {getAvatarInitial(conversation.name, conversation.name)}
+        </Text>
       </View>
 
       <View className="min-w-0 flex-1 border-b border-border/60 pb-3">
@@ -287,6 +446,17 @@ function ConversationRow({ conversation, index }: { conversation: Conversation; 
         </View>
       </View>
     </AnimatedPressable>
+  );
+}
+
+function EmptyState({ icon, title }: { icon: keyof typeof Ionicons.glyphMap; title: string }) {
+  return (
+    <View className="mt-16 items-center">
+      <View className="h-16 w-16 items-center justify-center rounded-full bg-muted">
+        <Ionicons color="#64748b" name={icon} size={28} />
+      </View>
+      <Text className="mt-4 text-lg font-bold text-foreground">{title}</Text>
+    </View>
   );
 }
 

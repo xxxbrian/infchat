@@ -22,9 +22,119 @@ func main() {
 	bindAuthHooks(app)
 	bindProfileHooks(app)
 	bindFriendshipHooks(app)
+	bindConversationHooks(app)
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func bindConversationHooks(app *pocketbase.PocketBase) {
+	app.OnRecordCreateRequest("conversations").BindFunc(func(e *core.RecordRequestEvent) error {
+		if e.HasSuperuserAuth() {
+			prepareConversationRecord(e.Record)
+			return e.Next()
+		}
+
+		if e.Auth == nil {
+			return router.NewForbiddenError("Sign in to start a chat.", nil)
+		}
+
+		members := uniqueStrings(e.Record.GetStringSlice("members"))
+		if !containsString(members, e.Auth.Id) {
+			members = append(members, e.Auth.Id)
+		}
+
+		if len(members) != 2 {
+			return router.NewBadRequestError("Private chats require exactly two members.", nil)
+		}
+
+		otherUserId := members[0]
+		if otherUserId == e.Auth.Id {
+			otherUserId = members[1]
+		}
+
+		if err := ensureAcceptedFriendship(e.App, e.Auth.Id, otherUserId); err != nil {
+			return err
+		}
+
+		pairKey := friendshipPairKey(e.Auth.Id, otherUserId)
+		_, err := e.App.FindFirstRecordByFilter(
+			"conversations",
+			"kind='private' && pair_key={:pairKey}",
+			dbx.Params{"pairKey": pairKey},
+		)
+		if err == nil {
+			return router.NewBadRequestError("A private chat already exists for these users.", nil)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		e.Record.Set("kind", "private")
+		e.Record.Set("members", sortedStrings(members))
+		e.Record.Set("created_by", e.Auth.Id)
+		e.Record.Set("pair_key", pairKey)
+		e.Record.Set("title", "")
+
+		return e.Next()
+	})
+
+	app.OnRecordCreateRequest("messages").BindFunc(func(e *core.RecordRequestEvent) error {
+		if e.Auth == nil {
+			return router.NewForbiddenError("Sign in to send messages.", nil)
+		}
+
+		conversation, err := e.App.FindRecordById("conversations", e.Record.GetString("conversation"))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return router.NewBadRequestError("Conversation was not found.", nil)
+			}
+
+			return err
+		}
+
+		if !e.HasSuperuserAuth() && !containsString(conversation.GetStringSlice("members"), e.Auth.Id) {
+			return router.NewForbiddenError("You are not a member of this conversation.", nil)
+		}
+
+		if !e.HasSuperuserAuth() {
+			e.Record.Set("sender", e.Auth.Id)
+		}
+		if e.Record.GetString("kind") == "" {
+			e.Record.Set("kind", "text")
+		}
+
+		return e.Next()
+	})
+
+	app.OnRecordAfterCreateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
+		conversation, err := e.App.FindRecordById("conversations", e.Record.GetString("conversation"))
+		if err != nil {
+			return err
+		}
+
+		conversation.Set("last_message_text", e.Record.GetString("body"))
+		conversation.Set("last_message_at", e.Record.GetString("created"))
+
+		if err := e.App.Save(conversation); err != nil {
+			return err
+		}
+
+		return e.Next()
+	})
+}
+
+func prepareConversationRecord(record *core.Record) {
+	if record.GetString("kind") == "" {
+		record.Set("kind", "private")
+	}
+
+	members := uniqueStrings(record.GetStringSlice("members"))
+	record.Set("members", sortedStrings(members))
+
+	if record.GetString("kind") == "private" && len(members) == 2 {
+		record.Set("pair_key", friendshipPairKey(members[0], members[1]))
 	}
 }
 
@@ -231,6 +341,23 @@ func normalizeUsernameValue(username string) string {
 	return strings.ToLower(strings.TrimSpace(username))
 }
 
+func ensureAcceptedFriendship(app core.App, firstUserId string, secondUserId string) error {
+	_, err := app.FindFirstRecordByFilter(
+		"friendships",
+		"pair_key={:pairKey} && status='accepted'",
+		dbx.Params{"pairKey": friendshipPairKey(firstUserId, secondUserId)},
+	)
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return router.NewForbiddenError("You can only chat with accepted friends.", nil)
+	}
+
+	return err
+}
+
 func ensureProfile(app core.App, user *core.Record) error {
 	profiles, err := app.FindCollectionByNameOrId("profiles")
 	if err != nil {
@@ -264,4 +391,39 @@ func friendshipPairKey(firstUserId string, secondUserId string) string {
 	ids := []string{firstUserId, secondUserId}
 	sort.Strings(ids)
 	return strings.Join(ids, ":")
+}
+
+func containsString(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+
+	return false
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	unique := make([]string, 0, len(values))
+
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+
+		seen[value] = struct{}{}
+		unique = append(unique, value)
+	}
+
+	return unique
+}
+
+func sortedStrings(values []string) []string {
+	clone := append([]string(nil), values...)
+	sort.Strings(clone)
+	return clone
 }

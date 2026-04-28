@@ -1,6 +1,17 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import {
+  getConversation,
+  listMessages,
+  listProfilesByUserIds,
+  sendTextMessage,
+  type ConversationRecord,
+  type MessageRecord,
+  type ProfileRecord,
+} from '@infchat/pocketbase';
+import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -20,12 +31,25 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import {
-  findConversation,
-  getConversationMessages,
-  type ChatMessage,
-  type Conversation,
-} from '../../lib/mock-chats';
+import { useAuth } from '../../lib/auth-context';
+import { pb } from '../../lib/pocketbase';
+
+type ConversationView = {
+  id: string;
+  kind: ConversationRecord['kind'];
+  name: string;
+  subtitle: string;
+  accent: string;
+  members: string[];
+};
+
+type ChatMessage = {
+  id: string;
+  author: 'me' | 'them';
+  sender?: string;
+  text: string;
+  time: string;
+};
 
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
@@ -39,9 +63,10 @@ const SCROLL_DIRECTION_THRESHOLD = 6;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const conversationId = id ?? '';
+  const { authRecord } = useAuth();
+  const queryClient = useQueryClient();
   const insets = useSafeAreaInsets();
-  const conversation = findConversation(id);
-  const messages = getConversationMessages(conversation);
   const scrollViewRef = useRef<ScrollView>(null);
   const didScrollToEnd = useRef(false);
   const isJumpButtonVisible = useRef(false);
@@ -56,6 +81,62 @@ export default function ChatDetailScreen() {
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const hasComposerText = composerText.trim().length > 0;
+
+  const conversationQuery = useQuery({
+    queryKey: ['conversation', conversationId],
+    queryFn: () => getConversation(pb, conversationId),
+    enabled: Boolean(conversationId),
+  });
+  const messagesQuery = useQuery({
+    queryKey: ['messages', conversationId],
+    queryFn: () => listMessages(pb, conversationId),
+    enabled: Boolean(conversationId),
+  });
+  const memberIds = useMemo(
+    () =>
+      (conversationQuery.data?.members ?? [])
+        .filter((memberId) => memberId !== authRecord.id)
+        .sort(),
+    [authRecord.id, conversationQuery.data?.members],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ['profiles', 'conversation-members', conversationId, memberIds],
+    queryFn: () => listProfilesByUserIds(pb, memberIds),
+    enabled: memberIds.length > 0,
+  });
+  const profilesByUserId = useMemo(() => {
+    const profiles = new Map<string, ProfileRecord>();
+
+    for (const profile of profilesQuery.data ?? []) {
+      profiles.set(profile.user, profile);
+    }
+
+    return profiles;
+  }, [profilesQuery.data]);
+  const conversation = useMemo(
+    () => toConversationView(conversationQuery.data, profilesByUserId, authRecord.id),
+    [authRecord.id, conversationQuery.data, profilesByUserId],
+  );
+  const messages = useMemo(
+    () =>
+      (messagesQuery.data ?? []).map((message) =>
+        toChatMessage(message, profilesByUserId, authRecord.id),
+      ),
+    [authRecord.id, messagesQuery.data, profilesByUserId],
+  );
+  const sendMessageMutation = useMutation({
+    mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
+    onSuccess: () => {
+      setComposerText('');
+      didScrollToEnd.current = false;
+      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({
+        queryKey: ['conversation', conversationId],
+      });
+    },
+  });
+
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
   };
@@ -250,6 +331,15 @@ export default function ChatDetailScreen() {
     }).start(() => syncMessagesToBottom());
   };
 
+  const handleSendMessage = () => {
+    const body = composerText.trim();
+    if (!body || sendMessageMutation.isPending) {
+      return;
+    }
+
+    sendMessageMutation.mutate(body);
+  };
+
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -294,15 +384,23 @@ export default function ChatDetailScreen() {
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
         >
-          {messages.map((message, index) => (
-            <MessageBubble
-              conversation={conversation}
-              index={index}
-              key={message.id}
-              message={message}
-              totalMessages={messages.length}
-            />
-          ))}
+          {conversationQuery.isLoading || messagesQuery.isLoading ? (
+            <EmptyConversation label="Loading messages" />
+          ) : conversationQuery.isError || messagesQuery.isError ? (
+            <EmptyConversation label="Could not load messages" />
+          ) : messages.length ? (
+            messages.map((message, index) => (
+              <MessageBubble
+                conversation={conversation}
+                index={index}
+                key={message.id}
+                message={message}
+                totalMessages={messages.length}
+              />
+            ))
+          ) : (
+            <EmptyConversation label="No messages yet" />
+          )}
         </ScrollView>
 
         <Animated.View
@@ -348,12 +446,12 @@ export default function ChatDetailScreen() {
               <TextInput
                 className="px-4 pt-[13px] text-[17px] text-foreground"
                 multiline
-                onChangeText={setComposerText}
-                onContentSizeChange={handleComposerContentSizeChange}
                 onBlur={() => {
                   setIsComposerExpanded(false);
                   animateComposer(0, 180);
                 }}
+                onChangeText={setComposerText}
+                onContentSizeChange={handleComposerContentSizeChange}
                 onFocus={() => {
                   setIsComposerExpanded(true);
                   syncMessagesToBottom();
@@ -388,10 +486,13 @@ export default function ChatDetailScreen() {
                 className="absolute right-2 h-9 w-9 overflow-hidden rounded-full"
                 style={{ bottom: composerPrimaryActionBottom }}
               >
-                <Pressable className="h-full w-full items-center justify-center bg-foreground">
+                <Pressable
+                  className="h-full w-full items-center justify-center bg-foreground"
+                  onPress={hasComposerText ? handleSendMessage : undefined}
+                >
                   <Ionicons
                     color="#080b12"
-                    name={isComposerExpanded ? 'arrow-up' : 'mic'}
+                    name={hasComposerText || isComposerExpanded ? 'arrow-up' : 'mic'}
                     size={18}
                   />
                 </Pressable>
@@ -404,7 +505,71 @@ export default function ChatDetailScreen() {
   );
 }
 
-function ConversationIdentity({ conversation }: { conversation: Conversation }) {
+function toConversationView(
+  conversation: ConversationRecord | undefined,
+  profilesByUserId: Map<string, ProfileRecord>,
+  currentUserId: string,
+): ConversationView {
+  if (!conversation) {
+    return {
+      id: '',
+      kind: 'private',
+      name: 'Chat',
+      subtitle: '',
+      accent: '#64748b',
+      members: [],
+    };
+  }
+
+  const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
+  const otherProfiles = otherMemberIds
+    .map((memberId) => profilesByUserId.get(memberId))
+    .filter((profile): profile is ProfileRecord => Boolean(profile));
+  const firstProfile = otherProfiles[0];
+  const name =
+    conversation.kind === 'group'
+      ? conversation.title ||
+        otherProfiles.map((profile) => profile.display_name).join(', ') ||
+        'Group chat'
+      : firstProfile?.display_name || firstProfile?.username || 'Private chat';
+
+  return {
+    id: conversation.id,
+    kind: conversation.kind,
+    name,
+    subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
+    accent: getAvatarColor(firstProfile?.user || conversation.id),
+    members: otherProfiles.map((profile) => profile.display_name || profile.username),
+  };
+}
+
+function toChatMessage(
+  message: MessageRecord,
+  profilesByUserId: Map<string, ProfileRecord>,
+  currentUserId: string,
+): ChatMessage {
+  const senderProfile = profilesByUserId.get(message.sender);
+
+  return {
+    id: message.id,
+    author: message.sender === currentUserId ? 'me' : 'them',
+    sender: senderProfile?.display_name || senderProfile?.username,
+    text: message.body,
+    time: formatMessageTime(message.created),
+  };
+}
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function ConversationIdentity({ conversation }: { conversation: ConversationView }) {
   return (
     <Pressable className="min-w-0 flex-1 flex-row items-center gap-3">
       <AvatarStack conversation={conversation} size="small" />
@@ -426,7 +591,7 @@ function MessageBubble({
   message,
   totalMessages,
 }: {
-  conversation: Conversation;
+  conversation: ConversationView;
   index: number;
   message: ChatMessage;
   totalMessages: number;
@@ -484,7 +649,7 @@ function AvatarStack({
   conversation,
   size,
 }: {
-  conversation: Conversation;
+  conversation: ConversationView;
   size: 'small' | 'large';
 }) {
   const isLarge = size === 'large';
@@ -502,7 +667,7 @@ function AvatarStack({
         }}
       >
         <Text className={`${isLarge ? 'text-3xl' : 'text-base'} font-bold text-background`}>
-          {conversation.name.slice(0, 1)}
+          {getAvatarInitial(conversation.name, conversation.name)}
         </Text>
       </View>
     );
@@ -519,7 +684,7 @@ function AvatarStack({
         }}
       >
         <Text className={`${isLarge ? 'text-2xl' : 'text-sm'} font-bold text-background`}>
-          {conversation.name.slice(0, 1)}
+          {getAvatarInitial(conversation.name, conversation.name)}
         </Text>
       </View>
       {(conversation.members ?? []).slice(0, 2).map((member, index) => (
@@ -537,6 +702,17 @@ function AvatarStack({
           <Text className="text-[10px] font-bold text-background">{member.slice(0, 1)}</Text>
         </View>
       ))}
+    </View>
+  );
+}
+
+function EmptyConversation({ label }: { label: string }) {
+  return (
+    <View className="flex-1 items-center justify-center py-20">
+      <View className="h-16 w-16 items-center justify-center rounded-full bg-muted">
+        <Ionicons color="#64748b" name="chatbubble-ellipses" size={28} />
+      </View>
+      <Text className="mt-4 text-lg font-bold text-foreground">{label}</Text>
     </View>
   );
 }
