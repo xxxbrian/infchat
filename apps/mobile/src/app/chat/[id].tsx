@@ -142,6 +142,10 @@ export default function ChatDetailScreen() {
     inputRange: [0, 1],
     outputRange: [0.92, 1],
   });
+  const composerPrimaryActionBottom = composerProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [6, 8],
+  });
   const addButtonWidth = composerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [46, 0],
@@ -380,13 +384,18 @@ export default function ChatDetailScreen() {
                 <ComposerTool name="image" />
                 <ComposerTool name="document-text" />
               </Animated.View>
-              <Pressable className="absolute bottom-2 right-2 h-9 w-9 items-center justify-center rounded-full bg-foreground">
-                <Ionicons
-                  color="#080b12"
-                  name={isComposerExpanded ? 'arrow-up' : 'mic'}
-                  size={18}
-                />
-              </Pressable>
+              <Animated.View
+                className="absolute right-2 h-9 w-9 overflow-hidden rounded-full"
+                style={{ bottom: composerPrimaryActionBottom }}
+              >
+                <Pressable className="h-full w-full items-center justify-center bg-foreground">
+                  <Ionicons
+                    color="#080b12"
+                    name={isComposerExpanded ? 'arrow-up' : 'mic'}
+                    size={18}
+                  />
+                </Pressable>
+              </Animated.View>
             </Animated.View>
           </View>
         </View>
