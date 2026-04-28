@@ -793,7 +793,7 @@ function PersonRow({
 
   return (
     <AnimatedPressable
-      className="flex-row items-center gap-3"
+      className="min-h-[66px] flex-row items-center gap-3"
       onPress={() => {
         onDismissKeyboard();
         onOpenProfile();
@@ -801,27 +801,24 @@ function PersonRow({
       style={{ opacity, transform: [{ translateY }] }}
     >
       <Avatar person={person} />
-      <View className="min-w-0 flex-1 border-b border-border/60 py-2.5">
-        <View className="flex-row items-center gap-2">
-          <Text
-            className="min-w-0 flex-1 text-[16px] font-semibold text-foreground"
-            numberOfLines={1}
-          >
+      <View className="min-h-[66px] min-w-0 flex-1 flex-row items-center border-b border-border/60 py-2.5">
+        <View className="min-w-0 flex-1 justify-center">
+          <Text className="text-[16px] font-semibold text-foreground" numberOfLines={1}>
             {person.name}
           </Text>
-          <FriendAction
-            isBusy={isBusy}
-            onAccept={onAccept}
-            onAdd={onAdd}
-            onCancel={onCancel}
-            onChat={onChat}
-            onDecline={onDecline}
-            status={person.status}
-          />
+          <Text className="mt-0.5 text-[13px] font-medium text-muted-foreground" numberOfLines={1}>
+            @{person.username} · {person.note}
+          </Text>
         </View>
-        <Text className="mt-0.5 text-[13px] font-medium text-muted-foreground" numberOfLines={1}>
-          @{person.username} · {person.note}
-        </Text>
+        <FriendAction
+          isBusy={isBusy}
+          onAccept={onAccept}
+          onAdd={onAdd}
+          onCancel={onCancel}
+          onChat={onChat}
+          onDecline={onDecline}
+          status={person.status}
+        />
       </View>
     </AnimatedPressable>
   );
@@ -859,11 +856,11 @@ function FriendAction({
   if (status === 'friend') {
     return (
       <Pressable
-        className="h-8 w-8 items-center justify-center rounded-full bg-muted"
+        className="ml-3 h-9 w-9 items-center justify-center rounded-full border border-border/60 bg-background/55"
         disabled={isBusy}
         onPress={onChat}
       >
-        <Ionicons color="#f8fafc" name="chatbubble" size={15} />
+        <Ionicons color="#f8fafc" name="chatbubble" size={16} />
       </Pressable>
     );
   }
@@ -871,7 +868,7 @@ function FriendAction({
   if (status === 'pending') {
     return (
       <Pressable
-        className="h-8 items-center justify-center rounded-full bg-muted px-3"
+        className="ml-3 h-9 items-center justify-center rounded-full bg-muted px-3"
         disabled={isBusy}
         onPress={onCancel}
       >
@@ -882,16 +879,16 @@ function FriendAction({
 
   if (status === 'incoming') {
     return (
-      <View className="flex-row items-center gap-2">
+      <View className="ml-3 flex-row items-center gap-2">
         <Pressable
-          className="h-8 w-8 items-center justify-center rounded-full bg-muted"
+          className="h-9 w-9 items-center justify-center rounded-full bg-muted"
           disabled={isBusy}
           onPress={onDecline}
         >
           <Ionicons color="#94a3b8" name="close" size={16} />
         </Pressable>
         <Pressable
-          className="h-8 w-8 items-center justify-center rounded-full bg-foreground"
+          className="h-9 w-9 items-center justify-center rounded-full bg-foreground"
           disabled={isBusy}
           onPress={onAccept}
         >
@@ -903,7 +900,7 @@ function FriendAction({
 
   return (
     <Pressable
-      className="h-8 w-8 items-center justify-center rounded-full bg-foreground"
+      className="ml-3 h-9 w-9 items-center justify-center rounded-full bg-foreground"
       disabled={isBusy}
       onPress={onAdd}
     >
