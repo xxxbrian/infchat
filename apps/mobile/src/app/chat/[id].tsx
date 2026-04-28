@@ -6,6 +6,8 @@ import {
   sendFileMessage,
   sendImageMessage,
   sendTextMessage,
+  startCall,
+  type CallKind,
   type ConversationRecord,
   type MessageRecord,
   type MessageUploadFile,
@@ -45,6 +47,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
+import { getDeviceId } from '../../lib/device-id';
 import {
   getCachedConversation,
   listCachedMessages,
@@ -91,7 +94,6 @@ const COMPOSER_INPUT_MAX_CONTENT_HEIGHT = COMPOSER_INPUT_LINE_HEIGHT * 5;
 const JUMP_BUTTON_FAR_FROM_BOTTOM = 420;
 const JUMP_BUTTON_NEAR_BOTTOM = 120;
 const SCROLL_DIRECTION_THRESHOLD = 6;
-const FILE_DOWNLOAD_TIMEOUT_MS = 30_000;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -202,6 +204,22 @@ export default function ChatDetailScreen() {
     },
     onError: () => {
       Alert.alert('Could not send attachment', 'Check your connection and try again.');
+    },
+  });
+  const startCallMutation = useMutation({
+    mutationFn: async (kind: CallKind) => {
+      const deviceId = await getDeviceId();
+
+      return startCall(pb, conversationId, kind, deviceId);
+    },
+    onSuccess: (response) => {
+      router.push({
+        pathname: '/call/[id]',
+        params: { id: response.callRoom.id },
+      });
+    },
+    onError: () => {
+      Alert.alert('Could not start call', 'Check your connection and try again.');
     },
   });
   const isRefreshing =
@@ -473,6 +491,14 @@ export default function ChatDetailScreen() {
     sendMessageMutation.mutate(body);
   };
 
+  const handleStartCall = (kind: CallKind) => {
+    if (!conversationId || startCallMutation.isPending) {
+      return;
+    }
+
+    startCallMutation.mutate(kind);
+  };
+
   const handlePickImage = async () => {
     if (sendAttachmentMutation.isPending) {
       return;
@@ -544,8 +570,8 @@ export default function ChatDetailScreen() {
             <IconButton name="chevron-back" onPress={() => router.back()} />
             <ConversationIdentity conversation={conversation} />
             <View className="flex-row items-center gap-2">
-              <IconButton name="call" />
-              <IconButton name="videocam" />
+              <IconButton name="call" onPress={() => handleStartCall('voice')} />
+              <IconButton name="videocam" onPress={() => handleStartCall('video')} />
               {/*<IconButton
                 name={conversation.kind === 'group' ? 'information-circle' : 'person-circle'}
               />*/}
@@ -786,26 +812,7 @@ function formatMessageTime(value: string): string {
 }
 
 function formatAttachmentName(name: string): string {
-  return name.replace(/_[a-z0-9]{10}(\.[^.]+)$/i, '$1').replace(/_[a-z0-9]{10}$/i, '');
-}
-
-function getFileDisplayName(message: ChatMessage, attachment: MessageAttachment): string {
-  const bodyName = message.text.trim();
-  if (bodyName) {
-    return bodyName;
-  }
-
-  const attachmentName = formatAttachmentName(attachment.name).trim();
-  if (attachmentName) {
-    return attachmentName;
-  }
-
-  const urlName = formatAttachmentName(getFileNameFromUri(attachment.url)).trim();
-  if (urlName && urlName !== 'file') {
-    return urlName;
-  }
-
-  return 'File attachment';
+  return name.replace(/^\w+_/, '');
 }
 
 function getMessageFileCacheDirectory(): string | null {
@@ -856,33 +863,10 @@ function imageAssetToUploadFile(asset: ImagePicker.ImagePickerAsset): MessageUpl
 
 function documentAssetToUploadFile(asset: DocumentPicker.DocumentPickerAsset): MessageUploadFile {
   return {
-    name: asset.name || getFileNameFromUri(asset.uri),
+    name: asset.name,
     type: asset.mimeType || 'application/octet-stream',
     uri: asset.uri,
   };
-}
-
-function getFileNameFromUri(uri: string): string {
-  const name = decodeURIComponent(uri.split('?')[0]?.split('/').pop() ?? '').trim();
-
-  return name || 'file';
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error('Timed out'));
-    }, timeoutMs);
-
-    promise
-      .then(resolve)
-      .catch(reject)
-      .finally(() => clearTimeout(timeoutId));
-  });
-}
-
-function canUseSystemShareSheet(): boolean {
-  return !(Platform.OS === 'ios' && __DEV__);
 }
 
 function ConversationIdentity({ conversation }: { conversation: ConversationView }) {
@@ -932,7 +916,7 @@ function MessageBubble({
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
   const isMine = message.author === 'me';
   const hasText = message.text.trim().length > 0;
-  const fileName = fileAttachment ? getFileDisplayName(message, fileAttachment) : '';
+  const fileName = fileAttachment ? message.text || formatAttachmentName(fileAttachment.name) : '';
   const localFileUri = fileAttachment ? getLocalMessageFileUri(message.id, fileName) : null;
   const [imageSize, setImageSize] = useState({ height: 210, width: 250 });
   const [isImageViewerVisible, setIsImageViewerVisible] = useState(false);
@@ -997,7 +981,7 @@ function MessageBubble({
     };
   }, [localFileUri]);
 
-  const handleDownloadFile = async () => {
+  const handleOpenFile = async () => {
     if (!fileAttachment || !localFileUri) {
       Alert.alert('Could not download file', 'Local file storage is not available on this device.');
       return;
@@ -1013,65 +997,30 @@ function MessageBubble({
       setFileDownloadState('downloading');
 
       const info = await FileSystem.getInfoAsync(localFileUri);
-
-      if (info.exists) {
-        setFileDownloadState('downloaded');
-        return;
-      }
-
-      await FileSystem.makeDirectoryAsync(cacheDirectory, {
-        intermediates: true,
-      });
-      await withTimeout(
-        FileSystem.downloadAsync(fileAttachment.url, localFileUri),
-        FILE_DOWNLOAD_TIMEOUT_MS,
-      );
-      setFileDownloadState('downloaded');
-    } catch {
-      setFileDownloadState('idle');
-      Alert.alert('Could not download file', 'The file could not be downloaded. Try again later.');
-    }
-  };
-
-  const handleOpenDownloadedFile = async () => {
-    if (!localFileUri) {
-      Alert.alert('Could not open file', 'Local file storage is not available on this device.');
-      return;
-    }
-
-    try {
-      const info = await FileSystem.getInfoAsync(localFileUri);
+      let uriToOpen = localFileUri;
 
       if (!info.exists) {
-        setFileDownloadState('idle');
-        Alert.alert('Download file first', 'This file is not available locally yet.');
-        return;
+        await FileSystem.makeDirectoryAsync(cacheDirectory, {
+          intermediates: true,
+        });
+        const download = await FileSystem.downloadAsync(fileAttachment.url, localFileUri);
+        uriToOpen = download.uri;
       }
+
+      setFileDownloadState('downloaded');
 
       const canShare = await Sharing.isAvailableAsync();
       if (!canShare) {
-        Alert.alert('Could not open file', 'This device cannot open local files from InfChat yet.');
+        Alert.alert('File downloaded', 'This device cannot open local files from InfChat yet.');
         return;
       }
 
-      await Sharing.shareAsync(localFileUri, { dialogTitle: fileName });
+      await Sharing.shareAsync(uriToOpen, { dialogTitle: fileName });
       setIsFilePreviewVisible(false);
     } catch {
-      Alert.alert('Could not open file', 'The downloaded file could not be opened.');
+      setFileDownloadState('idle');
+      Alert.alert('Could not open file', 'The file could not be downloaded. Try again later.');
     }
-  };
-
-  const handleFileAction = () => {
-    if (fileDownloadState === 'downloaded' && !canUseSystemShareSheet()) {
-      return;
-    }
-
-    if (fileDownloadState === 'downloaded') {
-      void handleOpenDownloadedFile();
-      return;
-    }
-
-    void handleDownloadFile();
   };
 
   if (imageAttachment) {
@@ -1120,29 +1069,20 @@ function MessageBubble({
   }
 
   if (fileAttachment) {
-    const fileBubbleMinWidth = Math.min(windowWidth * 0.72, 280);
     const isFileActionBusy =
-      fileDownloadState === 'checking' ||
-      fileDownloadState === 'downloading' ||
-      (fileDownloadState === 'downloaded' && !canUseSystemShareSheet());
+      fileDownloadState === 'checking' || fileDownloadState === 'downloading';
     const fileActionLabel =
       fileDownloadState === 'downloading'
         ? 'Downloading...'
         : fileDownloadState === 'downloaded'
-          ? canUseSystemShareSheet()
-            ? 'Open downloaded file'
-            : 'Downloaded locally'
+          ? 'Open downloaded file'
           : 'Download file';
     const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
 
     return (
       <Animated.View
         className={`mb-2 max-w-[78%] overflow-hidden rounded-[24px] ${isMine ? 'self-end bg-foreground' : 'self-start bg-muted'}`}
-        style={{
-          minWidth: fileBubbleMinWidth,
-          opacity,
-          transform: [{ translateY }],
-        }}
+        style={{ opacity, transform: [{ translateY }] }}
       >
         <Pressable
           className="flex-row items-center gap-3 px-3 py-2.5"
@@ -1201,15 +1141,11 @@ function MessageBubble({
                 </Text>
               </View>
               <Pressable
-                className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-muted' : 'bg-foreground'}`}
+                className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-foreground/65' : 'bg-foreground'}`}
                 disabled={isFileActionBusy}
-                onPress={handleFileAction}
+                onPress={handleOpenFile}
               >
-                <Text
-                  className={`text-base font-bold ${isFileActionBusy ? 'text-muted-foreground' : 'text-background'}`}
-                >
-                  {fileActionLabel}
-                </Text>
+                <Text className="text-base font-bold text-background">{fileActionLabel}</Text>
               </Pressable>
               <Pressable
                 className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"

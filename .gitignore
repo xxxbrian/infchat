@@ -43,7 +43,6 @@ Desktop.ini
 .env.*
 !.env.example
 !**/.env.example
-!apps/mobile/.env.production
 
 # TypeScript
 *.tsbuildinfo

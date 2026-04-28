@@ -6,6 +6,10 @@ services:
     container_name: infchat-pocketbase-dev
     restart: unless-stopped
     command: /app/infchat-pocketbase serve --http=0.0.0.0:8090 --dev
+    environment:
+      LIVEKIT_API_KEY: devkey
+      LIVEKIT_API_SECRET: devsecretdevsecretdevsecretdevsecret
+      LIVEKIT_URL: ws://127.0.0.1:7880
     ports:
       - "8090:8090"
     volumes:

@@ -8,6 +8,9 @@ export type MessageKind = (typeof MESSAGE_KINDS)[number];
 export const CALL_ROOM_STATUSES = ['ringing', 'active', 'ended'] as const;
 export type CallRoomStatus = (typeof CALL_ROOM_STATUSES)[number];
 
+export const CALL_KINDS = ['voice', 'video'] as const;
+export type CallKind = (typeof CALL_KINDS)[number];
+
 export type DevicePlatform = 'ios' | 'android' | 'web';
 
 export type LiveKitParticipantMetadata = {

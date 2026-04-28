@@ -15,7 +15,9 @@
     "ios": {
       "bundleIdentifier": "app.infchat",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "InfChat uses the camera for video calls.",
+        "NSMicrophoneUsageDescription": "InfChat uses the microphone for voice and video calls."
       },
       "supportsTablet": true
     },
@@ -25,6 +27,15 @@
         "backgroundColor": "#000000"
       },
       "package": "com.infchat.app",
+      "permissions": [
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.BLUETOOTH",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.WAKE_LOCK"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -37,6 +48,18 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "@livekit/react-native-expo-plugin",
+        {
+          "android": {
+            "audioType": "communication"
+          },
+          "ios": {
+            "enableMultitaskingCameraAccess": false
+          }
+        }
+      ],
+      "@config-plugins/react-native-webrtc",
       [
         "expo-splash-screen",
         {

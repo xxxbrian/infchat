@@ -2,19 +2,29 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"net/http"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	_ "infchat/services/pocketbase/internal/migrations"
 
+	livekitauth "github.com/livekit/protocol/auth"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/pocketbase/pocketbase/tools/security"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
+
+const liveKitTokenTTL = 2 * time.Hour
 
 func main() {
 	app := pocketbase.New()
@@ -23,10 +33,251 @@ func main() {
 	bindProfileHooks(app)
 	bindFriendshipHooks(app)
 	bindConversationHooks(app)
+	bindCallRoutes(app)
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+type callTokenRequest struct {
+	ConversationId string `json:"conversationId" form:"conversationId"`
+	DeviceId       string `json:"deviceId" form:"deviceId"`
+	Kind           string `json:"kind" form:"kind"`
+}
+
+type callJoinRequest struct {
+	DeviceId string `json:"deviceId" form:"deviceId"`
+}
+
+type liveKitParticipantMetadata struct {
+	DeviceId string `json:"deviceId"`
+	UserId   string `json:"userId"`
+}
+
+func bindCallRoutes(app *pocketbase.PocketBase) {
+	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
+		group := se.Router.Group("/api/infchat/calls")
+		group.Bind(apis.RequireAuth("users"))
+
+		group.POST("/start", func(e *core.RequestEvent) error {
+			data := callTokenRequest{}
+			if err := e.BindBody(&data); err != nil {
+				return e.BadRequestError("Failed to read call data.", err)
+			}
+
+			conversationId := strings.TrimSpace(data.ConversationId)
+			kind := strings.TrimSpace(data.Kind)
+			if kind != "voice" && kind != "video" {
+				return e.BadRequestError("Call kind must be voice or video.", nil)
+			}
+
+			conversation, err := findConversationForCall(e.App, conversationId, e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
+			_, err = e.App.FindFirstRecordByFilter(
+				"call_rooms",
+				"conversation={:conversationId} && status!='ended'",
+				dbx.Params{"conversationId": conversation.Id},
+			)
+			if err == nil {
+				return e.BadRequestError("A call is already in progress.", nil)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+
+			collection, err := e.App.FindCollectionByNameOrId("call_rooms")
+			if err != nil {
+				return err
+			}
+
+			callRoom := core.NewRecord(collection)
+			callRoom.Set("conversation", conversation.Id)
+			callRoom.Set("created_by", e.Auth.Id)
+			callRoom.Set("kind", kind)
+			callRoom.Set("room_name", newCallRoomName(conversation.Id))
+			callRoom.Set("status", "ringing")
+			callRoom.Set("ended_at", "")
+
+			if err := e.App.Save(callRoom); err != nil {
+				return err
+			}
+
+			return respondWithCallToken(e, callRoom, data.DeviceId)
+		})
+
+		group.POST("/{id}/join", func(e *core.RequestEvent) error {
+			data := callJoinRequest{}
+			if err := e.BindBody(&data); err != nil {
+				return e.BadRequestError("Failed to read call data.", err)
+			}
+
+			callRoom, err := findCallRoomForUser(e.App, e.Request.PathValue("id"), e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
+			if callRoom.GetString("status") == "ended" {
+				return e.BadRequestError("This call has ended.", nil)
+			}
+
+			if callRoom.GetString("status") == "ringing" && callRoom.GetString("created_by") != e.Auth.Id {
+				callRoom.Set("status", "active")
+				if err := e.App.Save(callRoom); err != nil {
+					return err
+				}
+			}
+
+			return respondWithCallToken(e, callRoom, data.DeviceId)
+		})
+
+		group.POST("/{id}/end", func(e *core.RequestEvent) error {
+			callRoom, err := findCallRoomForUser(e.App, e.Request.PathValue("id"), e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
+			if callRoom.GetString("status") != "ended" {
+				callRoom.Set("status", "ended")
+				callRoom.Set("ended_at", types.NowDateTime())
+				if err := e.App.Save(callRoom); err != nil {
+					return err
+				}
+			}
+
+			return e.JSON(http.StatusOK, map[string]any{"callRoom": callRoomPayload(callRoom)})
+		})
+
+		return se.Next()
+	})
+}
+
+func findConversationForCall(app core.App, conversationId string, userId string) (*core.Record, error) {
+	if strings.TrimSpace(conversationId) == "" {
+		return nil, router.NewBadRequestError("Conversation is required.", nil)
+	}
+
+	conversation, err := app.FindRecordById("conversations", conversationId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, router.NewBadRequestError("Conversation was not found.", nil)
+		}
+
+		return nil, err
+	}
+
+	if !containsString(conversation.GetStringSlice("members"), userId) {
+		return nil, router.NewForbiddenError("You are not a member of this conversation.", nil)
+	}
+
+	return conversation, nil
+}
+
+func findCallRoomForUser(app core.App, callRoomId string, userId string) (*core.Record, error) {
+	if strings.TrimSpace(callRoomId) == "" {
+		return nil, router.NewBadRequestError("Call room is required.", nil)
+	}
+
+	callRoom, err := app.FindRecordById("call_rooms", callRoomId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, router.NewBadRequestError("Call was not found.", nil)
+		}
+
+		return nil, err
+	}
+
+	if _, err := findConversationForCall(app, callRoom.GetString("conversation"), userId); err != nil {
+		return nil, err
+	}
+
+	return callRoom, nil
+}
+
+func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId string) error {
+	liveKitURL, apiKey, apiSecret, err := liveKitConfig()
+	if err != nil {
+		return e.InternalServerError("LiveKit is not configured.", err)
+	}
+
+	token, err := createLiveKitToken(apiKey, apiSecret, callRoom.GetString("room_name"), e.Auth.Id, deviceId)
+	if err != nil {
+		return e.InternalServerError("Could not create call token.", err)
+	}
+
+	return e.JSON(http.StatusOK, map[string]any{
+		"callRoom":   callRoomPayload(callRoom),
+		"livekitUrl": liveKitURL,
+		"token":      token,
+	})
+}
+
+func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId string, deviceId string) (string, error) {
+	canPublish := true
+	canSubscribe := true
+	canPublishData := true
+	metadata, err := json.Marshal(liveKitParticipantMetadata{
+		DeviceId: normalizedDeviceId(deviceId),
+		UserId:   userId,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return livekitauth.NewAccessToken(apiKey, apiSecret).
+		SetIdentity(userId).
+		SetName(userId).
+		SetMetadata(string(metadata)).
+		SetValidFor(liveKitTokenTTL).
+		SetVideoGrant(&livekitauth.VideoGrant{
+			RoomJoin:       true,
+			Room:           roomName,
+			CanPublish:     &canPublish,
+			CanSubscribe:   &canSubscribe,
+			CanPublishData: &canPublishData,
+		}).
+		ToJWT()
+}
+
+func liveKitConfig() (string, string, string, error) {
+	liveKitURL := strings.TrimSpace(os.Getenv("LIVEKIT_URL"))
+	apiKey := strings.TrimSpace(os.Getenv("LIVEKIT_API_KEY"))
+	apiSecret := strings.TrimSpace(os.Getenv("LIVEKIT_API_SECRET"))
+	if liveKitURL == "" || apiKey == "" || apiSecret == "" {
+		return "", "", "", errors.New("LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET are required")
+	}
+
+	return liveKitURL, apiKey, apiSecret, nil
+}
+
+func callRoomPayload(callRoom *core.Record) map[string]any {
+	return map[string]any{
+		"id":           callRoom.Id,
+		"conversation": callRoom.GetString("conversation"),
+		"created_by":   callRoom.GetString("created_by"),
+		"kind":         callRoom.GetString("kind"),
+		"room_name":    callRoom.GetString("room_name"),
+		"status":       callRoom.GetString("status"),
+		"ended_at":     callRoom.GetString("ended_at"),
+		"created":      callRoom.GetString("created"),
+		"updated":      callRoom.GetString("updated"),
+	}
+}
+
+func newCallRoomName(conversationId string) string {
+	return fmt.Sprintf("infchat-%s-%s", conversationId, security.RandomString(18))
+}
+
+func normalizedDeviceId(deviceId string) string {
+	deviceId = strings.TrimSpace(deviceId)
+	if deviceId == "" {
+		return "unknown"
+	}
+
+	return deviceId
 }
 
 func bindConversationHooks(app *pocketbase.PocketBase) {

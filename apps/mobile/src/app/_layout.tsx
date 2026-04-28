@@ -1,7 +1,15 @@
 import '../../global.css';
+import '../lib/livekit';
 
+import Ionicons from '@expo/vector-icons/Ionicons';
 import NetInfo from '@react-native-community/netinfo';
-import { registerWithUsername, signInWithUsername, signOut } from '@infchat/pocketbase';
+import {
+  endCall,
+  registerWithUsername,
+  signInWithUsername,
+  signOut,
+  type CallRoomRecord,
+} from '@infchat/pocketbase';
 import {
   focusManager,
   onlineManager,
@@ -9,10 +17,10 @@ import {
   QueryClientProvider,
 } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
-import { Stack } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { AppState } from 'react-native';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { router, Stack } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, AppState, Pressable, Text, View } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
@@ -76,17 +84,21 @@ export default function RootLayout() {
               },
             }}
           >
-            <Stack
-              screenOptions={{
-                contentStyle: { backgroundColor: '#080b12' },
-                headerShown: false,
-              }}
-            >
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="chat/[id]" />
-              <Stack.Screen name="profile/[userId]" />
-              <Stack.Screen name="profile/edit" />
-            </Stack>
+            <View className="flex-1">
+              <Stack
+                screenOptions={{
+                  contentStyle: { backgroundColor: '#080b12' },
+                  headerShown: false,
+                }}
+              >
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="call/[id]" />
+                <Stack.Screen name="chat/[id]" />
+                <Stack.Screen name="profile/[userId]" />
+                <Stack.Screen name="profile/edit" />
+              </Stack>
+              <IncomingCallListener authRecord={authRecord} />
+            </View>
           </AuthContext.Provider>
         ) : route === 'login' ? (
           <LoginScreen
@@ -102,5 +114,123 @@ export default function RootLayout() {
         <StatusBar style="light" />
       </SafeAreaProvider>
     </QueryClientProvider>
+  );
+}
+
+function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
+  const insets = useSafeAreaInsets();
+  const slide = useRef(new Animated.Value(0)).current;
+  const seenCallIds = useRef(new Set<string>());
+  const [incomingCall, setIncomingCall] = useState<CallRoomRecord | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    pb.collection('call_rooms')
+      .subscribe('*', (event) => {
+        const callRoom = event.record as unknown as CallRoomRecord | undefined;
+        if (!isMounted || !callRoom) {
+          return;
+        }
+
+        if (callRoom.status === 'ended') {
+          setIncomingCall((currentCall) => (currentCall?.id === callRoom.id ? null : currentCall));
+          return;
+        }
+
+        if (
+          callRoom.status !== 'ringing' ||
+          callRoom.created_by === authRecord.id ||
+          seenCallIds.current.has(callRoom.id)
+        ) {
+          return;
+        }
+
+        seenCallIds.current.add(callRoom.id);
+        setIncomingCall(callRoom);
+      })
+      .catch(() => {
+        // Query refetch on reconnect covers temporary realtime connection failures.
+      });
+
+    return () => {
+      isMounted = false;
+      pb.collection('call_rooms').unsubscribe('*');
+    };
+  }, [authRecord.id]);
+
+  useEffect(() => {
+    Animated.spring(slide, {
+      damping: 18,
+      mass: 0.8,
+      stiffness: 180,
+      toValue: incomingCall ? 1 : 0,
+      useNativeDriver: true,
+    }).start();
+  }, [incomingCall, slide]);
+
+  const handleAccept = () => {
+    if (!incomingCall) {
+      return;
+    }
+
+    const callRoomId = incomingCall.id;
+    setIncomingCall(null);
+    router.push({ pathname: '/call/[id]', params: { id: callRoomId } });
+  };
+
+  const handleDecline = () => {
+    if (!incomingCall) {
+      return;
+    }
+
+    const callRoomId = incomingCall.id;
+    setIncomingCall(null);
+    void endCall(pb, callRoomId);
+  };
+
+  const translateY = slide.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-130, 0],
+  });
+
+  return (
+    <Animated.View
+      className="absolute left-4 right-4 rounded-[28px] border border-border/70 bg-background/95 p-4"
+      pointerEvents={incomingCall ? 'auto' : 'none'}
+      style={{
+        opacity: slide,
+        top: insets.top + 10,
+        transform: [{ translateY }],
+      }}
+    >
+      <View className="flex-row items-center gap-3">
+        <View className="h-12 w-12 items-center justify-center rounded-full bg-foreground">
+          <Ionicons
+            color="#080b12"
+            name={incomingCall?.kind === 'video' ? 'videocam' : 'call'}
+            size={22}
+          />
+        </View>
+        <View className="min-w-0 flex-1">
+          <Text className="text-lg font-bold text-foreground">
+            Incoming {incomingCall?.kind === 'video' ? 'video' : 'voice'} call
+          </Text>
+          <Text className="text-sm font-medium text-muted-foreground">Tap to join securely</Text>
+        </View>
+        <Pressable
+          className="h-11 w-11 items-center justify-center rounded-full bg-red-500"
+          onPress={handleDecline}
+        >
+          <Ionicons color="#080b12" name="close" size={22} />
+        </Pressable>
+        <Pressable
+          className="h-11 w-11 items-center justify-center rounded-full bg-foreground"
+          onPress={handleAccept}
+        >
+          <Ionicons color="#080b12" name="call" size={20} />
+        </Pressable>
+      </View>
+    </Animated.View>
   );
 }
