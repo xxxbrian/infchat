@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,37 +11,88 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 
 type Mode = 'prompt' | 'always' | 'never';
+type IosProjectMode = 'auto' | 'reuse' | 'clean';
 
 const appDir = resolve(import.meta.dir, '..');
 const rootDir = resolve(appDir, '../..');
+const iosDir = join(appDir, 'ios');
+const distIosDir = join(appDir, 'dist', 'ios');
 
 let currentStage = 'setup';
-let keepIos = false;
+let cleanupIos = false;
+let iosProjectMode: IosProjectMode = 'auto';
 let uploadMode: Mode = 'prompt';
 let assignGroupMode: Mode = 'prompt';
+let verbose = false;
 let tempRoot = '';
 let prebuildLog = '';
 let podLog = '';
 let archiveLog = '';
 let exportLog = '';
 let uploadLog = '';
+let ascAppId = '';
+let ascGroupId = '';
+let developmentTeam = '';
+let scheme = '';
+let workspacePath = '';
+
+const usage =
+  'Usage: bun ./scripts/release-ios-local.ts [--ios auto|reuse|clean] [--cleanup-ios|--keep-ios] [--upload|--no-upload] [--assign-group|--no-assign-group] [--verbose]';
+
+function parseIosProjectMode(value: string) {
+  if (value === 'auto' || value === 'reuse' || value === 'clean') return value;
+  throw new Error(`Invalid --ios value: ${value}\n${usage}`);
+}
 
 const args = process.argv.slice(2);
-for (const arg of args) {
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
   switch (arg) {
     case '--help':
     case '-h':
-      console.log(
-        'Usage: bun ./scripts/release-ios-local.ts [--keep-ios] [--upload|--no-upload] [--assign-group|--no-assign-group]',
-      );
+      console.log(`${usage}
+
+Options:
+  --ios auto       Reuse existing ios/ if present; generate it if missing. Default.
+  --ios reuse      Reuse ios/ without forcing a clean prebuild.
+  --ios clean      Recreate ios/ with expo prebuild --clean.
+  --cleanup-ios    Remove apps/mobile/ios after the run.
+  --keep-ios       Keep apps/mobile/ios after the run. Default and kept for compatibility.
+  --upload         Upload the IPA to App Store Connect without prompting.
+  --no-upload      Build the IPA locally without uploading.
+  --assign-group   Assign the uploaded build to ASC_GROUP_ID without prompting.
+  --no-assign-group Skip TestFlight group assignment.
+  --verbose        Stream command output while also writing logs.
+
+Environment:
+  ASC_APP_ID, ASC_GROUP_ID, DEVELOPMENT_TEAM, SCHEME
+  EXPO_PUBLIC_POCKETBASE_URL, EXPO_PUBLIC_LIVEKIT_URL
+
+Examples:
+  bun ./scripts/release-ios-local.ts --no-upload
+  bun ./scripts/release-ios-local.ts --ios clean --upload --assign-group
+`);
       process.exit(0);
+    case '--ios': {
+      const value = args[index + 1];
+      if (!value) throw new Error(`Missing value for --ios\n${usage}`);
+      iosProjectMode = parseIosProjectMode(value);
+      index += 1;
+      break;
+    }
     case '--keep-ios':
-      keepIos = true;
+      cleanupIos = false;
+      break;
+    case '--cleanup-ios':
+      cleanupIos = true;
+      break;
+    case '--verbose':
+      verbose = true;
       break;
     case '--upload':
       uploadMode = 'always';
@@ -55,20 +107,40 @@ for (const arg of args) {
       assignGroupMode = 'never';
       break;
     default:
-      throw new Error(
-        `Unknown argument: ${arg}\nUsage: bun ./scripts/release-ios-local.ts [--keep-ios] [--upload|--no-upload] [--assign-group|--no-assign-group]`,
-      );
+      if (arg.startsWith('--ios=')) {
+        iosProjectMode = parseIosProjectMode(arg.slice('--ios='.length));
+        break;
+      }
+
+      throw new Error(`Unknown argument: ${arg}\n${usage}`);
   }
 }
 
-const ascAppId = process.env.ASC_APP_ID || '6764232455';
-const ascGroupId = process.env.ASC_GROUP_ID || '';
-const developmentTeam = process.env.DEVELOPMENT_TEAM || '7N7Y43VZ4J';
-const scheme = process.env.SCHEME || 'InfChat';
-const workspacePath = join(appDir, 'ios', `${scheme}.xcworkspace`);
-
 function setStage(stage: string) {
   currentStage = stage;
+}
+
+function formatDuration(ms: number) {
+  const totalSeconds = Math.max(1, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (!minutes) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
+async function runStep<T>(stage: string, label: string, task: () => Promise<T>) {
+  setStage(stage);
+  const startedAt = Date.now();
+  console.log(`\n==> ${label}`);
+
+  try {
+    const result = await task();
+    console.log(`OK ${label} completed in ${formatDuration(Date.now() - startedAt)}.`);
+    return result;
+  } catch (error) {
+    console.error(`FAIL ${label} failed after ${formatDuration(Date.now() - startedAt)}.`);
+    throw error;
+  }
 }
 
 function commandExists(command: string) {
@@ -122,7 +194,8 @@ async function run(
 
   if (code !== 0) {
     const rendered = [command, ...args].join(' ');
-    throw new Error(`Command failed with exit code ${code}: ${rendered}\n${outputText}`.trim());
+    const logHint = options.logFile ? `\nLog: ${options.logFile}` : `\n${outputText}`;
+    throw new Error(`Command failed with exit code ${code}: ${rendered}${logHint}`.trim());
   }
 
   return outputText;
@@ -144,7 +217,7 @@ function loadEnvFile(path: string) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
 
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!match) continue;
 
     const key = match[1];
@@ -161,7 +234,11 @@ function loadEnvFile(path: string) {
 }
 
 async function confirmAction(prompt: string, defaultAnswer: 'Y' | 'N') {
-  if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log(`Non-interactive terminal detected; skipping prompt: ${prompt}`);
+    console.log('Pass an explicit flag to enable this action.');
+    return false;
+  }
 
   const rl = createInterface({ input, output });
   try {
@@ -173,20 +250,24 @@ async function confirmAction(prompt: string, defaultAnswer: 'Y' | 'N') {
   }
 }
 
-function cleanup() {
-  for (const path of [tempRoot, prebuildLog, podLog, archiveLog, exportLog, uploadLog]) {
-    if (path) rmSync(path, { force: true, recursive: true });
+function cleanup(options: { removeTemp: boolean } = { removeTemp: true }) {
+  if (options.removeTemp && tempRoot) {
+    rmSync(tempRoot, { force: true, recursive: true });
   }
 
-  if (!keepIos) {
-    rmSync(join(appDir, 'ios'), { force: true, recursive: true });
+  if (cleanupIos) {
+    rmSync(iosDir, { force: true, recursive: true });
   }
 }
 
 function printLog(label: string, path: string) {
   if (!path || !existsSync(path)) return;
-  console.error(`--- ${label} ---`);
-  console.error(readFileSync(path, 'utf8'));
+  const lines = readFileSync(path, 'utf8').split('\n');
+  const maxLines = 120;
+  const rendered = lines.slice(-maxLines).join('\n').trim();
+  console.error(`--- ${label} (last ${Math.min(lines.length, maxLines)} lines) ---`);
+  if (rendered) console.error(rendered);
+  console.error(`Full log: ${path}`);
 }
 
 function handleError(error: unknown) {
@@ -201,7 +282,8 @@ function handleError(error: unknown) {
   if (['upload', 'resolve-build', 'assign-group'].includes(currentStage))
     printLog('upload log', uploadLog);
 
-  cleanup();
+  if (tempRoot) console.error(`\nLogs and temporary artifacts kept at: ${tempRoot}`);
+  cleanup({ removeTemp: false });
   process.exit(1);
 }
 
@@ -251,10 +333,25 @@ async function main() {
   loadEnvFile(join(appDir, '.env.production'));
   loadEnvFile(join(appDir, '.env.local'));
 
-  for (const command of ['xcodebuild', 'pod', 'pnpm']) {
-    if (!commandExists(command)) throw new Error(`${command} is not available on PATH.`);
+  ascAppId = process.env.ASC_APP_ID || '6764232455';
+  ascGroupId = process.env.ASC_GROUP_ID || '';
+  developmentTeam = process.env.DEVELOPMENT_TEAM || '7N7Y43VZ4J';
+  scheme = process.env.SCHEME || 'InfChat';
+  workspacePath = join(iosDir, `${scheme}.xcworkspace`);
+
+  if (uploadMode === 'never' && assignGroupMode === 'always') {
+    throw new Error('--assign-group requires upload. Remove --no-upload or pass --upload.');
   }
-  await asc(['auth', 'status']);
+  if (assignGroupMode === 'always' && !ascGroupId) {
+    throw new Error('ASC_GROUP_ID is required when using --assign-group.');
+  }
+
+  await runStep('setup', 'Validate toolchain and App Store Connect auth', async () => {
+    for (const command of ['xcodebuild', 'pod', 'pnpm']) {
+      if (!commandExists(command)) throw new Error(`${command} is not available on PATH.`);
+    }
+    await asc(['auth', 'status']);
+  });
 
   const appConfig = readJson(join(appDir, 'app.json'));
   const appVersion = appConfig.expo.version;
@@ -276,18 +373,20 @@ async function main() {
     );
   }
 
-  const nextBuildText = await asc([
-    'builds',
-    'next-build-number',
-    '--app',
-    ascAppId,
-    '--version',
-    appVersion,
-    '--platform',
-    'IOS',
-    '--output',
-    'json',
-  ]);
+  const nextBuildText = await runStep('resolve-build-number', 'Resolve next ASC build number', () =>
+    asc([
+      'builds',
+      'next-build-number',
+      '--app',
+      ascAppId,
+      '--version',
+      appVersion,
+      '--platform',
+      'IOS',
+      '--output',
+      'json',
+    ]),
+  );
   const nextBuildNumber = Number(JSON.parse(nextBuildText).nextBuildNumber || 0);
   if (nextBuildNumber <= 0)
     throw new Error('Failed to resolve next App Store Connect build number.');
@@ -325,12 +424,36 @@ async function main() {
 `,
   );
 
-  console.log('Preparing local iOS release build');
+  const iosDirExistsBefore = existsSync(iosDir);
+  const iosAction =
+    iosProjectMode === 'clean' ? 'clean' : iosDirExistsBefore ? 'reuse' : 'generate';
+  const prebuildArgs = ['exec', 'expo', 'prebuild', '--platform', 'ios'];
+  if (iosAction === 'clean') prebuildArgs.push('--clean');
+
+  console.log('\nPreparing local iOS release build');
   console.log(`App version: ${appVersion} (${nextBuildNumber})`);
   console.log(`ASC app ID: ${ascAppId}`);
   console.log(`Bundle identifier: ${bundleId}`);
   console.log(`PocketBase URL: ${pocketbaseUrl}`);
   if (livekitUrl) console.log(`LiveKit URL: ${livekitUrl}`);
+  console.log(`Temporary logs: ${tempRoot} (kept on failure)`);
+
+  if (iosAction === 'clean') console.log('iOS project mode: clean prebuild (--ios clean)');
+  else if (iosAction === 'reuse') console.log('iOS project mode: reuse existing ios/ directory');
+  else console.log('iOS project mode: generate ios/ directory without forced clean');
+  if (iosProjectMode === 'reuse' && !iosDirExistsBefore) {
+    console.log('Requested --ios reuse, but ios/ is missing; generating it without --clean.');
+  }
+  console.log(
+    cleanupIos
+      ? 'iOS cleanup: remove apps/mobile/ios after the run (--cleanup-ios)'
+      : 'iOS cleanup: keep apps/mobile/ios after the run',
+  );
+  if (iosAction !== 'clean') {
+    console.log(
+      'Tip: use --ios clean after Expo/RN upgrades, config plugin changes, signing changes, or native dependency issues.',
+    );
+  }
 
   if (uploadMode === 'always' && assignGroupMode === 'always')
     console.log('Publish mode: upload and assign TestFlight group');
@@ -344,64 +467,78 @@ async function main() {
     ...(livekitUrl ? { EXPO_PUBLIC_LIVEKIT_URL: livekitUrl } : {}),
   };
 
-  setStage('prebuild');
-  await run('pnpm', ['exec', 'expo', 'prebuild', '--platform', 'ios', '--clean'], {
-    cwd: appDir,
-    env: buildEnv,
-    logFile: prebuildLog,
-  });
-
-  setStage('pods');
-  await run('pod', ['install'], {
-    cwd: join(appDir, 'ios'),
-    env: buildEnv,
-    logFile: podLog,
-  });
-
-  setStage('archive');
-  await run(
-    'xcodebuild',
-    [
-      '-workspace',
-      workspacePath,
-      '-scheme',
-      scheme,
-      '-configuration',
-      'Release',
-      '-destination',
-      'generic/platform=iOS',
-      '-archivePath',
-      archivePath,
-      '-allowProvisioningUpdates',
-      `DEVELOPMENT_TEAM=${developmentTeam}`,
-      `PRODUCT_BUNDLE_IDENTIFIER=${bundleId}`,
-      `MARKETING_VERSION=${appVersion}`,
-      `CURRENT_PROJECT_VERSION=${nextBuildNumber}`,
-      'archive',
-    ],
-    { cwd: join(appDir, 'ios'), env: buildEnv, logFile: archiveLog },
+  await runStep('prebuild', 'Prepare iOS native project', () =>
+    run('pnpm', prebuildArgs, {
+      cwd: appDir,
+      env: buildEnv,
+      logFile: prebuildLog,
+      printOutput: verbose,
+    }),
   );
 
-  setStage('export');
-  await run(
-    'xcodebuild',
-    [
-      '-exportArchive',
-      '-archivePath',
-      archivePath,
-      '-exportPath',
-      exportDir,
-      '-exportOptionsPlist',
-      exportOptionsPlist,
-      '-allowProvisioningUpdates',
-    ],
-    { cwd: join(appDir, 'ios'), env: buildEnv, logFile: exportLog },
+  await runStep('pods', 'Install CocoaPods dependencies', () =>
+    run('pod', ['install'], {
+      cwd: iosDir,
+      env: buildEnv,
+      logFile: podLog,
+      printOutput: verbose,
+    }),
+  );
+
+  await runStep('archive', 'Archive iOS app with Xcode', () =>
+    run(
+      'xcodebuild',
+      [
+        '-workspace',
+        workspacePath,
+        '-scheme',
+        scheme,
+        '-configuration',
+        'Release',
+        '-destination',
+        'generic/platform=iOS',
+        '-archivePath',
+        archivePath,
+        '-allowProvisioningUpdates',
+        `DEVELOPMENT_TEAM=${developmentTeam}`,
+        `PRODUCT_BUNDLE_IDENTIFIER=${bundleId}`,
+        `MARKETING_VERSION=${appVersion}`,
+        `CURRENT_PROJECT_VERSION=${nextBuildNumber}`,
+        'archive',
+      ],
+      { cwd: iosDir, env: buildEnv, logFile: archiveLog, printOutput: verbose },
+    ),
+  );
+  console.log('\nSource snapshot is no longer needed by this release build.');
+  console.log('You can safely continue editing TypeScript/JS files now.');
+  console.log('Export and upload use the completed Xcode archive.');
+
+  await runStep('export', 'Export IPA', () =>
+    run(
+      'xcodebuild',
+      [
+        '-exportArchive',
+        '-archivePath',
+        archivePath,
+        '-exportPath',
+        exportDir,
+        '-exportOptionsPlist',
+        exportOptionsPlist,
+        '-allowProvisioningUpdates',
+      ],
+      { cwd: iosDir, env: buildEnv, logFile: exportLog, printOutput: verbose },
+    ),
   );
 
   const ipaPath = readdirSync(exportDir)
     .filter((entry) => entry.endsWith('.ipa'))
     .map((entry) => join(exportDir, entry))[0];
   if (!ipaPath) throw new Error('xcodebuild export completed but no .ipa was produced.');
+
+  mkdirSync(distIosDir, { recursive: true });
+  const stableIpaPath = join(distIosDir, `${scheme}-${appVersion}-${nextBuildNumber}.ipa`);
+  copyFileSync(ipaPath, stableIpaPath);
+  console.log(`\nIPA exported: ${stableIpaPath}`);
 
   let shouldUpload = false;
   if (uploadMode === 'always') shouldUpload = true;
@@ -410,51 +547,51 @@ async function main() {
 
   if (!shouldUpload) {
     setStage('done');
-    console.log('\nSkipped App Store Connect upload.');
-    console.log(`IPA path: ${ipaPath}`);
-    if (!keepIos)
-      console.log(
-        'The exported IPA is in a temporary directory and will be removed when the script exits. Use --keep-ios while debugging the native project.',
-      );
+    console.log('\nRelease build complete.');
+    console.log('Upload: skipped');
+    console.log(`App version: ${appVersion} (${nextBuildNumber})`);
+    console.log(`IPA: ${stableIpaPath}`);
+    console.log(cleanupIos ? 'iOS project: removed' : 'iOS project: kept');
     cleanup();
     return;
   }
 
-  console.log('Uploading IPA to App Store Connect...');
-  setStage('upload');
-  await asc(
-    [
+  await runStep('upload', 'Upload IPA to App Store Connect', () =>
+    asc(
+      [
+        'builds',
+        'upload',
+        '--app',
+        ascAppId,
+        '--ipa',
+        stableIpaPath,
+        '--version',
+        appVersion,
+        '--build-number',
+        String(nextBuildNumber),
+        '--wait',
+        '--pretty',
+      ],
+      { logFile: uploadLog, printOutput: true },
+    ),
+  );
+
+  const buildInfoText = await runStep('resolve-build', 'Resolve uploaded ASC build ID', () =>
+    asc([
       'builds',
-      'upload',
+      'info',
       '--app',
       ascAppId,
-      '--ipa',
-      ipaPath,
       '--version',
       appVersion,
       '--build-number',
       String(nextBuildNumber),
-      '--wait',
-      '--pretty',
-    ],
-    { logFile: uploadLog, printOutput: true },
+      '--platform',
+      'IOS',
+      '--output',
+      'json',
+    ]),
   );
-
-  setStage('resolve-build');
-  const buildInfoText = await asc([
-    'builds',
-    'info',
-    '--app',
-    ascAppId,
-    '--version',
-    appVersion,
-    '--build-number',
-    String(nextBuildNumber),
-    '--platform',
-    'IOS',
-    '--output',
-    'json',
-  ]);
   const buildInfo = JSON.parse(buildInfoText);
   const buildId = buildInfo.data?.id || buildInfo.id || '';
   if (!buildId) throw new Error('Failed to resolve uploaded App Store Connect build ID.');
@@ -465,21 +602,22 @@ async function main() {
     shouldAssignGroup = await confirmAction('Assign uploaded build to the TestFlight group?', 'Y');
 
   if (shouldAssignGroup) {
-    console.log('Assigning build to TestFlight group...');
-    setStage('assign-group');
-    await waitForGroupAssignment(buildId);
+    await runStep('assign-group', 'Assign build to TestFlight group', () =>
+      waitForGroupAssignment(buildId),
+    );
   } else {
     console.log('Skipped TestFlight group assignment.');
   }
 
   setStage('done');
-  console.log('\nDone.');
+  console.log('\nRelease build complete.');
   console.log(`App version: ${appVersion} (${nextBuildNumber})`);
+  console.log(`IPA: ${stableIpaPath}`);
+  console.log('Upload: completed');
   console.log(`ASC build ID: ${buildId}`);
   console.log(`ASC app ID: ${ascAppId}`);
   if (ascGroupId) console.log(`Group ID: ${ascGroupId}`);
-  if (keepIos) console.log('Kept generated ios/ directory because --keep-ios was provided.');
-  else console.log('Removed generated ios/ directory.');
+  console.log(cleanupIos ? 'iOS project: removed' : 'iOS project: kept');
   cleanup();
 }
 
