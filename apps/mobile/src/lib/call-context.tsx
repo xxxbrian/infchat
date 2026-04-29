@@ -55,6 +55,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const { authRecord } = useAuth();
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
+  const blockedAutoJoinCallRoomIdRef = useRef<string | null>(null);
   const didRequestEndRef = useRef(false);
   const [activeSession, setActiveSession] = useState<ActiveCallSession | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
@@ -62,6 +63,13 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const activeCallRoomId = activeSession?.callRoom.id;
 
   pathnameRef.current = pathname;
+
+  useEffect(() => {
+    const blockedCallRoomId = blockedAutoJoinCallRoomIdRef.current;
+    if (blockedCallRoomId && pathname !== `/call/${blockedCallRoomId}`) {
+      blockedAutoJoinCallRoomIdRef.current = null;
+    }
+  }, [pathname]);
 
   const dismissCallRoute = useCallback(() => {
     if (pathnameRef.current.startsWith('/call/')) {
@@ -78,6 +86,10 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       }
 
       if (activeSession?.callRoom.id === normalizedCallRoomId) {
+        return;
+      }
+
+      if (blockedAutoJoinCallRoomIdRef.current === normalizedCallRoomId) {
         return;
       }
 
@@ -121,6 +133,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     didRequestEndRef.current = true;
+    blockedAutoJoinCallRoomIdRef.current = activeSession.callRoom.id;
 
     if (
       activeSession.callRoom.status === 'ringing' &&
