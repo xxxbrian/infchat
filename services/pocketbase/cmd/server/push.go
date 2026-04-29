@@ -253,9 +253,7 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 	callKind := callRoom.GetString("kind")
 	payload := map[string]any{
 		"aps": apnsAPS{
-			Alert:            &apnsAlert{Title: callerName, Body: fmt.Sprintf("Incoming %s call", callKind)},
 			ContentAvailable: 1,
-			Sound:            "default",
 		},
 		"callerName":     callerName,
 		"callRoomId":     callRoom.Id,
