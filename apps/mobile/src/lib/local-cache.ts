@@ -2,11 +2,15 @@ import {
   getCurrentProfile,
   getConversation,
   listConversations,
+  listConversationReads,
   listFriendships,
   listMessages,
   listMessagesUpdatedAfter,
   listProfilesByUserIds,
+  listVisibleConversationReads,
+  markConversationRead,
   searchProfilesByUsername,
+  type ConversationReadRecord,
   type ConversationRecord,
   type FriendshipRecord,
   type MessageRecord,
@@ -82,6 +86,20 @@ async function getDb() {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (auth_id, id)
     );
+
+    CREATE TABLE IF NOT EXISTS conversation_reads_cache (
+      auth_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      last_read_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (auth_id, id)
+    );
+
+    CREATE INDEX IF NOT EXISTS conversation_reads_cache_conversation_idx
+      ON conversation_reads_cache (auth_id, conversation_id, user_id);
   `);
 
   await schemaPromise;
@@ -405,6 +423,85 @@ async function readCachedFriendships(pb: PocketBase): Promise<FriendshipRecord[]
   return parseRows<FriendshipRecord>(rows);
 }
 
+async function readCachedConversationReads(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<ConversationReadRecord[] | null> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<CacheRow>(
+    `SELECT value FROM conversation_reads_cache
+     WHERE auth_id = ? AND conversation_id = ?
+     ORDER BY user_id ASC`,
+    getAuthId(pb),
+    conversationId,
+  );
+  const scope = `${getAuthCachePrefix(pb)}:conversation-reads:${conversationId}`;
+
+  if (rows.length === 0 && !(await hasSynced(scope))) {
+    return null;
+  }
+
+  return parseRows<ConversationReadRecord>(rows);
+}
+
+async function readCachedVisibleConversationReads(
+  pb: PocketBase,
+): Promise<ConversationReadRecord[] | null> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<CacheRow>(
+    `SELECT value FROM conversation_reads_cache
+     WHERE auth_id = ?
+     ORDER BY conversation_id ASC, user_id ASC`,
+    getAuthId(pb),
+  );
+  const scope = `${getAuthCachePrefix(pb)}:conversation-reads`;
+
+  if (rows.length === 0 && !(await hasSynced(scope))) {
+    return null;
+  }
+
+  return parseRows<ConversationReadRecord>(rows);
+}
+
+export async function writeCachedConversationRead(
+  pb: PocketBase,
+  read: ConversationReadRecord,
+): Promise<void> {
+  const db = await getDb();
+
+  await db.runAsync(
+    `INSERT OR REPLACE INTO conversation_reads_cache
+      (auth_id, conversation_id, user_id, id, value, last_read_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    getAuthId(pb),
+    read.conversation,
+    read.user,
+    read.id,
+    JSON.stringify(read),
+    read.last_read_at,
+    read.updated,
+  );
+  await markSynced(`${getAuthCachePrefix(pb)}:conversation-reads:${read.conversation}`);
+}
+
+export async function writeCachedConversationReads(
+  pb: PocketBase,
+  conversationId: string,
+  reads: ConversationReadRecord[],
+): Promise<void> {
+  const db = await getDb();
+
+  await db.runAsync(
+    'DELETE FROM conversation_reads_cache WHERE auth_id = ? AND conversation_id = ?',
+    getAuthId(pb),
+    conversationId,
+  );
+  for (const read of reads) {
+    await writeCachedConversationRead(pb, read);
+  }
+  await markSynced(`${getAuthCachePrefix(pb)}:conversation-reads:${conversationId}`);
+}
+
 export async function writeCachedFriendships(
   pb: PocketBase,
   friendships: FriendshipRecord[],
@@ -446,6 +543,62 @@ export async function refreshCachedFriendships(pb: PocketBase): Promise<Friendsh
   await writeCachedValue(`${getAuthCachePrefix(pb)}:friendships`, friendships);
 
   return friendships;
+}
+
+export async function refreshCachedConversationReads(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<ConversationReadRecord[]> {
+  const reads = await listConversationReads(pb, conversationId);
+
+  await writeCachedConversationReads(pb, conversationId, reads);
+
+  return reads;
+}
+
+export async function refreshCachedVisibleConversationReads(
+  pb: PocketBase,
+): Promise<ConversationReadRecord[]> {
+  const reads = await listVisibleConversationReads(pb);
+  const db = await getDb();
+
+  await db.runAsync('DELETE FROM conversation_reads_cache WHERE auth_id = ?', getAuthId(pb));
+  for (const read of reads) {
+    await writeCachedConversationRead(pb, read);
+  }
+  await markSynced(`${getAuthCachePrefix(pb)}:conversation-reads`);
+
+  return reads;
+}
+
+export function listCachedVisibleConversationReads(
+  pb: PocketBase,
+): Promise<ConversationReadRecord[]> {
+  return cacheFirst(
+    () => readCachedVisibleConversationReads(pb),
+    () => refreshCachedVisibleConversationReads(pb),
+  );
+}
+
+export function listCachedConversationReads(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<ConversationReadRecord[]> {
+  return cacheFirst(
+    () => readCachedConversationReads(pb, conversationId),
+    () => refreshCachedConversationReads(pb, conversationId),
+  );
+}
+
+export async function markCachedConversationRead(
+  pb: PocketBase,
+  conversationId: string,
+  lastReadAt: string,
+): Promise<ConversationReadRecord[]> {
+  const read = await markConversationRead(pb, conversationId, lastReadAt);
+  await writeCachedConversationRead(pb, read);
+
+  return (await readCachedConversationReads(pb, conversationId)) ?? [read];
 }
 
 export function listCachedFriendships(pb: PocketBase): Promise<FriendshipRecord[]> {

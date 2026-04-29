@@ -1,10 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
 import {
+  countUnreadMessages,
   getProfileAvatarUrl,
   listActiveCalls,
   type CallRoomRecord,
   type ConversationRecord,
+  type ConversationReadRecord,
   type ProfileRecord,
 } from '@infchat/pocketbase';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -27,8 +29,10 @@ import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import {
   listCachedConversations,
+  listCachedVisibleConversationReads,
   listCachedProfilesByUserIds,
   refreshCachedConversations,
+  refreshCachedVisibleConversationReads,
   refreshCachedProfilesByUserIds,
 } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
@@ -89,7 +93,47 @@ export default function ChatTab() {
     queryKey: ['active-calls', authRecord.id],
     queryFn: () => listActiveCalls(pb),
   });
+  const readStatesQuery = useQuery({
+    queryKey: ['conversation-reads', authRecord.id],
+    queryFn: () => listCachedVisibleConversationReads(pb),
+    networkMode: 'always',
+  });
   const conversations = conversationsQuery.data ?? [];
+  const readStates = readStatesQuery.data ?? [];
+  const ownReadStateByConversation = useMemo(() => {
+    const reads = new Map<string, ConversationReadRecord>();
+
+    for (const read of readStates) {
+      if (read.user === authRecord.id) {
+        reads.set(read.conversation, read);
+      }
+    }
+
+    return reads;
+  }, [authRecord.id, readStates]);
+  const unreadCountsQuery = useQuery({
+    queryKey: [
+      'unread-counts',
+      authRecord.id,
+      conversations.map((conversation) => conversation.id),
+      readStates.map((read) => `${read.conversation}:${read.user}:${read.last_read_at}`),
+    ],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        conversations.map(async (conversation) => {
+          const read = ownReadStateByConversation.get(conversation.id);
+          const count = await countUnreadMessages(pb, conversation.id, read?.last_read_at);
+
+          return [conversation.id, count] as const;
+        }),
+      );
+
+      return Object.fromEntries(entries) as Record<string, number>;
+    },
+    enabled: isOnline && conversations.length > 0,
+    staleTime: 1000 * 20,
+  });
+  const unreadCounts = unreadCountsQuery.data ?? {};
   const activeCallByConversation = useMemo(() => {
     const calls = new Map<string, CallRoomRecord>();
 
@@ -138,9 +182,17 @@ export default function ChatTab() {
           authRecord.id,
           fileTokenQuery.data,
           activeCallByConversation.get(conversation.id),
+          unreadCounts[conversation.id] ?? 0,
         ),
       ),
-    [authRecord.id, activeCallByConversation, conversations, fileTokenQuery.data, profilesByUserId],
+    [
+      authRecord.id,
+      activeCallByConversation,
+      conversations,
+      fileTokenQuery.data,
+      profilesByUserId,
+      unreadCounts,
+    ],
   );
   const visibleConversations = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -177,6 +229,28 @@ export default function ChatTab() {
       })
       .catch(() => {
         // Keep showing the local inbox while the connection recovers.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authRecord.id, isOnline, queryClient]);
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedVisibleConversationReads(pb)
+      .then((reads) => {
+        if (isMounted) {
+          queryClient.setQueryData(['conversation-reads', authRecord.id], reads);
+        }
+      })
+      .catch(() => {
+        // Cached read states still drive the inbox until refresh succeeds.
       });
 
     return () => {
@@ -223,6 +297,17 @@ export default function ChatTab() {
       pb.collection('messages').subscribe('*', () => {
         void refreshCachedConversations(pb).then((nextConversations) => {
           queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+        });
+        queryClient.invalidateQueries({
+          queryKey: ['unread-counts', authRecord.id],
+        });
+      }),
+      pb.collection('conversation_reads').subscribe('*', () => {
+        void refreshCachedVisibleConversationReads(pb).then((reads) => {
+          queryClient.setQueryData(['conversation-reads', authRecord.id], reads);
+        });
+        queryClient.invalidateQueries({
+          queryKey: ['unread-counts', authRecord.id],
         });
       }),
       pb.collection('call_rooms').subscribe('*', () => {
@@ -272,6 +357,9 @@ export default function ChatTab() {
           ? refreshCachedProfilesByUserIds(pb, relatedUserIds)
           : Promise.resolve([]),
         queryClient.invalidateQueries({ queryKey: ['active-calls'] }),
+        queryClient.invalidateQueries({
+          queryKey: ['unread-counts', authRecord.id],
+        }),
       ]);
 
       queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
@@ -482,6 +570,7 @@ function toConversationView(
   currentUserId: string,
   fileToken?: string,
   activeCall?: CallRoomRecord,
+  unread = 0,
 ): ConversationView {
   const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
   const otherProfiles = otherMemberIds
@@ -503,7 +592,7 @@ function toConversationView(
     name,
     message: conversation.last_message_text || 'No messages yet',
     time: formatConversationTime(conversation.last_message_at || conversation.updated),
-    unread: 0,
+    unread,
     subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
     avatarUserId: firstProfile?.user || conversation.id,

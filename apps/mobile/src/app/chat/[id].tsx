@@ -3,13 +3,14 @@ import { useNetInfo } from '@react-native-community/netinfo';
 import {
   getMessageAttachmentUrl,
   getProfileAvatarUrl,
+  sendTextMessage,
   getActiveCallForConversation,
   sendFileMessage,
   sendImageMessage,
-  sendTextMessage,
   startCall,
   type CallRoomRecord,
   type CallKind,
+  type ConversationReadRecord,
   type ConversationRecord,
   type MessageRecord,
   type MessageUploadFile,
@@ -54,10 +55,13 @@ import { useCallSession } from '../../lib/call-context';
 import { getDeviceId } from '../../lib/device-id';
 import {
   getCachedConversation,
+  listCachedConversationReads,
   listCachedMessages,
   listCachedProfilesByUserIds,
+  markCachedConversationRead,
   mergeCachedMessage,
   refreshCachedConversation,
+  refreshCachedConversationReads,
   refreshCachedConversations,
   refreshCachedMessages,
   refreshCachedProfilesByUserIds,
@@ -84,8 +88,13 @@ type ChatMessage = {
   author: 'me' | 'them';
   attachments: MessageAttachment[];
   callRoomId?: string;
+  created: string;
+  deliveryStatus?: 'failed';
+  failedMessageId?: string;
   kind: MessageRecord['kind'];
+  readLabel?: string;
   sender?: string;
+  senderId: string;
   text: string;
   time: string;
 };
@@ -97,6 +106,12 @@ type MessageAttachment = {
 };
 
 type FileDownloadState = 'idle' | 'checking' | 'downloading' | 'downloaded';
+
+type FailedOutgoingMessage = {
+  body: string;
+  created: string;
+  id: string;
+};
 
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
@@ -135,6 +150,7 @@ export default function ChatDetailScreen() {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
+  const [failedOutgoingMessages, setFailedOutgoingMessages] = useState<FailedOutgoingMessage[]>([]);
   const hasComposerText = composerText.trim().length > 0;
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
   const isNearBottomRef = useRef(true);
@@ -162,6 +178,12 @@ export default function ChatDetailScreen() {
     queryKey: ['active-call', conversationId],
     queryFn: () => getActiveCallForConversation(pb, conversationId),
     enabled: Boolean(conversationId),
+  });
+  const readStatesQuery = useQuery({
+    queryKey: ['conversation-reads', conversationId],
+    queryFn: () => listCachedConversationReads(pb, conversationId),
+    enabled: Boolean(conversationId),
+    networkMode: 'always',
   });
   const memberIds = useMemo(
     () =>
@@ -195,18 +217,52 @@ export default function ChatDetailScreen() {
       ),
     [authRecord.id, conversationQuery.data, fileTokenQuery.data, profilesByUserId],
   );
-  const messages = useMemo(
-    () =>
-      (messagesQuery.data ?? []).map((message) =>
-        toChatMessage(message, profilesByUserId, authRecord.id, fileTokenQuery.data),
+  const messages = useMemo(() => {
+    const readMessageId = getLastReadOwnMessageId(
+      messagesQuery.data ?? [],
+      readStatesQuery.data ?? [],
+      authRecord.id,
+    );
+    const cachedMessages = (messagesQuery.data ?? []).map((message) =>
+      toChatMessage(
+        message,
+        profilesByUserId,
+        authRecord.id,
+        fileTokenQuery.data,
+        message.id === readMessageId ? 'Read' : undefined,
       ),
-    [authRecord.id, fileTokenQuery.data, messagesQuery.data, profilesByUserId],
-  );
+    );
+    const failedMessages = failedOutgoingMessages.map((message) =>
+      toFailedChatMessage(message, authRecord.id),
+    );
+
+    return [...cachedMessages, ...failedMessages];
+  }, [
+    authRecord.id,
+    failedOutgoingMessages,
+    fileTokenQuery.data,
+    messagesQuery.data,
+    profilesByUserId,
+    readStatesQuery.data,
+  ]);
   const activeCall = activeCallQuery.data;
   const activeSessionCallRoomId = activeSession?.callRoom.id;
   const shouldShowActiveCallBanner = Boolean(
     activeCall && activeSessionCallRoomId !== activeCall.id,
   );
+  const addFailedOutgoingMessage = (body: string) => {
+    setFailedOutgoingMessages((current) => [
+      ...current,
+      {
+        body,
+        created: new Date().toISOString(),
+        id: `failed-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      },
+    ]);
+  };
+  const removeFailedOutgoingMessage = (messageId: string) => {
+    setFailedOutgoingMessages((current) => current.filter((message) => message.id !== messageId));
+  };
   const sendMessageMutation = useMutation({
     mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
     onSuccess: (message) => {
@@ -221,6 +277,10 @@ export default function ChatDetailScreen() {
       void refreshCachedConversations(pb).then((conversations) => {
         queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
       });
+    },
+    onError: (_error, body) => {
+      addFailedOutgoingMessage(body);
+      setComposerText('');
     },
   });
   const sendAttachmentMutation = useMutation({
@@ -334,6 +394,55 @@ export default function ChatDetailScreen() {
     }
 
     let isMounted = true;
+
+    void refreshCachedConversationReads(pb, conversationId)
+      .then((reads) => {
+        if (isMounted) {
+          queryClient.setQueryData(['conversation-reads', conversationId], reads);
+          queryClient.invalidateQueries({
+            queryKey: ['conversation-reads', authRecord.id],
+          });
+          queryClient.invalidateQueries({
+            queryKey: ['unread-counts', authRecord.id],
+          });
+        }
+      })
+      .catch(() => {
+        // Cached read receipts remain visible until realtime/refetch succeeds.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authRecord.id, conversationId, isOnline, queryClient]);
+
+  useEffect(() => {
+    const lastMessage = messagesQuery.data?.at(-1);
+    if (!conversationId || !isOnline || !lastMessage) {
+      return;
+    }
+
+    void markCachedConversationRead(pb, conversationId, lastMessage.created)
+      .then((reads) => {
+        queryClient.setQueryData(['conversation-reads', conversationId], reads);
+        queryClient.invalidateQueries({
+          queryKey: ['conversation-reads', authRecord.id],
+        });
+        queryClient.invalidateQueries({
+          queryKey: ['unread-counts', authRecord.id],
+        });
+      })
+      .catch(() => {
+        // The server receipt is authoritative; do not queue read updates offline.
+      });
+  }, [authRecord.id, conversationId, isOnline, messagesQuery.data, queryClient]);
+
+  useEffect(() => {
+    if (!conversationId || !isOnline) {
+      return;
+    }
+
+    let isMounted = true;
     let unsubscribers: Array<() => void> = [];
 
     void Promise.all([
@@ -382,6 +491,22 @@ export default function ChatDetailScreen() {
           });
         });
       }),
+      pb.collection('conversation_reads').subscribe('*', (event) => {
+        const read = event.record as unknown as ConversationReadRecord | undefined;
+        if (read?.conversation !== conversationId) {
+          return;
+        }
+
+        void refreshCachedConversationReads(pb, conversationId).then((reads) => {
+          queryClient.setQueryData(['conversation-reads', conversationId], reads);
+          queryClient.invalidateQueries({
+            queryKey: ['conversation-reads', authRecord.id],
+          });
+          queryClient.invalidateQueries({
+            queryKey: ['unread-counts', authRecord.id],
+          });
+        });
+      }),
       pb.collection('call_rooms').subscribe('*', (event) => {
         if (event.record?.conversation !== conversationId) {
           return;
@@ -423,7 +548,7 @@ export default function ChatDetailScreen() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [conversationId, isOnline, memberIds, queryClient]);
+  }, [authRecord.id, conversationId, isOnline, memberIds, queryClient]);
 
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => {
@@ -642,14 +767,16 @@ export default function ChatDetailScreen() {
 
     setIsPullRefreshing(true);
     try {
-      const [nextConversation, nextMessages, nextProfiles] = await Promise.all([
+      const [nextConversation, nextMessages, nextProfiles, nextReads] = await Promise.all([
         refreshCachedConversation(pb, conversationId),
         refreshCachedMessages(pb, conversationId),
         memberIds.length > 0 ? refreshCachedProfilesByUserIds(pb, memberIds) : Promise.resolve([]),
+        refreshCachedConversationReads(pb, conversationId),
       ]);
 
       queryClient.setQueryData(['conversation', conversationId], nextConversation);
       queryClient.setQueryData(['messages', conversationId], nextMessages);
+      queryClient.setQueryData(['conversation-reads', conversationId], nextReads);
       if (memberIds.length > 0) {
         queryClient.setQueryData(
           ['profiles', 'conversation-members', conversationId, memberIds],
@@ -738,7 +865,41 @@ export default function ChatDetailScreen() {
       return;
     }
 
+    if (!isOnline) {
+      addFailedOutgoingMessage(body);
+      setComposerText('');
+      didScrollToEnd.current = false;
+      syncMessagesToBottom();
+      return;
+    }
+
     sendMessageMutation.mutate(body);
+  };
+
+  const handleRetryFailedMessage = async (messageId: string) => {
+    const failedMessage = failedOutgoingMessages.find((message) => message.id === messageId);
+    if (!failedMessage) {
+      return;
+    }
+
+    if (!isOnline) {
+      Alert.alert('Still offline', 'Reconnect, then tap the red alert to resend.');
+      return;
+    }
+
+    try {
+      const message = await sendTextMessage(pb, conversationId, failedMessage.body);
+      removeFailedOutgoingMessage(messageId);
+      didScrollToEnd.current = false;
+      const nextMessages = await mergeCachedMessage(pb, message);
+      queryClient.setQueryData(['messages', conversationId], nextMessages);
+      const conversation = await refreshCachedConversation(pb, conversationId);
+      queryClient.setQueryData(['conversation', conversationId], conversation);
+      const conversations = await refreshCachedConversations(pb);
+      queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+    } catch {
+      Alert.alert('Could not resend', 'Check your connection and tap the alert again.');
+    }
   };
 
   const handleStartCall = (kind: CallKind) => {
@@ -925,6 +1086,7 @@ export default function ChatDetailScreen() {
                 index={index}
                 key={message.id}
                 message={message}
+                onRetryFailedMessage={handleRetryFailedMessage}
                 totalMessages={messages.length}
               />
             ))
@@ -1126,6 +1288,7 @@ function toChatMessage(
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
   fileToken?: string,
+  readLabel?: string,
 ): ChatMessage {
   const senderProfile = profilesByUserId.get(message.sender);
   const attachments = (message.attachments ?? []).map((attachment) => ({
@@ -1142,11 +1305,57 @@ function toChatMessage(
     author: message.sender === currentUserId ? 'me' : 'them',
     attachments,
     callRoomId: message.call_room,
+    created: message.created,
     kind: message.kind,
+    readLabel,
     sender: senderProfile?.display_name || senderProfile?.username,
+    senderId: message.sender,
     text: message.body,
     time: formatMessageTime(message.created),
   };
+}
+
+function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: string): ChatMessage {
+  return {
+    id: message.id,
+    author: 'me',
+    attachments: [],
+    created: message.created,
+    deliveryStatus: 'failed',
+    failedMessageId: message.id,
+    kind: 'text',
+    senderId: currentUserId,
+    text: message.body,
+    time: formatMessageTime(message.created),
+  };
+}
+
+function getLastReadOwnMessageId(
+  messages: MessageRecord[],
+  reads: ConversationReadRecord[],
+  currentUserId: string,
+): string | null {
+  const otherReadTimes = reads
+    .filter((read) => read.user !== currentUserId)
+    .map((read) => new Date(read.last_read_at).getTime())
+    .filter((time) => !Number.isNaN(time));
+
+  if (otherReadTimes.length === 0) {
+    return null;
+  }
+
+  const latestReadTime = Math.max(...otherReadTimes);
+  const readOwnMessages = messages.filter((message) => {
+    if (message.sender !== currentUserId) {
+      return false;
+    }
+
+    const createdTime = new Date(message.created).getTime();
+
+    return !Number.isNaN(createdTime) && createdTime <= latestReadTime;
+  });
+
+  return readOwnMessages.at(-1)?.id ?? null;
 }
 
 function compareConversations(first: ConversationRecord, second: ConversationRecord): number {
@@ -1301,11 +1510,13 @@ function MessageBubble({
   conversation,
   index,
   message,
+  onRetryFailedMessage,
   totalMessages,
 }: {
   conversation: ConversationView;
   index: number;
   message: ChatMessage;
+  onRetryFailedMessage: (messageId: string) => void;
   totalMessages: number;
 }) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
@@ -1319,6 +1530,7 @@ function MessageBubble({
   );
   const isMine = message.author === 'me';
   const hasText = message.text.trim().length > 0;
+  const isFailed = message.deliveryStatus === 'failed';
   const fileName = fileAttachment ? message.text || formatAttachmentName(fileAttachment.name) : '';
   const localFileUri = fileAttachment ? getLocalMessageFileUri(message.id, fileName) : null;
   const [imageSize, setImageSize] = useState({ height: 210, width: 250 });
@@ -1593,34 +1805,48 @@ function MessageBubble({
   }
 
   return (
-    <Animated.View
-      className={`mb-2 max-w-[82%] ${isMine ? 'self-end' : 'self-start'}`}
-      style={{ opacity, transform: [{ translateY }] }}
-    >
-      <View
-        className={`rounded-[24px] px-4 py-3 ${isMine ? 'bg-foreground' : 'bg-muted'}`}
-        style={styles.bubble}
-      >
-        {!isMine && conversation.kind === 'group' && message.sender ? (
-          <Text className="mb-1 text-xs font-bold text-primary">{message.sender}</Text>
-        ) : null}
-        {hasText || message.kind === 'text' ? (
-          <Text
-            className={`text-[16px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+      <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
+        {isFailed && message.failedMessageId ? (
+          <Pressable
+            className="mb-1 h-7 w-7 items-center justify-center rounded-full bg-red-500"
+            onPress={() => onRetryFailedMessage(message.failedMessageId ?? '')}
           >
-            {message.text}
-            <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
-          </Text>
-        ) : (
-          <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
-        )}
-        <Text
-          className={`absolute bottom-3 right-4 text-[11px] font-medium ${
-            isMine ? 'text-background/55' : 'text-muted-foreground'
-          }`}
-        >
-          {message.time}
-        </Text>
+            <Ionicons color="#fff" name="alert" size={16} />
+          </Pressable>
+        ) : null}
+        <View className="max-w-[82%]">
+          <View
+            className={`rounded-[24px] px-4 py-3 ${isFailed ? 'bg-foreground/80' : isMine ? 'bg-foreground' : 'bg-muted'}`}
+            style={styles.bubble}
+          >
+            {!isMine && conversation.kind === 'group' && message.sender ? (
+              <Text className="mb-1 text-xs font-bold text-primary">{message.sender}</Text>
+            ) : null}
+            {hasText || message.kind === 'text' ? (
+              <Text
+                className={`text-[16px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+              >
+                {message.text}
+                <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
+              </Text>
+            ) : (
+              <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
+            )}
+            <Text
+              className={`absolute bottom-3 right-4 text-[11px] font-medium ${
+                isMine ? 'text-background/55' : 'text-muted-foreground'
+              }`}
+            >
+              {message.time}
+            </Text>
+          </View>
+          {message.readLabel || isFailed ? (
+            <Text className="mt-1 self-end text-[11px] font-semibold text-muted-foreground">
+              {isFailed ? 'Not sent' : message.readLabel}
+            </Text>
+          ) : null}
+        </View>
       </View>
     </Animated.View>
   );
