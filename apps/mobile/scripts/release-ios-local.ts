@@ -76,6 +76,7 @@ Options:
 Environment:
   ASC_APP_ID, ASC_GROUP_ID, DEVELOPMENT_TEAM, SCHEME
   EXPO_PUBLIC_POCKETBASE_URL, EXPO_PUBLIC_LIVEKIT_URL
+  EXPO_PUBLIC_APNS_ENV must be unset or production for TestFlight/App Store builds
 
 Examples:
   bun ./scripts/release-ios-local.ts --no-upload
@@ -396,6 +397,8 @@ async function main() {
   const bundleId = appConfig.expo.ios.bundleIdentifier;
   const pocketbaseUrl = process.env.EXPO_PUBLIC_POCKETBASE_URL || '';
   const livekitUrl = process.env.EXPO_PUBLIC_LIVEKIT_URL || '';
+  const requestedApnsEnv = (process.env.EXPO_PUBLIC_APNS_ENV || '').trim().toLowerCase();
+  const apnsEnv = 'production';
 
   if (!pocketbaseUrl) {
     throw new Error(
@@ -408,6 +411,11 @@ async function main() {
   ) {
     throw new Error(
       'EXPO_PUBLIC_POCKETBASE_URL points to localhost. Refusing to create a TestFlight build for a local backend.',
+    );
+  }
+  if (requestedApnsEnv && requestedApnsEnv !== 'production') {
+    throw new Error(
+      `EXPO_PUBLIC_APNS_ENV=${requestedApnsEnv} would register TestFlight devices against the wrong APNs environment. Unset it or set EXPO_PUBLIC_APNS_ENV=production.`,
     );
   }
 
@@ -474,6 +482,7 @@ async function main() {
   console.log(`${label('Bundle identifier')} ${bundleId}`);
   console.log(`${label('PocketBase URL')} ${pocketbaseUrl}`);
   if (livekitUrl) console.log(`${label('LiveKit URL')} ${livekitUrl}`);
+  console.log(`${label('APNs environment')} ${apnsEnv}`);
   console.log(`${label('Temporary logs')} ${tempRoot} ${dim('(kept on failure)')}`);
 
   if (iosAction === 'clean')
@@ -507,6 +516,7 @@ async function main() {
 
   const buildEnv = {
     ...process.env,
+    EXPO_PUBLIC_APNS_ENV: apnsEnv,
     EXPO_PUBLIC_POCKETBASE_URL: pocketbaseUrl,
     ...(livekitUrl ? { EXPO_PUBLIC_LIVEKIT_URL: livekitUrl } : {}),
   };

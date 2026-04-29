@@ -168,8 +168,11 @@ async function registerVoipToken(token: string, appVersion?: string) {
 }
 
 function getPushEnvironment(): PushEnvironment {
-  const publicEnv = process.env.EXPO_PUBLIC_APNS_ENV;
-  const configuredEnv = Constants.expoConfig?.extra?.apnsEnv;
+  const publicEnv = process.env.EXPO_PUBLIC_APNS_ENV?.trim().toLowerCase();
 
-  return publicEnv === 'production' || configuredEnv === 'production' ? 'production' : 'sandbox';
+  if (publicEnv === 'sandbox' || publicEnv === 'production') {
+    return publicEnv;
+  }
+
+  return __DEV__ ? 'sandbox' : 'production';
 }

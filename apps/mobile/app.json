@@ -43,7 +43,6 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "apnsEnv": "sandbox",
       "pocketbaseUrl": "http://127.0.0.1:8090",
       "livekitUrl": "ws://127.0.0.1:7880"
     },
