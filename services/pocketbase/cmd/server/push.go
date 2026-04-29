@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha1"
+	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -106,6 +107,10 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 		dbx.Params{"deviceId": deviceId, "platform": platform, "userId": userId},
 	)
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+
 		collection, collectionErr := app.FindCollectionByNameOrId("push_devices")
 		if collectionErr != nil {
 			return nil, collectionErr
@@ -121,12 +126,15 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 	device.Set("environment", environment)
 	if apnsToken != "" {
 		device.Set("apns_token", apnsToken)
+		device.Set("apns_disabled_at", "")
 	}
 	if voipToken != "" {
 		device.Set("voip_token", voipToken)
+		device.Set("voip_disabled_at", "")
 	}
 	if fcmToken != "" {
 		device.Set("fcm_token", fcmToken)
+		device.Set("fcm_disabled_at", "")
 	}
 	device.Set("app_version", strings.TrimSpace(data.AppVersion))
 	device.Set("last_seen_at", now)
@@ -135,8 +143,53 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 	if err := app.Save(device); err != nil {
 		return nil, err
 	}
+	if apnsToken != "" {
+		if err := clearDuplicatePushToken(app, device, "apns_token", apnsToken); err != nil {
+			return nil, err
+		}
+	}
+	if voipToken != "" {
+		if err := clearDuplicatePushToken(app, device, "voip_token", voipToken); err != nil {
+			return nil, err
+		}
+	}
+	if fcmToken != "" {
+		if err := clearDuplicatePushToken(app, device, "fcm_token", fcmToken); err != nil {
+			return nil, err
+		}
+	}
 
 	return device, nil
+}
+
+func clearDuplicatePushToken(app core.App, currentDevice *core.Record, tokenField string, tokenValue string) error {
+	disabledField := disabledFieldForPushToken(tokenField)
+	if disabledField == "" {
+		return nil
+	}
+
+	devices, err := app.FindRecordsByFilter(
+		"push_devices",
+		fmt.Sprintf("%s={:token} && id!={:currentDeviceId}", tokenField),
+		"",
+		0,
+		0,
+		dbx.Params{"currentDeviceId": currentDevice.Id, "token": tokenValue},
+	)
+	if err != nil {
+		return err
+	}
+
+	now := types.NowDateTime()
+	for _, device := range devices {
+		device.Set(tokenField, "")
+		device.Set(disabledField, now)
+		if err := app.Save(device); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func sendMessagePushNotifications(app core.App, message *core.Record) {
@@ -245,6 +298,10 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 
 	var sendErr error
 	for _, device := range devices {
+		if device.GetString(disabledFieldForPushToken(tokenField)) != "" {
+			continue
+		}
+
 		token := strings.TrimSpace(device.GetString(tokenField))
 		if token == "" {
 			continue
@@ -264,7 +321,7 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 		sendErr = responseErr
 		log.Printf("push: APNs rejected device %s: %v", device.Id, responseErr)
 		if isInvalidAPNsDeviceTokenReason(response.Reason) {
-			if err := disablePushDevice(app, device); err != nil {
+			if err := disablePushDeviceToken(app, device, tokenField); err != nil {
 				log.Printf("push: could not disable invalid push device %s: %v", device.Id, err)
 			}
 		}
@@ -341,9 +398,28 @@ func (provider *apnsProvider) send(environment string, deviceToken string, pushT
 	return client.PushWithContext(ctx, notification)
 }
 
-func disablePushDevice(app core.App, device *core.Record) error {
-	device.Set("disabled_at", types.NowDateTime())
+func disablePushDeviceToken(app core.App, device *core.Record, tokenField string) error {
+	disabledField := disabledFieldForPushToken(tokenField)
+	if disabledField == "" {
+		return nil
+	}
+
+	device.Set(tokenField, "")
+	device.Set(disabledField, types.NowDateTime())
 	return app.Save(device)
+}
+
+func disabledFieldForPushToken(tokenField string) string {
+	switch tokenField {
+	case "apns_token":
+		return "apns_disabled_at"
+	case "voip_token":
+		return "voip_disabled_at"
+	case "fcm_token":
+		return "fcm_disabled_at"
+	default:
+		return ""
+	}
 }
 
 func isInvalidAPNsDeviceTokenReason(reason string) bool {

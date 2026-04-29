@@ -10,8 +10,11 @@ export type PushDeviceRecord = {
   platform: PushPlatform;
   environment: PushEnvironment;
   apns_token?: string;
+  apns_disabled_at?: string;
   voip_token?: string;
+  voip_disabled_at?: string;
   fcm_token?: string;
+  fcm_disabled_at?: string;
   app_version?: string;
   last_seen_at?: string;
   disabled_at?: string;
