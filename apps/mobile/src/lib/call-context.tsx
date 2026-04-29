@@ -9,6 +9,7 @@ import {
 } from '@livekit/react-native';
 import { endCall, joinCall, type CallRoomRecord } from '@infchat/pocketbase';
 import { router, usePathname } from 'expo-router';
+import { useKeepAwake } from 'expo-keep-awake';
 import { Track } from 'livekit-client';
 import {
   createContext,
@@ -169,6 +170,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       token={activeSession.token}
       video={activeSession.callRoom.kind === 'video'}
     >
+      <ActiveCallKeepAwake />
       {children}
       {pathname.startsWith('/call/') ? null : (
         <ActiveCallMiniWindow callRoom={activeSession.callRoom} />
@@ -179,6 +181,12 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   );
 
   return <CallSessionContext.Provider value={contextValue}>{content}</CallSessionContext.Provider>;
+}
+
+function ActiveCallKeepAwake() {
+  useKeepAwake();
+
+  return null;
 }
 
 export function useCallSession(): CallSessionContextValue {

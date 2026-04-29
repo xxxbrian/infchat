@@ -50,6 +50,13 @@ export async function getActiveCallForConversation(
   }
 }
 
+export function listActiveCalls(pb: PocketBase): Promise<CallRoomRecord[]> {
+  return pb.collection('call_rooms').getFullList<CallRoomRecord>({
+    filter: pb.filter('status!={:status}', { status: 'ended' }),
+    sort: '-created',
+  });
+}
+
 export function joinCall(
   pb: PocketBase,
   callRoomId: string,

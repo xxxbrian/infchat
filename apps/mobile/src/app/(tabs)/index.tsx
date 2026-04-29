@@ -2,6 +2,8 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useNetInfo } from '@react-native-community/netinfo';
 import {
   getProfileAvatarUrl,
+  listActiveCalls,
+  type CallRoomRecord,
   type ConversationRecord,
   type ProfileRecord,
 } from '@infchat/pocketbase';
@@ -37,6 +39,7 @@ type ConversationView = {
   avatarUrl?: string | null;
   avatarUserId: string;
   avatarUsername: string;
+  activeCall?: CallRoomRecord;
   members?: string[];
 };
 
@@ -76,7 +79,22 @@ export default function ChatTab() {
     queryFn: () => pb.files.getToken(),
     staleTime: 1000 * 60 * 5,
   });
+  const activeCallsQuery = useQuery({
+    queryKey: ['active-calls', authRecord.id],
+    queryFn: () => listActiveCalls(pb),
+  });
   const conversations = conversationsQuery.data ?? [];
+  const activeCallByConversation = useMemo(() => {
+    const calls = new Map<string, CallRoomRecord>();
+
+    for (const callRoom of activeCallsQuery.data ?? []) {
+      if (!calls.has(callRoom.conversation)) {
+        calls.set(callRoom.conversation, callRoom);
+      }
+    }
+
+    return calls;
+  }, [activeCallsQuery.data]);
   const relatedUserIds = useMemo(() => {
     const ids = new Set<string>();
 
@@ -107,9 +125,15 @@ export default function ChatTab() {
   const conversationViews = useMemo(
     () =>
       conversations.map((conversation) =>
-        toConversationView(conversation, profilesByUserId, authRecord.id, fileTokenQuery.data),
+        toConversationView(
+          conversation,
+          profilesByUserId,
+          authRecord.id,
+          fileTokenQuery.data,
+          activeCallByConversation.get(conversation.id),
+        ),
       ),
-    [authRecord.id, conversations, fileTokenQuery.data, profilesByUserId],
+    [authRecord.id, activeCallByConversation, conversations, fileTokenQuery.data, profilesByUserId],
   );
   const visibleConversations = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -147,6 +171,10 @@ export default function ChatTab() {
       pb.collection('messages').subscribe('*', () => {
         queryClient.invalidateQueries({ queryKey: ['conversations'] });
       }),
+      pb.collection('call_rooms').subscribe('*', () => {
+        queryClient.invalidateQueries({ queryKey: ['active-calls'] });
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
       pb.collection('profiles').subscribe('*', () => {
         queryClient.invalidateQueries({ queryKey: ['profiles'] });
       }),
@@ -178,6 +206,7 @@ export default function ChatTab() {
     try {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+        queryClient.invalidateQueries({ queryKey: ['active-calls'] }),
         queryClient.invalidateQueries({ queryKey: ['profiles'] }),
       ]);
     } finally {
@@ -383,6 +412,7 @@ function toConversationView(
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
   fileToken?: string,
+  activeCall?: CallRoomRecord,
 ): ConversationView {
   const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
   const otherProfiles = otherMemberIds
@@ -409,6 +439,7 @@ function toConversationView(
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
+    activeCall,
     members: otherProfiles.map((profile) => profile.display_name || profile.username),
   };
 }
@@ -512,7 +543,16 @@ function ConversationRow({
           <Text className="flex-1 text-[15px] text-muted-foreground" numberOfLines={1}>
             {conversation.message}
           </Text>
-          {conversation.unread > 0 ? (
+          {conversation.activeCall ? (
+            <View className="flex-row items-center gap-1 rounded-full bg-emerald-400/15 px-2.5 py-1">
+              <Ionicons
+                color="#34d399"
+                name={conversation.activeCall.kind === 'video' ? 'videocam' : 'call'}
+                size={12}
+              />
+              <Text className="text-[11px] font-black text-emerald-300">In call</Text>
+            </View>
+          ) : conversation.unread > 0 ? (
             <View className="h-6 min-w-6 items-center justify-center rounded-full bg-primary px-2">
               <Text className="text-xs font-bold text-primary-foreground">
                 {conversation.unread}

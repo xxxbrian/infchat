@@ -70,6 +70,9 @@ importers:
       expo-image-picker:
         specifier: ~55.0.19
         version: 55.0.19(expo@55.0.17)
+      expo-keep-awake:
+        specifier: ^55.0.6
+        version: 55.0.6(expo@55.0.17)(react@19.2.0)
       expo-linear-gradient:
         specifier: ~55.0.13
         version: 55.0.13(expo@55.0.17)(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
