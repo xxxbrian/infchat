@@ -99,6 +99,8 @@ const COMPOSER_INPUT_MAX_CONTENT_HEIGHT = COMPOSER_INPUT_LINE_HEIGHT * 5;
 const JUMP_BUTTON_FAR_FROM_BOTTOM = 420;
 const JUMP_BUTTON_NEAR_BOTTOM = 120;
 const SCROLL_DIRECTION_THRESHOLD = 6;
+const ATTACHMENT_MENU_ROW_HEIGHT = 54;
+const ATTACHMENT_MENU_GAP = 10;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -115,10 +117,13 @@ export default function ChatDetailScreen() {
   const composerProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeight = useRef(new Animated.Value(0)).current;
   const composerAttachmentProgress = useRef(new Animated.Value(1)).current;
+  const attachmentMenuProgress = useRef(new Animated.Value(0)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeightValue = useRef(0);
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
+  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
+  const [isAttachmentMenuTouchable, setIsAttachmentMenuTouchable] = useState(false);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
@@ -340,11 +345,30 @@ export default function ChatDetailScreen() {
       useNativeDriver: false,
     }).start();
   };
+  const setAttachmentMenuVisible = (visible: boolean) => {
+    setIsAttachmentMenuOpen(visible);
+    if (visible) {
+      setIsAttachmentMenuTouchable(true);
+    }
+
+    Animated.spring(attachmentMenuProgress, {
+      toValue: visible ? 1 : 0,
+      damping: 22,
+      mass: 0.72,
+      stiffness: 230,
+      useNativeDriver: true,
+    }).start(() => {
+      if (!visible) {
+        setIsAttachmentMenuTouchable(false);
+      }
+    });
+  };
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
     const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      setAttachmentMenuVisible(false);
       setIsComposerExpanded(true);
       syncMessagesToBottom();
       animateComposer(1, event.duration ?? 240);
@@ -365,7 +389,7 @@ export default function ChatDetailScreen() {
       hideSubscription.remove();
       changeFrameSubscription?.remove();
     };
-  }, [composerProgress]);
+  }, [attachmentMenuProgress, composerProgress]);
 
   useEffect(() => {
     Animated.timing(composerAttachmentProgress, {
@@ -443,6 +467,34 @@ export default function ChatDetailScreen() {
     inputRange: [0, 1],
     outputRange: [1, 0.82],
   });
+  const addButtonRotate = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ['0deg', '45deg'],
+  });
+  const attachmentBackdropOpacity = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.42],
+  });
+  const attachmentMenuOpacity = attachmentMenuProgress.interpolate({
+    inputRange: [0, 0.3, 1],
+    outputRange: [0, 1, 1],
+  });
+  const attachmentMenuScale = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.88, 1],
+  });
+  const attachmentMenuTranslateX = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-18, 0],
+  });
+  const imageActionTranslateY = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [ATTACHMENT_MENU_ROW_HEIGHT * 2 + ATTACHMENT_MENU_GAP, 0],
+  });
+  const fileActionTranslateY = attachmentMenuProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [ATTACHMENT_MENU_ROW_HEIGHT + ATTACHMENT_MENU_GAP, 0],
+  });
   const jumpButtonBaseBottom = composerProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [
@@ -514,6 +566,15 @@ export default function ChatDetailScreen() {
     }
 
     lastScrollY.current = y;
+  };
+
+  const handleToggleAttachmentMenu = () => {
+    if (isComposerExpanded) {
+      return;
+    }
+
+    Keyboard.dismiss();
+    setAttachmentMenuVisible(!isAttachmentMenuOpen);
   };
 
   const handleComposerContentSizeChange = (
@@ -588,6 +649,8 @@ export default function ChatDetailScreen() {
       return;
     }
 
+    setAttachmentMenuVisible(false);
+
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
       Alert.alert('Photos access needed', 'Allow photos access to send an image.');
@@ -618,6 +681,8 @@ export default function ChatDetailScreen() {
     if (sendAttachmentMutation.isPending) {
       return;
     }
+
+    setAttachmentMenuVisible(false);
 
     const result = await DocumentPicker.getDocumentAsync({
       copyToCacheDirectory: true,
@@ -678,7 +743,10 @@ export default function ChatDetailScreen() {
           keyboardShouldPersistTaps="handled"
           onContentSizeChange={handleContentSizeChange}
           onScroll={handleScroll}
-          onScrollBeginDrag={Keyboard.dismiss}
+          onScrollBeginDrag={() => {
+            Keyboard.dismiss();
+            setAttachmentMenuVisible(false);
+          }}
           refreshControl={
             <RefreshControl
               colors={['#f8fafc']}
@@ -728,6 +796,40 @@ export default function ChatDetailScreen() {
           </Pressable>
         </Animated.View>
 
+        <Animated.View
+          pointerEvents={isAttachmentMenuTouchable ? 'auto' : 'none'}
+          style={[StyleSheet.absoluteFill, { opacity: attachmentBackdropOpacity }]}
+        >
+          <Pressable className="flex-1 bg-black" onPress={() => setAttachmentMenuVisible(false)} />
+        </Animated.View>
+
+        <Animated.View
+          className="absolute left-4 gap-2"
+          pointerEvents={isAttachmentMenuTouchable ? 'auto' : 'none'}
+          style={{
+            bottom: Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 14,
+            opacity: attachmentMenuOpacity,
+            transform: [{ translateX: attachmentMenuTranslateX }, { scale: attachmentMenuScale }],
+          }}
+        >
+          <Animated.View style={{ transform: [{ translateY: imageActionTranslateY }] }}>
+            <AttachmentMenuAction
+              accent="#a78bfa"
+              icon="image"
+              label="Send image"
+              onPress={handlePickImage}
+            />
+          </Animated.View>
+          <Animated.View style={{ transform: [{ translateY: fileActionTranslateY }] }}>
+            <AttachmentMenuAction
+              accent="#38bdf8"
+              icon="document-text"
+              label="Send file"
+              onPress={handlePickFile}
+            />
+          </Animated.View>
+        </Animated.View>
+
         <View
           className="absolute left-0 right-0 bg-background/95 px-3 pt-2"
           style={{ bottom: 0, paddingBottom: Math.max(insets.bottom, 10) }}
@@ -742,8 +844,14 @@ export default function ChatDetailScreen() {
                 width: addButtonWidth,
               }}
             >
-              <Pressable className="h-[46px] w-[46px] items-center justify-center rounded-full bg-muted">
-                <Ionicons color="#f8fafc" name="add" size={22} />
+              <Pressable
+                className="h-[46px] w-[46px] items-center justify-center rounded-full bg-muted"
+                onPress={handleToggleAttachmentMenu}
+                style={styles.addButton}
+              >
+                <Animated.View style={{ transform: [{ rotate: addButtonRotate }] }}>
+                  <Ionicons color="#f8fafc" name="add" size={22} />
+                </Animated.View>
               </Pressable>
             </Animated.View>
             <Animated.View
@@ -760,6 +868,7 @@ export default function ChatDetailScreen() {
                 onChangeText={setComposerText}
                 onContentSizeChange={handleComposerContentSizeChange}
                 onFocus={() => {
+                  setAttachmentMenuVisible(false);
                   setIsComposerExpanded(true);
                   syncMessagesToBottom();
                   animateComposer(1, 220);
@@ -1418,6 +1527,34 @@ function EmptyConversation({ label }: { label: string }) {
   );
 }
 
+function AttachmentMenuAction({
+  accent,
+  icon,
+  label,
+  onPress,
+}: {
+  accent: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      className="h-[54px] flex-row items-center rounded-full border border-white/10 bg-background/95 py-1 pl-1 pr-4"
+      onPress={onPress}
+      style={styles.attachmentMenuAction}
+    >
+      <View
+        className="h-[46px] w-[46px] items-center justify-center rounded-full"
+        style={{ backgroundColor: accent }}
+      >
+        <Ionicons color="#080b12" name={icon} size={21} />
+      </View>
+      <Text className="ml-3 text-base font-black text-foreground">{label}</Text>
+    </Pressable>
+  );
+}
+
 function IconButton({
   name,
   onPress,
@@ -1469,4 +1606,18 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.24,
     shadowRadius: 18,
   },
+  addButton: {
+    borderCurve: 'continuous',
+    shadowColor: '#000',
+    shadowOffset: { height: 8, width: 0 },
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
+  } as ViewStyle,
+  attachmentMenuAction: {
+    borderCurve: 'continuous',
+    shadowColor: '#000',
+    shadowOffset: { height: 12, width: 0 },
+    shadowOpacity: 0.28,
+    shadowRadius: 26,
+  } as ViewStyle,
 });
