@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pocketbase/dbx"
@@ -22,6 +23,12 @@ import (
 )
 
 const apnsRequestTimeout = 8 * time.Second
+
+var (
+	cachedAPNsProvider     *apnsProvider
+	cachedAPNsProviderErr  error
+	cachedAPNsProviderOnce sync.Once
+)
 
 type pushDeviceRegisterRequest struct {
 	ApnsToken   string `json:"apnsToken" form:"apnsToken"`
@@ -208,7 +215,7 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 }
 
 func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, payload map[string]any) error {
-	provider, err := newAPNsProvider()
+	provider, err := configuredAPNsProvider()
 	if err != nil {
 		log.Printf("push: APNs disabled: %v", err)
 		return nil
@@ -226,18 +233,42 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 		return err
 	}
 
+	var sendErr error
 	for _, device := range devices {
 		token := strings.TrimSpace(device.GetString(tokenField))
 		if token == "" {
 			continue
 		}
 
-		if err := provider.send(device.GetString("environment"), token, pushType, priority, topicSuffix, payload); err != nil {
-			return err
+		response, err := provider.send(device.GetString("environment"), token, pushType, priority, topicSuffix, payload)
+		if err != nil {
+			sendErr = err
+			log.Printf("push: APNs request failed for device %s: %v", device.Id, err)
+			continue
+		}
+		if response.Sent() {
+			continue
+		}
+
+		responseErr := fmt.Errorf("APNs returned %d: %s", response.StatusCode, response.Reason)
+		sendErr = responseErr
+		log.Printf("push: APNs rejected device %s: %v", device.Id, responseErr)
+		if isInvalidAPNsDeviceTokenReason(response.Reason) {
+			if err := disablePushDevice(app, device); err != nil {
+				log.Printf("push: could not disable invalid push device %s: %v", device.Id, err)
+			}
 		}
 	}
 
-	return nil
+	return sendErr
+}
+
+func configuredAPNsProvider() (*apnsProvider, error) {
+	cachedAPNsProviderOnce.Do(func() {
+		cachedAPNsProvider, cachedAPNsProviderErr = newAPNsProvider()
+	})
+
+	return cachedAPNsProvider, cachedAPNsProviderErr
 }
 
 func newAPNsProvider() (*apnsProvider, error) {
@@ -276,7 +307,7 @@ func newAPNsProvider() (*apnsProvider, error) {
 	}, nil
 }
 
-func (provider *apnsProvider) send(environment string, deviceToken string, pushType apns2.EPushType, priority int, topicSuffix string, payload map[string]any) error {
+func (provider *apnsProvider) send(environment string, deviceToken string, pushType apns2.EPushType, priority int, topicSuffix string, payload map[string]any) (*apns2.Response, error) {
 	client := provider.developmentClient
 	if normalizePushEnvironment(environment) == "production" {
 		client = provider.productionClient
@@ -297,16 +328,21 @@ func (provider *apnsProvider) send(environment string, deviceToken string, pushT
 	ctx, cancel := context.WithTimeout(context.Background(), apnsRequestTimeout)
 	defer cancel()
 
-	response, err := client.PushWithContext(ctx, notification)
-	if err != nil {
-		return err
-	}
+	return client.PushWithContext(ctx, notification)
+}
 
-	if response.Sent() {
-		return nil
-	}
+func disablePushDevice(app core.App, device *core.Record) error {
+	device.Set("disabled_at", types.NowDateTime())
+	return app.Save(device)
+}
 
-	return fmt.Errorf("APNs returned %d: %s", response.StatusCode, response.Reason)
+func isInvalidAPNsDeviceTokenReason(reason string) bool {
+	switch reason {
+	case "BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizePushEnvironment(value string) string {
