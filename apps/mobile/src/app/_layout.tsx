@@ -27,7 +27,7 @@ import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
-import { CallSessionProvider } from '../lib/call-context';
+import { CallSessionProvider, useCallSession } from '../lib/call-context';
 import { pb } from '../lib/pocketbase';
 import {
   registerIOSPushDevice,
@@ -143,16 +143,22 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
 function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
+  const { activeSession, isJoining } = useCallSession();
   const slide = useRef(new Animated.Value(0)).current;
   const seenCallIds = useRef(new Set<string>());
   const [incomingCall, setIncomingCall] = useState<CallRoomRecord | null>(null);
   const ringingSecondsLeft = useRingingSecondsLeft(incomingCall);
+  const activeCallRoomId = activeSession?.callRoom.id;
+  const isOnCallRoute = pathname.startsWith('/call/');
 
   const showIncomingCall = (callRoom: CallRoomRecord | null | undefined) => {
     if (
       !callRoom ||
       callRoom.status !== 'ringing' ||
       callRoom.created_by === authRecord.id ||
+      activeCallRoomId === callRoom.id ||
+      isOnCallRoute ||
+      isJoining ||
       pathname === `/chat/${callRoom.conversation}` ||
       seenCallIds.current.has(callRoom.id)
     ) {
@@ -162,6 +168,16 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
     seenCallIds.current.add(callRoom.id);
     setIncomingCall(callRoom);
   };
+
+  useEffect(() => {
+    if (!incomingCall) {
+      return;
+    }
+
+    if (activeCallRoomId === incomingCall.id || isOnCallRoute || isJoining) {
+      setIncomingCall(null);
+    }
+  }, [activeCallRoomId, incomingCall, isJoining, isOnCallRoute]);
 
   useEffect(() => {
     let isMounted = true;
@@ -196,7 +212,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       isMounted = false;
       subscription.remove();
     };
-  }, [authRecord.id, pathname]);
+  }, [authRecord.id, activeCallRoomId, isJoining, isOnCallRoute, pathname]);
 
   useEffect(() => {
     let isMounted = true;
@@ -223,7 +239,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       isMounted = false;
       pb.collection('call_rooms').unsubscribe('*');
     };
-  }, [authRecord.id, pathname]);
+  }, [authRecord.id, activeCallRoomId, isJoining, isOnCallRoute, pathname]);
 
   useEffect(() => {
     if (!incomingCall) {
