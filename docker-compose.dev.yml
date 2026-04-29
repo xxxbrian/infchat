@@ -7,6 +7,12 @@ services:
     restart: unless-stopped
     command: /app/infchat-pocketbase serve --http=0.0.0.0:8090 --dev
     environment:
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-app.infchat}
+      APNS_ENV: ${APNS_ENV:-sandbox}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_PRIVATE_KEY: ${APNS_PRIVATE_KEY:-}
+      APNS_PRIVATE_KEY_BASE64: ${APNS_PRIVATE_KEY_BASE64:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
       LIVEKIT_API_KEY: devkey
       LIVEKIT_API_SECRET: devsecretdevsecretdevsecretdevsecret
       LIVEKIT_URL: ws://127.0.0.1:7880

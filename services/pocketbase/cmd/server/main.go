@@ -41,6 +41,7 @@ func main() {
 	bindFriendshipHooks(app)
 	bindConversationHooks(app)
 	bindCallRoutes(app)
+	bindPushRoutes(app)
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
@@ -149,6 +150,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
 				return err
 			}
+
+			go sendIncomingCallPushNotifications(e.App, callRoom)
 
 			return respondWithCallToken(e, callRoom, data.DeviceId)
 		})
@@ -855,6 +858,8 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("created")); err != nil {
 			return err
 		}
+
+		go sendMessagePushNotifications(e.App, e.Record)
 
 		return e.Next()
 	})
