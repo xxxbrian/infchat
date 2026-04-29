@@ -1,8 +1,13 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { getProfileAvatarUrl } from '@infchat/pocketbase';
+import {
+  getProfileAvatarUrl,
+  startCall,
+  startPrivateConversation,
+  type CallKind,
+} from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import MaskedView from '@react-native-masked-view/masked-view';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,6 +15,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
   Animated,
+  Alert,
   Image,
   Pressable,
   StyleSheet,
@@ -21,6 +27,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import { getDeviceId } from '../../lib/device-id';
 import { getCachedProfileByUserId } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
@@ -37,6 +44,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { authRecord } = useAuth();
+  const queryClient = useQueryClient();
   const scrollY = useRef(new Animated.Value(0)).current;
   const profileExpansion = useRef(new Animated.Value(0)).current;
   const scrollYValue = useRef(0);
@@ -55,6 +63,7 @@ export default function ProfileScreen() {
     staleTime: 1000 * 60 * 5,
   });
   const profile = profileQuery.data;
+  const canContactProfile = Boolean(profileUserId && profileUserId !== authRecord.id && profile);
   const displayName = profile?.display_name || profile?.username || 'Profile';
   const username = profile?.username || 'unknown';
   const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
@@ -97,6 +106,60 @@ export default function ProfileScreen() {
   });
   const initial = getAvatarInitial(displayName, username);
   const fallbackAvatarColor = getAvatarColor(profile?.user || profileUserId || username);
+  const startChatMutation = useMutation({
+    mutationFn: () => startPrivateConversation(pb, profileUserId),
+    onSuccess: (conversation) => {
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
+    },
+    onError: (error) => {
+      Alert.alert(
+        'Could not open chat',
+        getErrorMessage(error, 'Check your connection and try again.'),
+      );
+    },
+  });
+  const startCallMutation = useMutation({
+    mutationFn: async (kind: CallKind) => {
+      const conversation = await startPrivateConversation(pb, profileUserId);
+      const deviceId = await getDeviceId();
+      const call = await startCall(pb, conversation.id, kind, deviceId);
+
+      return { call, conversation };
+    },
+    onSuccess: ({ call, conversation }) => {
+      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      queryClient.invalidateQueries({
+        queryKey: ['active-call', conversation.id],
+      });
+      router.push({ pathname: '/call/[id]', params: { id: call.callRoom.id } });
+    },
+    onError: (error) => {
+      Alert.alert(
+        'Call unavailable',
+        getErrorMessage(error, 'Check your connection and try again.'),
+      );
+    },
+  });
+  const isContactActionPending = startChatMutation.isPending || startCallMutation.isPending;
+
+  const handleOpenChat = () => {
+    if (!canContactProfile || isContactActionPending) {
+      return;
+    }
+
+    void Haptics.selectionAsync();
+    startChatMutation.mutate();
+  };
+
+  const handleStartCall = (kind: CallKind) => {
+    if (!canContactProfile || isContactActionPending) {
+      return;
+    }
+
+    void Haptics.selectionAsync();
+    startCallMutation.mutate(kind);
+  };
   const animateProfileExpansion = (isExpanded: boolean) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Animated.timing(profileExpansion, {
@@ -250,9 +313,24 @@ export default function ProfileScreen() {
 
         <View className="px-5 pt-5">
           <View className="mb-5 flex-row gap-3">
-            <ProfileAction icon="chatbubble" label="message" />
-            <ProfileAction icon="call" label="call" />
-            <ProfileAction icon="videocam" label="video" />
+            <ProfileAction
+              disabled={!canContactProfile || isContactActionPending}
+              icon="chatbubble"
+              label="message"
+              onPress={handleOpenChat}
+            />
+            <ProfileAction
+              disabled={!canContactProfile || isContactActionPending}
+              icon="call"
+              label="call"
+              onPress={() => handleStartCall('voice')}
+            />
+            <ProfileAction
+              disabled={!canContactProfile || isContactActionPending}
+              icon="videocam"
+              label="video"
+              onPress={() => handleStartCall('video')}
+            />
             <ProfileAction icon="search" label="search" />
             <ProfileAction icon="ellipsis-horizontal" label="more" />
           </View>
@@ -269,9 +347,24 @@ export default function ProfileScreen() {
   );
 }
 
-function ProfileAction({ icon, label }: { icon: keyof typeof Ionicons.glyphMap; label: string }) {
+function ProfileAction({
+  disabled,
+  icon,
+  label,
+  onPress,
+}: {
+  disabled?: boolean;
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress?: () => void;
+}) {
   return (
-    <Pressable className="h-[58px] flex-1 items-center justify-center rounded-[22px] bg-muted">
+    <Pressable
+      className="h-[58px] flex-1 items-center justify-center rounded-[22px] bg-muted"
+      disabled={disabled}
+      onPress={onPress}
+      style={disabled ? styles.disabledAction : undefined}
+    >
       <Ionicons color="#f8fafc" name={icon} size={18} />
       <Text className="mt-1.5 text-[10px] font-bold text-muted-foreground" numberOfLines={1}>
         {label}
@@ -295,7 +388,21 @@ function InfoRow({ isLast, label, value }: { isLast?: boolean; label: string; va
   );
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
+}
+
 const styles = StyleSheet.create({
+  disabledAction: {
+    opacity: 0.45,
+  } as ViewStyle,
   header: {
     paddingHorizontal: HEADER_SIDE_PADDING,
   } as ViewStyle,
