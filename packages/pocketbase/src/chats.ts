@@ -1,7 +1,7 @@
 import type PocketBase from 'pocketbase';
 
 export type ConversationKind = 'private' | 'group';
-export type MessageKind = 'text' | 'image' | 'file' | 'voice';
+export type MessageKind = 'text' | 'image' | 'file' | 'voice' | 'call';
 
 export type MessageUploadFile = {
   uri: string;
@@ -28,6 +28,7 @@ export type MessageRecord = {
   sender: string;
   kind: MessageKind;
   body: string;
+  call_room?: string;
   attachments?: string[];
   collectionId: string;
   collectionName: string;

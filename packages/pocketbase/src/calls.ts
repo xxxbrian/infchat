@@ -33,6 +33,23 @@ export function startCall(
   });
 }
 
+export async function getActiveCallForConversation(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<CallRoomRecord | null> {
+  try {
+    return await pb.collection('call_rooms').getFirstListItem<CallRoomRecord>(
+      pb.filter('conversation={:conversationId} && status!={:status}', {
+        conversationId,
+        status: 'ended',
+      }),
+      { sort: '-created' },
+    );
+  } catch {
+    return null;
+  }
+}
+
 export function joinCall(
   pb: PocketBase,
   callRoomId: string,

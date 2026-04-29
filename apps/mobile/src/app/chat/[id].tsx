@@ -3,10 +3,12 @@ import { useNetInfo } from '@react-native-community/netinfo';
 import {
   getMessageAttachmentUrl,
   getProfileAvatarUrl,
+  getActiveCallForConversation,
   sendFileMessage,
   sendImageMessage,
   sendTextMessage,
   startCall,
+  type CallRoomRecord,
   type CallKind,
   type ConversationRecord,
   type MessageRecord,
@@ -71,6 +73,7 @@ type ChatMessage = {
   id: string;
   author: 'me' | 'them';
   attachments: MessageAttachment[];
+  callRoomId?: string;
   kind: MessageRecord['kind'];
   sender?: string;
   text: string;
@@ -135,6 +138,11 @@ export default function ChatDetailScreen() {
   const messagesQuery = useQuery({
     queryKey: ['messages', conversationId],
     queryFn: () => listCachedMessages(pb, conversationId),
+    enabled: Boolean(conversationId),
+  });
+  const activeCallQuery = useQuery({
+    queryKey: ['active-call', conversationId],
+    queryFn: () => getActiveCallForConversation(pb, conversationId),
     enabled: Boolean(conversationId),
   });
   const memberIds = useMemo(
@@ -217,13 +225,16 @@ export default function ChatDetailScreen() {
       return startCall(pb, conversationId, kind, deviceId);
     },
     onSuccess: (response) => {
+      queryClient.invalidateQueries({
+        queryKey: ['active-call', conversationId],
+      });
       router.push({
         pathname: '/call/[id]',
         params: { id: response.callRoom.id },
       });
     },
     onError: () => {
-      Alert.alert('Could not start call', 'Check your connection and try again.');
+      Alert.alert('Could not start or join call', 'Check your connection and try again.');
     },
   });
   useEffect(() => {
@@ -255,6 +266,16 @@ export default function ChatDetailScreen() {
         });
         queryClient.invalidateQueries({
           queryKey: ['conversation', conversationId],
+        });
+        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      }),
+      pb.collection('call_rooms').subscribe('*', (event) => {
+        if (event.record?.conversation !== conversationId) {
+          return;
+        }
+
+        queryClient.invalidateQueries({
+          queryKey: ['active-call', conversationId],
         });
         queryClient.invalidateQueries({ queryKey: ['conversations'] });
       }),
@@ -543,6 +564,15 @@ export default function ChatDetailScreen() {
     startCallMutation.mutate(kind);
   };
 
+  const handleJoinActiveCall = () => {
+    const activeCall = activeCallQuery.data;
+    if (!activeCall) {
+      return;
+    }
+
+    router.push({ pathname: '/call/[id]', params: { id: activeCall.id } });
+  };
+
   const handlePickImage = async () => {
     if (sendAttachmentMutation.isPending) {
       return;
@@ -622,6 +652,10 @@ export default function ChatDetailScreen() {
             </View>
           </View>
         </View>
+
+        {activeCallQuery.data ? (
+          <ActiveCallBanner callRoom={activeCallQuery.data} onJoin={handleJoinActiveCall} />
+        ) : null}
 
         <ScrollView
           className="flex-1"
@@ -833,6 +867,7 @@ function toChatMessage(
     id: message.id,
     author: message.sender === currentUserId ? 'me' : 'them',
     attachments,
+    callRoomId: message.call_room,
     kind: message.kind,
     sender: senderProfile?.display_name || senderProfile?.username,
     text: message.body,
@@ -937,6 +972,34 @@ function ConversationIdentity({ conversation }: { conversation: ConversationView
   );
 }
 
+function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJoin: () => void }) {
+  const isVideo = callRoom.kind === 'video';
+  const statusLabel = callRoom.status === 'ringing' ? 'Ringing' : 'In progress';
+
+  return (
+    <Pressable
+      className="mx-3 mt-3 flex-row items-center rounded-[24px] border border-emerald-400/25 bg-emerald-400/10 p-3"
+      onPress={onJoin}
+    >
+      <View className="h-11 w-11 items-center justify-center rounded-full bg-emerald-400">
+        <Ionicons color="#080b12" name={isVideo ? 'videocam' : 'call'} size={20} />
+      </View>
+      <View className="ml-3 min-w-0 flex-1">
+        <Text className="text-base font-black text-foreground">
+          {isVideo ? 'Video call' : 'Voice call'} is active
+        </Text>
+        <Text className="mt-0.5 text-sm font-semibold text-emerald-100/70">
+          {statusLabel} · tap to join from this device
+        </Text>
+      </View>
+      <View className="ml-3 flex-row items-center rounded-full bg-foreground px-3 py-2">
+        <Text className="text-sm font-black text-background">Join</Text>
+        <Ionicons color="#080b12" name="chevron-forward" size={16} />
+      </View>
+    </Pressable>
+  );
+}
+
 function MessageBubble({
   conversation,
   index,
@@ -1019,6 +1082,32 @@ function MessageBubble({
       isMounted = false;
     };
   }, [localFileUri]);
+
+  if (message.kind === 'call') {
+    const isVideo = message.text.toLowerCase().includes('video');
+    const isMissed = message.text.toLowerCase().includes('missed');
+
+    return (
+      <Animated.View
+        className="my-3 self-center rounded-full border border-border/70 bg-muted/70 px-4 py-2"
+        style={{ opacity, transform: [{ translateY }] }}
+      >
+        <View className="flex-row items-center gap-2">
+          <View
+            className={`h-7 w-7 items-center justify-center rounded-full ${isMissed ? 'bg-red-500/20' : 'bg-emerald-400/20'}`}
+          >
+            <Ionicons
+              color={isMissed ? '#fb7185' : '#34d399'}
+              name={isVideo ? 'videocam' : 'call'}
+              size={14}
+            />
+          </View>
+          <Text className="text-sm font-bold text-foreground">{message.text || 'Call'}</Text>
+          <Text className="text-xs font-semibold text-muted-foreground">{message.time}</Text>
+        </View>
+      </Animated.View>
+    );
+  }
 
   const handleOpenFile = async () => {
     if (!fileAttachment || !localFileUri) {

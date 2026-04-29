@@ -77,13 +77,13 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return err
 			}
 
-			_, err = e.App.FindFirstRecordByFilter(
+			existingCallRoom, err := e.App.FindFirstRecordByFilter(
 				"call_rooms",
 				"conversation={:conversationId} && status!='ended'",
 				dbx.Params{"conversationId": conversation.Id},
 			)
 			if err == nil {
-				return e.BadRequestError("A call is already in progress.", nil)
+				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
@@ -103,6 +103,10 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 			callRoom.Set("ended_at", "")
 
 			if err := e.App.Save(callRoom); err != nil {
+				return err
+			}
+
+			if err := createCallMessage(e.App, callRoom); err != nil {
 				return err
 			}
 
@@ -140,10 +144,15 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return err
 			}
 
+			wasRinging := callRoom.GetString("status") == "ringing"
 			if callRoom.GetString("status") != "ended" {
 				callRoom.Set("status", "ended")
 				callRoom.Set("ended_at", types.NowDateTime())
 				if err := e.App.Save(callRoom); err != nil {
+					return err
+				}
+
+				if err := updateCallMessageForEndedCall(e.App, callRoom, wasRinging); err != nil {
 					return err
 				}
 			}
@@ -268,6 +277,62 @@ func callRoomPayload(callRoom *core.Record) map[string]any {
 	}
 }
 
+func createCallMessage(app core.App, callRoom *core.Record) error {
+	collection, err := app.FindCollectionByNameOrId("messages")
+	if err != nil {
+		return err
+	}
+
+	message := core.NewRecord(collection)
+	message.Set("conversation", callRoom.GetString("conversation"))
+	message.Set("sender", callRoom.GetString("created_by"))
+	message.Set("kind", "call")
+	message.Set("body", activeCallMessageBody(callRoom.GetString("kind")))
+	message.Set("call_room", callRoom.Id)
+
+	return app.Save(message)
+}
+
+func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, wasRinging bool) error {
+	message, err := app.FindFirstRecordByFilter(
+		"messages",
+		"call_room={:callRoomId}",
+		dbx.Params{"callRoomId": callRoom.Id},
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+
+		return err
+	}
+
+	message.Set("body", callMessageBody(callRoom.GetString("kind"), wasRinging))
+
+	return app.Save(message)
+}
+
+func callMessageBody(kind string, wasMissed bool) string {
+	label := "Voice call"
+	if kind == "video" {
+		label = "Video call"
+	}
+
+	if wasMissed {
+		return "Missed " + strings.ToLower(label)
+	}
+
+	return label + " ended"
+}
+
+func activeCallMessageBody(kind string) string {
+	if kind == "video" {
+		return "Video call started"
+	}
+
+	return "Voice call started"
+}
+
 func newCallRoomName(conversationId string) string {
 	return fmt.Sprintf("infchat-%s-%s", conversationId, security.RandomString(18))
 }
@@ -368,6 +433,10 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 			}
 		case "image", "file", "voice":
 			// Body is an optional caption for attachment-backed messages.
+		case "call":
+			if !e.HasSuperuserAuth() {
+				return router.NewBadRequestError("Call messages are created by call routes.", nil)
+			}
 		default:
 			return router.NewBadRequestError("Invalid message kind.", nil)
 		}
@@ -376,20 +445,36 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 	})
 
 	app.OnRecordAfterCreateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
-		conversation, err := e.App.FindRecordById("conversations", e.Record.GetString("conversation"))
-		if err != nil {
-			return err
-		}
-
-		conversation.Set("last_message_text", getMessagePreview(e.Record))
-		conversation.Set("last_message_at", e.Record.GetString("created"))
-
-		if err := e.App.Save(conversation); err != nil {
+		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("created")); err != nil {
 			return err
 		}
 
 		return e.Next()
 	})
+
+	app.OnRecordAfterUpdateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetString("kind") != "call" {
+			return e.Next()
+		}
+
+		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("updated")); err != nil {
+			return err
+		}
+
+		return e.Next()
+	})
+}
+
+func updateConversationPreviewFromMessage(app core.App, message *core.Record, timestamp string) error {
+	conversation, err := app.FindRecordById("conversations", message.GetString("conversation"))
+	if err != nil {
+		return err
+	}
+
+	conversation.Set("last_message_text", getMessagePreview(message))
+	conversation.Set("last_message_at", timestamp)
+
+	return app.Save(conversation)
 }
 
 func getMessagePreview(record *core.Record) string {
