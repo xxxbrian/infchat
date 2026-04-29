@@ -35,6 +35,7 @@ import {
   setCurrentNotificationRoute,
   setupIOSSystemCalls,
   setupNotificationPresentation,
+  setupNotificationResponses,
 } from '../lib/push-notifications';
 
 setupNotificationPresentation();
@@ -137,7 +138,13 @@ export default function RootLayout() {
 function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
   useEffect(() => {
     void registerIOSPushDevice();
-    return setupIOSSystemCalls();
+    const cleanupNotificationResponses = setupNotificationResponses();
+    const cleanupSystemCalls = setupIOSSystemCalls();
+
+    return () => {
+      cleanupNotificationResponses();
+      cleanupSystemCalls();
+    };
   }, [authRecord.id]);
 
   return null;

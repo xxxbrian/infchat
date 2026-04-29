@@ -190,6 +190,21 @@ export function setCurrentNotificationRoute(pathname: string) {
   currentNotificationRoute = pathname;
 }
 
+export function setupNotificationResponses() {
+  const notificationSubscription = Notifications.addNotificationResponseReceivedListener(
+    handleNotificationResponse,
+  );
+  void Notifications.getLastNotificationResponseAsync().then((response) => {
+    if (response) {
+      handleNotificationResponse(response);
+    }
+  });
+
+  return () => {
+    notificationSubscription.remove();
+  };
+}
+
 export async function registerIOSPushDevice(appVersion?: string) {
   if (Platform.OS !== 'ios' || !pb.authStore.isValid) {
     return;
@@ -355,20 +370,10 @@ export function setupIOSSystemCalls() {
   });
   VoipPushNotification.registerVoipToken();
 
-  const notificationSubscription = Notifications.addNotificationResponseReceivedListener(
-    handleNotificationResponse,
-  );
-  void Notifications.getLastNotificationResponseAsync().then((response) => {
-    if (response) {
-      handleNotificationResponse(response);
-    }
-  });
-
   return () => {
     answerSubscription.remove();
     callKeepInitialEventsSubscription.remove();
     endSubscription.remove();
-    notificationSubscription.remove();
     VoipPushNotification.removeEventListener('register');
     VoipPushNotification.removeEventListener('notification');
     VoipPushNotification.removeEventListener('didLoadWithEvents');
