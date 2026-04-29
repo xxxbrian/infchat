@@ -315,18 +315,21 @@ export default function ProfileScreen() {
           <View className="mb-5 flex-row gap-3">
             <ProfileAction
               disabled={!canContactProfile || isContactActionPending}
+              dimmed={!canContactProfile}
               icon="chatbubble"
               label="message"
               onPress={handleOpenChat}
             />
             <ProfileAction
               disabled={!canContactProfile || isContactActionPending}
+              dimmed={!canContactProfile}
               icon="call"
               label="call"
               onPress={() => handleStartCall('voice')}
             />
             <ProfileAction
               disabled={!canContactProfile || isContactActionPending}
+              dimmed={!canContactProfile}
               icon="videocam"
               label="video"
               onPress={() => handleStartCall('video')}
@@ -349,11 +352,13 @@ export default function ProfileScreen() {
 
 function ProfileAction({
   disabled,
+  dimmed,
   icon,
   label,
   onPress,
 }: {
   disabled?: boolean;
+  dimmed?: boolean;
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress?: () => void;
@@ -363,7 +368,7 @@ function ProfileAction({
       className="h-[58px] flex-1 items-center justify-center rounded-[22px] bg-muted"
       disabled={disabled}
       onPress={onPress}
-      style={disabled ? styles.disabledAction : undefined}
+      style={dimmed ? styles.disabledAction : undefined}
     >
       <Ionicons color="#f8fafc" name={icon} size={18} />
       <Text className="mt-1.5 text-[10px] font-bold text-muted-foreground" numberOfLines={1}>
