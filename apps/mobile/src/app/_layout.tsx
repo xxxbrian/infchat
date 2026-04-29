@@ -32,6 +32,7 @@ import { pb } from '../lib/pocketbase';
 import {
   endIOSSystemCallForCallRoom,
   registerIOSPushDevice,
+  setCurrentNotificationRoute,
   setupIOSSystemCalls,
   setupNotificationPresentation,
 } from '../lib/push-notifications';
@@ -110,6 +111,7 @@ export default function RootLayout() {
                   <Stack.Screen name="profile/[userId]" />
                   <Stack.Screen name="profile/edit" />
                 </Stack>
+                <NotificationRouteTracker />
                 <PushRegistration authRecord={authRecord} />
                 <IncomingCallListener authRecord={authRecord} />
               </View>
@@ -137,6 +139,16 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
     void registerIOSPushDevice();
     return setupIOSSystemCalls();
   }, [authRecord.id]);
+
+  return null;
+}
+
+function NotificationRouteTracker() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    setCurrentNotificationRoute(pathname);
+  }, [pathname]);
 
   return null;
 }

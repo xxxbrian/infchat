@@ -21,6 +21,8 @@ type CallPushPayload = {
 
 const callPushesByUUID = new Map<string, CallPushPayload>();
 const endingSystemCallUUIDs = new Set<string>();
+let currentNotificationRoute = '';
+let lastHandledNotificationResponseId = '';
 
 type SystemCallPayload = CallPushPayload & { callUUID: string };
 
@@ -87,14 +89,26 @@ function toCallKeepEndReason(reason: Exclude<IOSSystemCallEndReason, 'local'>): 
 
 export function setupNotificationPresentation() {
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-      shouldShowAlert: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-    }),
+    handleNotification: async (notification) => {
+      const data = notification.request.content.data;
+      const isActiveChatMessage =
+        data?.type === 'message' &&
+        typeof data.conversationId === 'string' &&
+        currentNotificationRoute === `/chat/${data.conversationId}`;
+
+      return {
+        shouldPlaySound: !isActiveChatMessage,
+        shouldSetBadge: true,
+        shouldShowAlert: !isActiveChatMessage,
+        shouldShowBanner: !isActiveChatMessage,
+        shouldShowList: !isActiveChatMessage,
+      };
+    },
   });
+}
+
+export function setCurrentNotificationRoute(pathname: string) {
+  currentNotificationRoute = pathname;
 }
 
 export async function registerIOSPushDevice(appVersion?: string) {
@@ -219,16 +233,13 @@ export function setupIOSSystemCalls() {
   VoipPushNotification.registerVoipToken();
 
   const notificationSubscription = Notifications.addNotificationResponseReceivedListener(
-    (response) => {
-      const data = response.notification.request.content.data;
-      if (data?.type === 'message' && typeof data.conversationId === 'string') {
-        router.push({
-          pathname: '/chat/[id]',
-          params: { id: data.conversationId },
-        });
-      }
-    },
+    handleNotificationResponse,
   );
+  void Notifications.getLastNotificationResponseAsync().then((response) => {
+    if (response) {
+      handleNotificationResponse(response);
+    }
+  });
 
   return () => {
     answerSubscription.remove();
@@ -238,6 +249,22 @@ export function setupIOSSystemCalls() {
     VoipPushNotification.removeEventListener('notification');
     VoipPushNotification.removeEventListener('didLoadWithEvents');
   };
+}
+
+function handleNotificationResponse(response: Notifications.NotificationResponse) {
+  const responseId = `${response.notification.request.identifier}:${response.actionIdentifier}`;
+  if (lastHandledNotificationResponseId === responseId) {
+    return;
+  }
+  lastHandledNotificationResponseId = responseId;
+
+  const data = response.notification.request.content.data;
+  if (data?.type === 'message' && typeof data.conversationId === 'string') {
+    router.push({
+      pathname: '/chat/[id]',
+      params: { id: data.conversationId },
+    });
+  }
 }
 
 async function registerVoipToken(token: string, appVersion?: string) {
