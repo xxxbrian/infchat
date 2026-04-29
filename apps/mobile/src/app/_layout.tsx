@@ -18,9 +18,9 @@ import {
   QueryClientProvider,
 } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
-import { router, Stack } from 'expo-router';
+import { router, Stack, usePathname } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, AppState, Pressable, Text, View } from 'react-native';
+import { Animated, AppState, Pressable, Text, Vibration, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { LoginScreen } from '../screens/LoginScreen';
@@ -124,6 +124,7 @@ export default function RootLayout() {
 
 function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
   const insets = useSafeAreaInsets();
+  const pathname = usePathname();
   const slide = useRef(new Animated.Value(0)).current;
   const seenCallIds = useRef(new Set<string>());
   const [incomingCall, setIncomingCall] = useState<CallRoomRecord | null>(null);
@@ -133,6 +134,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       !callRoom ||
       callRoom.status !== 'ringing' ||
       callRoom.created_by === authRecord.id ||
+      pathname === `/chat/${callRoom.conversation}` ||
       seenCallIds.current.has(callRoom.id)
     ) {
       return;
@@ -175,7 +177,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       isMounted = false;
       subscription.remove();
     };
-  }, [authRecord.id]);
+  }, [authRecord.id, pathname]);
 
   useEffect(() => {
     let isMounted = true;
@@ -202,7 +204,18 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       isMounted = false;
       pb.collection('call_rooms').unsubscribe('*');
     };
-  }, [authRecord.id]);
+  }, [authRecord.id, pathname]);
+
+  useEffect(() => {
+    if (!incomingCall) {
+      Vibration.cancel();
+      return;
+    }
+
+    Vibration.vibrate([0, 700, 900], true);
+
+    return () => Vibration.cancel();
+  }, [incomingCall]);
 
   useEffect(() => {
     Animated.spring(slide, {
@@ -261,7 +274,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
           <Text className="text-lg font-bold text-foreground">
             Incoming {incomingCall?.kind === 'video' ? 'video' : 'voice'} call
           </Text>
-          <Text className="text-sm font-medium text-muted-foreground">Tap to join securely</Text>
+          <Text className="text-sm font-medium text-muted-foreground">Join or decline</Text>
         </View>
         <Pressable
           className="h-11 w-11 items-center justify-center rounded-full bg-red-500"

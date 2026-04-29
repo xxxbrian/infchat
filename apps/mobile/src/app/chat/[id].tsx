@@ -1010,7 +1010,7 @@ function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJo
       <View className="ml-3 min-w-0 flex-1">
         <Text className="text-base font-black text-foreground">{title}</Text>
         <Text className="mt-0.5 text-sm font-semibold text-emerald-100/70">
-          {statusLabel} · tap to join from this device
+          {statusLabel} · join
         </Text>
       </View>
       <View className="ml-3 flex-row items-center rounded-full bg-foreground px-3 py-2">
