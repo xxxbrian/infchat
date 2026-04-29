@@ -637,6 +637,7 @@ function DraggablePip({
         footerProgress={footerProgress}
         isSelected={isSelected}
         mirrorLocalCamera={mirrorLocalCamera}
+        shouldHideBorder
         trackRef={trackRef}
       />
     </Animated.View>
@@ -725,6 +726,7 @@ function ParticipantTile({
   isSelected,
   mirrorLocalCamera = true,
   onPress,
+  shouldHideBorder,
   trackRef,
 }: {
   containerStyle?: ViewStyle;
@@ -734,6 +736,7 @@ function ParticipantTile({
   isSelected?: boolean;
   mirrorLocalCamera?: boolean;
   onPress?: () => void;
+  shouldHideBorder?: boolean;
   trackRef: TrackReferenceOrPlaceholder;
 }) {
   const participant = trackRef.participant;
@@ -741,7 +744,11 @@ function ParticipantTile({
   const label = participant ? getParticipantLabel(participant) : 'Joining';
   const isScreenShare = trackRef.source === Track.Source.ScreenShare;
   const isMicEnabled = participant?.isMicrophoneEnabled ?? true;
-  const borderClass = isSelected ? 'border-foreground/90' : 'border-white/10';
+  const borderClass = shouldHideBorder
+    ? ''
+    : isSelected
+      ? 'border border-foreground/90'
+      : 'border border-white/10';
   const footerTranslateY = footerProgress?.interpolate({
     inputRange: [0, 1],
     outputRange: [10, 0],
@@ -763,7 +770,7 @@ function ParticipantTile({
 
   return (
     <Pressable
-      className={`overflow-hidden rounded-[30px] border bg-[#121723] ${borderClass}`}
+      className={`overflow-hidden rounded-[30px] bg-[#121723] ${borderClass}`}
       disabled={!onPress}
       onPress={onPress}
       style={[isLarge ? styles.mainTile : undefined, containerStyle]}
@@ -776,7 +783,7 @@ function ParticipantTile({
             mirrorLocalCamera
           }
           objectFit="cover"
-          style={StyleSheet.absoluteFillObject}
+          style={shouldHideBorder ? styles.videoOverscan : StyleSheet.absoluteFillObject}
           trackRef={trackRef}
         />
       ) : (
@@ -1123,5 +1130,12 @@ const styles = StyleSheet.create({
   mainTile: {
     borderRadius: 0,
     flex: 1,
+  } as ViewStyle,
+  videoOverscan: {
+    bottom: -1,
+    left: -1,
+    position: 'absolute',
+    right: -1,
+    top: -1,
   } as ViewStyle,
 });
