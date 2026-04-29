@@ -26,6 +26,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
+import { CallSessionProvider } from '../lib/call-context';
 import { pb } from '../lib/pocketbase';
 
 export default function RootLayout() {
@@ -85,22 +86,24 @@ export default function RootLayout() {
               },
             }}
           >
-            <View className="flex-1">
-              <Stack
-                screenOptions={{
-                  contentStyle: { backgroundColor: '#080b12' },
-                  headerShown: false,
-                }}
-              >
-                <Stack.Screen name="(tabs)" />
-                <Stack.Screen name="call/[id]" />
-                <Stack.Screen name="chat/[id]" />
-                <Stack.Screen name="debug" />
-                <Stack.Screen name="profile/[userId]" />
-                <Stack.Screen name="profile/edit" />
-              </Stack>
-              <IncomingCallListener authRecord={authRecord} />
-            </View>
+            <CallSessionProvider>
+              <View className="flex-1">
+                <Stack
+                  screenOptions={{
+                    contentStyle: { backgroundColor: '#080b12' },
+                    headerShown: false,
+                  }}
+                >
+                  <Stack.Screen name="(tabs)" />
+                  <Stack.Screen name="call/[id]" />
+                  <Stack.Screen name="chat/[id]" />
+                  <Stack.Screen name="debug" />
+                  <Stack.Screen name="profile/[userId]" />
+                  <Stack.Screen name="profile/edit" />
+                </Stack>
+                <IncomingCallListener authRecord={authRecord} />
+              </View>
+            </CallSessionProvider>
           </AuthContext.Provider>
         ) : route === 'login' ? (
           <LoginScreen

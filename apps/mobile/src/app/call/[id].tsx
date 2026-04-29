@@ -1,8 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
-  AudioSession,
   isTrackReference,
-  LiveKitRoom,
   useConnectionState,
   useLocalParticipant,
   useRemoteParticipants,
@@ -12,8 +10,8 @@ import {
   VideoTrack,
   type TrackReferenceOrPlaceholder,
 } from '@livekit/react-native';
-import { endCall, joinCall, type CallRoomRecord } from '@infchat/pocketbase';
-import { router, useLocalSearchParams } from 'expo-router';
+import { type CallRoomRecord } from '@infchat/pocketbase';
+import { useLocalSearchParams } from 'expo-router';
 import { ConnectionState, Room, Track, type Participant } from 'livekit-client';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -31,14 +29,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { getDeviceId } from '../../lib/device-id';
-import { pb } from '../../lib/pocketbase';
-
-type CallSession = {
-  callRoom: CallRoomRecord;
-  livekitUrl: string;
-  token: string;
-};
+import { useCallSession } from '../../lib/call-context';
 
 type CallLayoutMode = 'focus' | 'gallery';
 
@@ -60,9 +51,8 @@ export default function CallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const callRoomId = id ?? '';
   const entrance = useRef(new Animated.Value(0)).current;
-  const didLeaveRef = useRef(false);
-  const [session, setSession] = useState<CallSession | null>(null);
-  const [errorMessage, setErrorMessage] = useState('');
+  const { activeSession, endActiveCall, errorMessage, isJoining, joinCallRoom, minimizeCall } =
+    useCallSession();
 
   useEffect(() => {
     Animated.timing(entrance, {
@@ -74,77 +64,12 @@ export default function CallScreen() {
   }, [entrance]);
 
   useEffect(() => {
-    if (!callRoomId) {
-      setErrorMessage('Call was not found.');
+    if (!callRoomId || activeSession?.callRoom.id === callRoomId) {
       return;
     }
 
-    let isMounted = true;
-
-    getDeviceId()
-      .then((deviceId) => joinCall(pb, callRoomId, deviceId))
-      .then((nextSession) => {
-        if (isMounted) {
-          setSession(nextSession);
-        }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setErrorMessage('Could not join this call.');
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [callRoomId]);
-
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-
-    let isMounted = true;
-
-    void AudioSession.startAudioSession();
-
-    pb.collection('call_rooms')
-      .subscribe(session.callRoom.id, (event) => {
-        if (!isMounted || event.record?.status !== 'ended') {
-          return;
-        }
-
-        didLeaveRef.current = true;
-        router.back();
-      })
-      .catch(() => {
-        // A failed status subscription should not drop an already connected call.
-      });
-
-    return () => {
-      isMounted = false;
-      pb.collection('call_rooms').unsubscribe(session.callRoom.id);
-      void AudioSession.stopAudioSession();
-    };
-  }, [session]);
-
-  const leaveCall = async () => {
-    if (didLeaveRef.current) {
-      return;
-    }
-
-    didLeaveRef.current = true;
-
-    try {
-      if (session) {
-        await endCall(pb, session.callRoom.id);
-      }
-    } catch {
-      // Navigating away is still the safest local fallback when the network drops mid-call.
-    }
-
-    router.back();
-  };
+    void joinCallRoom(callRoomId);
+  }, [activeSession?.callRoom.id, callRoomId, joinCallRoom]);
 
   const contentOpacity = entrance;
   const contentTranslateY = entrance.interpolate({
@@ -161,36 +86,33 @@ export default function CallScreen() {
           transform: [{ translateY: contentTranslateY }],
         }}
       >
-        {session ? (
-          <LiveKitRoom
-            audio
-            connect
-            onDisconnected={() => {
-              if (!didLeaveRef.current) {
-                didLeaveRef.current = true;
-                router.back();
-              }
-            }}
-            onError={() => setErrorMessage('The call connection failed.')}
-            options={{
-              adaptiveStream: { pixelDensity: 'screen' },
-              dynacast: true,
-            }}
-            serverUrl={session.livekitUrl}
-            token={session.token}
-            video={session.callRoom.kind === 'video'}
-          >
-            <CallRoomView callRoom={session.callRoom} onHangUp={leaveCall} />
-          </LiveKitRoom>
+        {activeSession?.callRoom.id === callRoomId ? (
+          <CallRoomView
+            callRoom={activeSession.callRoom}
+            onHangUp={endActiveCall}
+            onMinimize={minimizeCall}
+          />
         ) : (
-          <CallLoadingState errorMessage={errorMessage} onClose={leaveCall} />
+          <CallLoadingState
+            errorMessage={errorMessage}
+            isJoining={isJoining}
+            onClose={minimizeCall}
+          />
         )}
       </Animated.View>
     </View>
   );
 }
 
-function CallRoomView({ callRoom, onHangUp }: { callRoom: CallRoomRecord; onHangUp: () => void }) {
+function CallRoomView({
+  callRoom,
+  onHangUp,
+  onMinimize,
+}: {
+  callRoom: CallRoomRecord;
+  onHangUp: () => void;
+  onMinimize: () => void;
+}) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const room = useRoomContext();
@@ -252,6 +174,7 @@ function CallRoomView({ callRoom, onHangUp }: { callRoom: CallRoomRecord; onHang
       <CallHeader
         layoutMode={layoutMode}
         onChangeLayout={() => setLayoutMode(layoutMode === 'focus' ? 'gallery' : 'focus')}
+        onMinimize={onMinimize}
         participantCount={participantCount}
         statusLabel={statusLabel}
         style={{ top: insets.top + 12 }}
@@ -318,6 +241,7 @@ function CallRoomView({ callRoom, onHangUp }: { callRoom: CallRoomRecord; onHang
 function CallHeader({
   layoutMode,
   onChangeLayout,
+  onMinimize,
   participantCount,
   statusLabel,
   style,
@@ -325,11 +249,11 @@ function CallHeader({
 }: {
   layoutMode: CallLayoutMode;
   onChangeLayout: () => void;
+  onMinimize: () => void;
   participantCount: number;
   statusLabel: string;
   style: ViewStyle;
   title: string;
-  onMinimize?: () => void;
 }) {
   return (
     <View
@@ -344,6 +268,12 @@ function CallHeader({
         </Text>
       </View>
       <View className="flex-row items-center gap-2">
+        <Pressable
+          className="h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10"
+          onPress={onMinimize}
+        >
+          <Ionicons color="#f8fafc" name="chevron-down" size={20} />
+        </Pressable>
         <Pressable
           className="h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10"
           onPress={onChangeLayout}
@@ -745,9 +675,11 @@ function EmptyCallStage({ message }: { message: string }) {
 
 function CallLoadingState({
   errorMessage,
+  isJoining,
   onClose,
 }: {
   errorMessage: string;
+  isJoining: boolean;
   onClose: () => void;
 }) {
   return (
@@ -756,7 +688,7 @@ function CallLoadingState({
         <Ionicons color="#f8fafc" name="call" size={28} />
       </View>
       <Text className="mt-6 text-center text-2xl font-bold text-foreground">
-        {errorMessage || 'Joining call'}
+        {errorMessage || (isJoining ? 'Joining call' : 'Preparing call')}
       </Text>
       <Text className="mt-2 text-center text-base font-medium text-muted-foreground">
         {errorMessage ? 'Check your connection and try again.' : 'Setting up secure audio.'}
