@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   AudioSession,
   isTrackReference,
+  useIOSAudioManagement,
   useConnectionState,
   useLocalParticipant,
   useRemoteParticipants,
@@ -21,6 +22,7 @@ import {
   Animated,
   Easing,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -210,6 +212,14 @@ function CallRoomView({
     outputRange: [18, 0],
   });
 
+  useIOSAudioManagement(room, isSpeakerEnabled, (_trackState, preferSpeakerOutput) => ({
+    audioCategory: 'playAndRecord',
+    audioCategoryOptions: preferSpeakerOutput
+      ? ['allowAirPlay', 'allowBluetooth', 'allowBluetoothA2DP', 'defaultToSpeaker']
+      : ['allowAirPlay', 'allowBluetooth', 'allowBluetoothA2DP'],
+    audioMode: preferSpeakerOutput ? 'videoChat' : 'voiceChat',
+  }));
+
   const clearChromeTimer = useCallback(() => {
     if (hideChromeTimer.current) {
       clearTimeout(hideChromeTimer.current);
@@ -287,18 +297,27 @@ function CallRoomView({
 
   const toggleSpeaker = async () => {
     try {
+      const nextSpeakerEnabled = !isSpeakerEnabled;
       const outputs = await AudioSession.getAudioOutputs();
-      const nextOutput = isSpeakerEnabled
-        ? outputs.find((output) => output === 'earpiece' || output === 'default')
-        : outputs.find((output) => output === 'speaker' || output === 'force_speaker');
+      const nextOutput = getPreferredAudioOutput(outputs, nextSpeakerEnabled);
 
       if (!nextOutput) {
         Alert.alert('Audio output unavailable', 'This device cannot switch audio output here.');
         return;
       }
 
+      if (Platform.OS === 'ios') {
+        await AudioSession.setAppleAudioConfiguration({
+          audioCategory: 'playAndRecord',
+          audioCategoryOptions: nextSpeakerEnabled
+            ? ['allowAirPlay', 'allowBluetooth', 'allowBluetoothA2DP', 'defaultToSpeaker']
+            : ['allowAirPlay', 'allowBluetooth', 'allowBluetoothA2DP'],
+          audioMode: nextSpeakerEnabled ? 'videoChat' : 'voiceChat',
+        });
+      }
+
       await AudioSession.selectAudioOutput(nextOutput);
-      setIsSpeakerEnabled(!isSpeakerEnabled);
+      setIsSpeakerEnabled(nextSpeakerEnabled);
     } catch {
       Alert.alert('Audio output unavailable', 'Could not change speaker output.');
     }
@@ -1071,6 +1090,14 @@ function getMainTrack(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function getPreferredAudioOutput(outputs: string[], shouldUseSpeaker: boolean): string | undefined {
+  if (shouldUseSpeaker) {
+    return outputs.find((output) => output === 'speaker' || output === 'force_speaker');
+  }
+
+  return outputs.find((output) => output === 'earpiece' || output === 'default');
 }
 
 function sortTrackTiles(
