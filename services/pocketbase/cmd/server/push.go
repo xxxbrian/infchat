@@ -57,6 +57,7 @@ type apnsAPS struct {
 	Category         string     `json:"category,omitempty"`
 	ContentAvailable int        `json:"content-available,omitempty"`
 	Sound            string     `json:"sound,omitempty"`
+	ThreadID         string     `json:"thread-id,omitempty"`
 }
 
 func bindPushRoutes(app *pocketbase.PocketBase) {
@@ -213,8 +214,9 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 
 	payload := map[string]any{
 		"aps": apnsAPS{
-			Alert: &apnsAlert{Title: senderName, Body: body},
-			Sound: "default",
+			Alert:    &apnsAlert{Title: senderName, Body: body},
+			Sound:    "default",
+			ThreadID: conversation.Id,
 		},
 		"conversationId": conversation.Id,
 		"messageId":      message.Id,
@@ -226,7 +228,7 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 			continue
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "apns_token", apns2.PushTypeAlert, apns2.PriorityHigh, "", payload); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "apns_token", apns2.PushTypeAlert, apns2.PriorityHigh, "", "", payload); err != nil {
 			log.Printf("push: message notification failed for user %s: %v", userId, err)
 		}
 	}
@@ -281,13 +283,13 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 			continue
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", payload); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload); err != nil {
 			log.Printf("push: incoming call notification failed for user %s: %v", userId, err)
 		}
 	}
 }
 
-func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, payload map[string]any) error {
+func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, collapseID string, payload map[string]any) error {
 	provider, err := configuredAPNsProvider()
 	if err != nil {
 		log.Printf("push: APNs disabled: %v", err)
@@ -317,7 +319,7 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 			continue
 		}
 
-		response, err := provider.send(device.GetString("environment"), token, pushType, priority, topicSuffix, payload)
+		response, err := provider.send(device.GetString("environment"), token, pushType, priority, topicSuffix, collapseID, payload)
 		if err != nil {
 			sendErr = err
 			log.Printf("push: APNs request failed for device %s: %v", device.Id, err)
@@ -384,13 +386,14 @@ func newAPNsProvider() (*apnsProvider, error) {
 	}, nil
 }
 
-func (provider *apnsProvider) send(environment string, deviceToken string, pushType apns2.EPushType, priority int, topicSuffix string, payload map[string]any) (*apns2.Response, error) {
+func (provider *apnsProvider) send(environment string, deviceToken string, pushType apns2.EPushType, priority int, topicSuffix string, collapseID string, payload map[string]any) (*apns2.Response, error) {
 	client := provider.developmentClient
 	if normalizePushEnvironment(environment) == "production" {
 		client = provider.productionClient
 	}
 
 	notification := &apns2.Notification{
+		CollapseID:  collapseID,
 		DeviceToken: deviceToken,
 		Expiration:  time.Now().Add(callRingTimeout),
 		Payload:     payload,
