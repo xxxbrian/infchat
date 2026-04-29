@@ -49,6 +49,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
+import { useCallSession } from '../../lib/call-context';
 import { getDeviceId } from '../../lib/device-id';
 import {
   getCachedConversation,
@@ -102,6 +103,7 @@ export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const conversationId = id ?? '';
   const { authRecord } = useAuth();
+  const { activeSession } = useCallSession();
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
@@ -182,6 +184,10 @@ export default function ChatDetailScreen() {
         toChatMessage(message, profilesByUserId, authRecord.id, fileTokenQuery.data),
       ),
     [authRecord.id, fileTokenQuery.data, messagesQuery.data, profilesByUserId],
+  );
+  const activeCall = activeCallQuery.data;
+  const shouldShowActiveCallBanner = Boolean(
+    activeCall && activeSession?.callRoom.id !== activeCall.id,
   );
   const sendMessageMutation = useMutation({
     mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
@@ -656,8 +662,8 @@ export default function ChatDetailScreen() {
           </View>
         </View>
 
-        {activeCallQuery.data ? (
-          <ActiveCallBanner callRoom={activeCallQuery.data} onJoin={handleJoinActiveCall} />
+        {shouldShowActiveCallBanner && activeCall ? (
+          <ActiveCallBanner callRoom={activeCall} onJoin={handleJoinActiveCall} />
         ) : null}
 
         <ScrollView
