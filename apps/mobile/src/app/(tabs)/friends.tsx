@@ -34,6 +34,10 @@ import { useAuth } from '../../lib/auth-context';
 import {
   listCachedFriendships,
   listCachedProfilesByUserIds,
+  refreshCachedConversations,
+  refreshCachedFriendships,
+  refreshCachedProfileSearch,
+  refreshCachedProfilesByUserIds,
   searchCachedProfilesByUsername,
 } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
@@ -90,6 +94,7 @@ export default function FriendsTab() {
   const friendshipsQuery = useQuery({
     queryKey: ['friendships', currentUserId],
     queryFn: () => listCachedFriendships(pb),
+    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', currentUserId],
@@ -116,12 +121,14 @@ export default function FriendsTab() {
     queryKey: ['profiles', 'related', relatedUserIds],
     queryFn: () => listCachedProfilesByUserIds(pb, relatedUserIds),
     enabled: relatedUserIds.length > 0,
+    networkMode: 'always',
   });
 
   const searchProfilesQuery = useQuery({
     queryKey: ['profiles', 'search', normalizedQuery],
     queryFn: () => searchCachedProfilesByUsername(pb, normalizedQuery),
     enabled: shouldSearchProfiles,
+    networkMode: 'always',
   });
 
   const activeFriendshipByUserId = useMemo(() => {
@@ -216,7 +223,9 @@ export default function FriendsTab() {
   }, [activeFilter, normalizedQuery, searchablePeople]);
 
   const refreshFriendships = () => {
-    queryClient.invalidateQueries({ queryKey: ['friendships'] });
+    void refreshCachedFriendships(pb).then((nextFriendships) => {
+      queryClient.setQueryData(['friendships', currentUserId], nextFriendships);
+    });
   };
 
   const sendRequestMutation = useMutation({
@@ -238,7 +247,9 @@ export default function FriendsTab() {
   const startPrivateChatMutation = useMutation({
     mutationFn: (recipientUserId: string) => startPrivateConversation(pb, recipientUserId),
     onSuccess: (conversation) => {
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void refreshCachedConversations(pb).then((conversations) => {
+        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+      });
       router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
     },
   });
@@ -248,6 +259,73 @@ export default function FriendsTab() {
     declineRequestMutation.isPending ||
     cancelRequestMutation.isPending ||
     startPrivateChatMutation.isPending;
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedFriendships(pb)
+      .then((nextFriendships) => {
+        if (isMounted) {
+          queryClient.setQueryData(['friendships', currentUserId], nextFriendships);
+        }
+      })
+      .catch(() => {
+        // Keep the local friend list visible while the network recovers.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId, isOnline, queryClient]);
+
+  useEffect(() => {
+    if (!isOnline || relatedUserIds.length === 0) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfilesByUserIds(pb, relatedUserIds)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profiles', 'related', relatedUserIds], profiles);
+        }
+      })
+      .catch(() => {
+        // Cached profiles remain usable until a refresh succeeds.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOnline, queryClient, relatedUserIds]);
+
+  useEffect(() => {
+    if (!isOnline || !shouldSearchProfiles) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfileSearch(pb, normalizedQuery)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profiles', 'search', normalizedQuery], profiles);
+        }
+      })
+      .catch(() => {
+        // Search results can fall back to the last cached response for the query.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOnline, normalizedQuery, queryClient, shouldSearchProfiles]);
+
   useEffect(() => {
     if (!isOnline) {
       return;
@@ -258,10 +336,22 @@ export default function FriendsTab() {
 
     void Promise.all([
       pb.collection('friendships').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['friendships'] });
+        void refreshCachedFriendships(pb).then((nextFriendships) => {
+          queryClient.setQueryData(['friendships', currentUserId], nextFriendships);
+        });
       }),
       pb.collection('profiles').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+        if (relatedUserIds.length > 0) {
+          void refreshCachedProfilesByUserIds(pb, relatedUserIds).then((profiles) => {
+            queryClient.setQueryData(['profiles', 'related', relatedUserIds], profiles);
+          });
+        }
+
+        if (shouldSearchProfiles) {
+          void refreshCachedProfileSearch(pb, normalizedQuery).then((profiles) => {
+            queryClient.setQueryData(['profiles', 'search', normalizedQuery], profiles);
+          });
+        }
       }),
     ])
       .then((nextUnsubscribers) => {
@@ -280,7 +370,7 @@ export default function FriendsTab() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [isOnline, queryClient]);
+  }, [currentUserId, isOnline, normalizedQuery, queryClient, relatedUserIds, shouldSearchProfiles]);
 
   useEffect(() => {
     return () => {
@@ -297,10 +387,23 @@ export default function FriendsTab() {
 
     setIsPullRefreshing(true);
     try {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['friendships'] }),
-        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      const [nextFriendships, nextProfiles, nextSearchProfiles] = await Promise.all([
+        refreshCachedFriendships(pb),
+        relatedUserIds.length > 0
+          ? refreshCachedProfilesByUserIds(pb, relatedUserIds)
+          : Promise.resolve([]),
+        shouldSearchProfiles
+          ? refreshCachedProfileSearch(pb, normalizedQuery)
+          : Promise.resolve([]),
       ]);
+
+      queryClient.setQueryData(['friendships', currentUserId], nextFriendships);
+      if (relatedUserIds.length > 0) {
+        queryClient.setQueryData(['profiles', 'related', relatedUserIds], nextProfiles);
+      }
+      if (shouldSearchProfiles) {
+        queryClient.setQueryData(['profiles', 'search', normalizedQuery], nextSearchProfiles);
+      }
     } finally {
       setIsPullRefreshing(false);
     }
@@ -436,12 +539,8 @@ export default function FriendsTab() {
 
     return findPeople.length;
   };
-  const isLoading =
-    friendshipsQuery.isLoading ||
-    (relatedUserIds.length > 0 && relatedProfilesQuery.isLoading) ||
-    (shouldSearchProfiles && searchProfilesQuery.isLoading);
-  const hasError =
-    friendshipsQuery.isError || relatedProfilesQuery.isError || searchProfilesQuery.isError;
+  const isLoading = friendshipsQuery.isLoading && friendships.length === 0;
+  const hasError = friendshipsQuery.isError && friendships.length === 0;
 
   return (
     <View className="flex-1 bg-background">

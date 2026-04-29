@@ -2,12 +2,12 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { getProfileAvatarUrl } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import MaskedView from '@react-native-masked-view/masked-view';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Image,
@@ -21,7 +21,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
-import { getCachedCurrentProfile } from '../../lib/local-cache';
+import { getCachedCurrentProfile, refreshCachedCurrentProfile } from '../../lib/local-cache';
+import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 
 type SettingsRowItem = {
@@ -70,6 +71,7 @@ export default function SettingsTab() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { authRecord, logout } = useAuth();
+  const queryClient = useQueryClient();
   const scrollY = useRef(new Animated.Value(0)).current;
   const profileExpansion = useRef(new Animated.Value(0)).current;
   const scrollYValue = useRef(0);
@@ -79,6 +81,7 @@ export default function SettingsTab() {
   const profileQuery = useQuery({
     queryKey: ['profile', 'current', authRecord.id],
     queryFn: () => getCachedCurrentProfile(pb),
+    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -89,6 +92,10 @@ export default function SettingsTab() {
   const displayName = profile?.display_name || authRecord.username || 'user';
   const username = profile?.username || authRecord.username || 'user';
   const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
+  const cachedAvatarUrl = useCachedRemoteUri(
+    avatarUrl,
+    avatarUrl ? `settings-hero:${authRecord.id}:${avatarUrl.split('?')[0]}` : undefined,
+  );
   const normalHeroTop = Math.max(headerHeight, insets.top + TOP_BAR_HEIGHT);
   const pullAvatarSize = Math.max(HERO_AVATAR_SIZE, windowWidth);
   const heroHeight = profileExpansion.interpolate({
@@ -128,6 +135,24 @@ export default function SettingsTab() {
   });
   const initial = getAvatarInitial(displayName, username);
   const fallbackAvatarColor = getAvatarColor(profile?.user || authRecord.id || username);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void refreshCachedCurrentProfile(pb)
+      .then((nextProfile) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profile', 'current', authRecord.id], nextProfile);
+        }
+      })
+      .catch(() => {
+        // Settings can render the last cached profile while offline.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authRecord.id, queryClient]);
   const animateProfileExpansion = (isExpanded: boolean) => {
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Animated.timing(profileExpansion, {
@@ -215,8 +240,8 @@ export default function SettingsTab() {
                 width: avatarSize,
               }}
             >
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={StyleSheet.absoluteFillObject} />
+              {cachedAvatarUrl ? (
+                <Image source={{ uri: cachedAvatarUrl }} style={StyleSheet.absoluteFillObject} />
               ) : (
                 <Animated.Text
                   className="font-bold text-background"

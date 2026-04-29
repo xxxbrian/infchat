@@ -83,6 +83,20 @@ export function listMessages(pb: PocketBase, conversationId: string): Promise<Me
   });
 }
 
+export function listMessagesUpdatedAfter(
+  pb: PocketBase,
+  conversationId: string,
+  updatedAfter: string,
+): Promise<MessageRecord[]> {
+  return pb.collection('messages').getFullList<MessageRecord>({
+    filter: pb.filter('conversation={:conversationId} && updated>{:updatedAfter}', {
+      conversationId,
+      updatedAfter,
+    }),
+    sort: 'created',
+  });
+}
+
 export function sendTextMessage(pb: PocketBase, conversationId: string, body: string) {
   return pb.collection('messages').create<MessageRecord>({
     body: body.trim(),

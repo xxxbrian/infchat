@@ -25,7 +25,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
-import { listCachedConversations, listCachedProfilesByUserIds } from '../../lib/local-cache';
+import {
+  listCachedConversations,
+  listCachedProfilesByUserIds,
+  refreshCachedConversations,
+  refreshCachedProfilesByUserIds,
+} from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -73,6 +78,7 @@ export default function ChatTab() {
   const conversationsQuery = useQuery({
     queryKey: ['conversations', authRecord.id],
     queryFn: () => listCachedConversations(pb),
+    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -112,6 +118,7 @@ export default function ChatTab() {
     queryKey: ['profiles', 'chat-members', relatedUserIds],
     queryFn: () => listCachedProfilesByUserIds(pb, relatedUserIds),
     enabled: relatedUserIds.length > 0,
+    networkMode: 'always',
   });
   const profilesByUserId = useMemo(() => {
     const profiles = new Map<string, ProfileRecord>();
@@ -152,9 +159,52 @@ export default function ChatTab() {
       return conversation.name.toLowerCase().includes(normalizedQuery);
     });
   }, [activeFilter, conversationViews, query]);
-  const isLoading =
-    conversationsQuery.isLoading || (relatedUserIds.length > 0 && profilesQuery.isLoading);
-  const hasError = conversationsQuery.isError || profilesQuery.isError;
+  const isLoading = conversationsQuery.isLoading && conversations.length === 0;
+  const hasError = conversationsQuery.isError && conversations.length === 0;
+
+  useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedConversations(pb)
+      .then((nextConversations) => {
+        if (isMounted) {
+          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+        }
+      })
+      .catch(() => {
+        // Keep showing the local inbox while the connection recovers.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authRecord.id, isOnline, queryClient]);
+
+  useEffect(() => {
+    if (!isOnline || relatedUserIds.length === 0) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfilesByUserIds(pb, relatedUserIds)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profiles', 'chat-members', relatedUserIds], profiles);
+        }
+      })
+      .catch(() => {
+        // Names and avatars from local cache stay visible until the next refresh.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isOnline, queryClient, relatedUserIds]);
 
   useEffect(() => {
     if (!isOnline) {
@@ -166,17 +216,29 @@ export default function ChatTab() {
 
     void Promise.all([
       pb.collection('conversations').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        void refreshCachedConversations(pb).then((nextConversations) => {
+          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+        });
       }),
       pb.collection('messages').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        void refreshCachedConversations(pb).then((nextConversations) => {
+          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+        });
       }),
       pb.collection('call_rooms').subscribe('*', () => {
         queryClient.invalidateQueries({ queryKey: ['active-calls'] });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        void refreshCachedConversations(pb).then((nextConversations) => {
+          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+        });
       }),
       pb.collection('profiles').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+        if (relatedUserIds.length === 0) {
+          return;
+        }
+
+        void refreshCachedProfilesByUserIds(pb, relatedUserIds).then((profiles) => {
+          queryClient.setQueryData(['profiles', 'chat-members', relatedUserIds], profiles);
+        });
       }),
     ])
       .then((nextUnsubscribers) => {
@@ -195,7 +257,7 @@ export default function ChatTab() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [isOnline, queryClient]);
+  }, [authRecord.id, isOnline, queryClient, relatedUserIds]);
 
   const handleRefresh = async () => {
     if (isPullRefreshing) {
@@ -204,11 +266,18 @@ export default function ChatTab() {
 
     setIsPullRefreshing(true);
     try {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['conversations'] }),
+      const [nextConversations, nextProfiles] = await Promise.all([
+        refreshCachedConversations(pb),
+        relatedUserIds.length > 0
+          ? refreshCachedProfilesByUserIds(pb, relatedUserIds)
+          : Promise.resolve([]),
         queryClient.invalidateQueries({ queryKey: ['active-calls'] }),
-        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
       ]);
+
+      queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+      if (relatedUserIds.length > 0) {
+        queryClient.setQueryData(['profiles', 'chat-members', relatedUserIds], nextProfiles);
+      }
     } finally {
       setIsPullRefreshing(false);
     }

@@ -1,6 +1,8 @@
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import { Image, Text, View } from 'react-native';
 
+import { useCachedRemoteUri } from '../lib/media-cache';
+
 export function ProfileAvatar({
   avatarUrl,
   name,
@@ -15,6 +17,10 @@ export function ProfileAvatar({
   username: string;
 }) {
   const initial = getAvatarInitial(name, username);
+  const cachedAvatarUrl = useCachedRemoteUri(
+    avatarUrl,
+    avatarUrl ? `avatar:${userId || username}:${avatarUrl.split('?')[0]}` : undefined,
+  );
 
   return (
     <View
@@ -25,9 +31,9 @@ export function ProfileAvatar({
         width: size,
       }}
     >
-      {avatarUrl ? (
+      {cachedAvatarUrl ? (
         <Image
-          source={{ uri: avatarUrl }}
+          source={{ uri: cachedAvatarUrl }}
           style={{
             height: size,
             width: size,

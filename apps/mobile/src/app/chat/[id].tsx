@@ -56,7 +56,15 @@ import {
   getCachedConversation,
   listCachedMessages,
   listCachedProfilesByUserIds,
+  mergeCachedMessage,
+  refreshCachedConversation,
+  refreshCachedConversations,
+  refreshCachedMessages,
+  refreshCachedProfilesByUserIds,
+  removeCachedMessage,
+  writeCachedConversation,
 } from '../../lib/local-cache';
+import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -137,6 +145,7 @@ export default function ChatDetailScreen() {
     queryKey: ['conversation', conversationId],
     queryFn: () => getCachedConversation(pb, conversationId),
     enabled: Boolean(conversationId),
+    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -147,6 +156,7 @@ export default function ChatDetailScreen() {
     queryKey: ['messages', conversationId],
     queryFn: () => listCachedMessages(pb, conversationId),
     enabled: Boolean(conversationId),
+    networkMode: 'always',
   });
   const activeCallQuery = useQuery({
     queryKey: ['active-call', conversationId],
@@ -164,6 +174,7 @@ export default function ChatDetailScreen() {
     queryKey: ['profiles', 'conversation-members', conversationId, memberIds],
     queryFn: () => listCachedProfilesByUserIds(pb, memberIds),
     enabled: memberIds.length > 0,
+    networkMode: 'always',
   });
   const profilesByUserId = useMemo(() => {
     const profiles = new Map<string, ProfileRecord>();
@@ -198,13 +209,17 @@ export default function ChatDetailScreen() {
   );
   const sendMessageMutation = useMutation({
     mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
-    onSuccess: () => {
+    onSuccess: (message) => {
       setComposerText('');
       didScrollToEnd.current = false;
-      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId],
+      void mergeCachedMessage(pb, message).then((messages) => {
+        queryClient.setQueryData(['messages', conversationId], messages);
+      });
+      void refreshCachedConversation(pb, conversationId).then((conversation) => {
+        queryClient.setQueryData(['conversation', conversationId], conversation);
+      });
+      void refreshCachedConversations(pb).then((conversations) => {
+        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
       });
     },
   });
@@ -219,12 +234,16 @@ export default function ChatDetailScreen() {
       kind === 'image'
         ? sendImageMessage(pb, conversationId, file)
         : sendFileMessage(pb, conversationId, file),
-    onSuccess: () => {
+    onSuccess: (message) => {
       didScrollToEnd.current = false;
-      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] });
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
-      queryClient.invalidateQueries({
-        queryKey: ['conversation', conversationId],
+      void mergeCachedMessage(pb, message).then((messages) => {
+        queryClient.setQueryData(['messages', conversationId], messages);
+      });
+      void refreshCachedConversation(pb, conversationId).then((conversation) => {
+        queryClient.setQueryData(['conversation', conversationId], conversation);
+      });
+      void refreshCachedConversations(pb).then((conversations) => {
+        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
       });
     },
     onError: () => {
@@ -259,31 +278,109 @@ export default function ChatDetailScreen() {
     }
 
     let isMounted = true;
+
+    void refreshCachedConversation(pb, conversationId)
+      .then((conversation) => {
+        if (isMounted) {
+          queryClient.setQueryData(['conversation', conversationId], conversation);
+        }
+      })
+      .catch(() => {
+        // Cached data remains visible while the network recovers.
+      });
+    void refreshCachedMessages(pb, conversationId)
+      .then((messages) => {
+        if (isMounted) {
+          queryClient.setQueryData(['messages', conversationId], messages);
+        }
+      })
+      .catch(() => {
+        // Cached data remains visible while the network recovers.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [conversationId, isOnline, queryClient]);
+
+  useEffect(() => {
+    if (!isOnline || memberIds.length === 0) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfilesByUserIds(pb, memberIds)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(
+            ['profiles', 'conversation-members', conversationId, memberIds],
+            profiles,
+          );
+        }
+      })
+      .catch(() => {
+        // Profile names from local cache are good enough until the next refresh.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [conversationId, isOnline, memberIds, queryClient]);
+
+  useEffect(() => {
+    if (!conversationId || !isOnline) {
+      return;
+    }
+
+    let isMounted = true;
     let unsubscribers: Array<() => void> = [];
 
     void Promise.all([
       pb.collection('conversations').subscribe('*', (event) => {
-        if (event.record?.id !== conversationId) {
+        const conversation = event.record as unknown as ConversationRecord | undefined;
+        if (conversation?.id !== conversationId) {
           return;
         }
 
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', conversationId],
+        void writeCachedConversation(pb, conversation).then(() => {
+          queryClient.setQueryData(['conversation', conversationId], conversation);
+          queryClient.setQueriesData<ConversationRecord[]>(
+            { queryKey: ['conversations'] },
+            (current) =>
+              current
+                ? [conversation, ...current.filter((item) => item.id !== conversation.id)].sort(
+                    compareConversations,
+                  )
+                : current,
+          );
         });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
       }),
       pb.collection('messages').subscribe('*', (event) => {
-        if (event.record?.conversation !== conversationId) {
+        const message = event.record as unknown as MessageRecord | undefined;
+        if (message?.conversation !== conversationId) {
           return;
         }
 
-        queryClient.invalidateQueries({
-          queryKey: ['messages', conversationId],
+        const action = (event as { action?: string }).action;
+        const cacheUpdate =
+          action === 'delete' ? removeCachedMessage(pb, message) : mergeCachedMessage(pb, message);
+
+        void Promise.resolve(cacheUpdate).then((messages) => {
+          queryClient.setQueryData<MessageRecord[]>(['messages', conversationId], (current) => {
+            if (Array.isArray(messages)) {
+              return messages;
+            }
+
+            return (current ?? []).filter((item) => item.id !== message.id);
+          });
+          void refreshCachedConversation(pb, conversationId).then((conversation) => {
+            queryClient.setQueryData(['conversation', conversationId], conversation);
+          });
+          void refreshCachedConversations(pb).then((conversations) => {
+            queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+          });
         });
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', conversationId],
-        });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
       }),
       pb.collection('call_rooms').subscribe('*', (event) => {
         if (event.record?.conversation !== conversationId) {
@@ -293,10 +390,21 @@ export default function ChatDetailScreen() {
         queryClient.invalidateQueries({
           queryKey: ['active-call', conversationId],
         });
-        queryClient.invalidateQueries({ queryKey: ['conversations'] });
+        void refreshCachedConversations(pb).then((conversations) => {
+          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+        });
       }),
       pb.collection('profiles').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['profiles'] });
+        if (memberIds.length === 0) {
+          return;
+        }
+
+        void refreshCachedProfilesByUserIds(pb, memberIds).then((profiles) => {
+          queryClient.setQueryData(
+            ['profiles', 'conversation-members', conversationId, memberIds],
+            profiles,
+          );
+        });
       }),
     ])
       .then((nextUnsubscribers) => {
@@ -315,7 +423,7 @@ export default function ChatDetailScreen() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [conversationId, isOnline, queryClient]);
+  }, [conversationId, isOnline, memberIds, queryClient]);
 
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => {
@@ -534,15 +642,20 @@ export default function ChatDetailScreen() {
 
     setIsPullRefreshing(true);
     try {
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ['conversation', conversationId],
-        }),
-        queryClient.invalidateQueries({
-          queryKey: ['messages', conversationId],
-        }),
-        queryClient.invalidateQueries({ queryKey: ['profiles'] }),
+      const [nextConversation, nextMessages, nextProfiles] = await Promise.all([
+        refreshCachedConversation(pb, conversationId),
+        refreshCachedMessages(pb, conversationId),
+        memberIds.length > 0 ? refreshCachedProfilesByUserIds(pb, memberIds) : Promise.resolve([]),
       ]);
+
+      queryClient.setQueryData(['conversation', conversationId], nextConversation);
+      queryClient.setQueryData(['messages', conversationId], nextMessages);
+      if (memberIds.length > 0) {
+        queryClient.setQueryData(
+          ['profiles', 'conversation-members', conversationId, memberIds],
+          nextProfiles,
+        );
+      }
     } finally {
       setIsPullRefreshing(false);
     }
@@ -1036,6 +1149,13 @@ function toChatMessage(
   };
 }
 
+function compareConversations(first: ConversationRecord, second: ConversationRecord): number {
+  const firstTime = new Date(first.last_message_at || first.updated).getTime();
+  const secondTime = new Date(second.last_message_at || second.updated).getTime();
+
+  return secondTime - firstTime;
+}
+
 function formatMessageTime(value: string): string {
   const date = new Date(value);
 
@@ -1193,6 +1313,10 @@ function MessageBubble({
   const translateY = useRef(new Animated.Value(12)).current;
   const imageAttachment = message.kind === 'image' ? message.attachments[0] : undefined;
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
+  const cachedImageUrl = useCachedRemoteUri(
+    imageAttachment?.url,
+    imageAttachment ? `message-image:${message.id}:${imageAttachment.name}` : undefined,
+  );
   const isMine = message.author === 'me';
   const hasText = message.text.trim().length > 0;
   const fileName = fileAttachment ? message.text || formatAttachmentName(fileAttachment.name) : '';
@@ -1220,7 +1344,7 @@ function MessageBubble({
   }, [index, opacity, totalMessages, translateY]);
 
   useEffect(() => {
-    const uri = imageAttachment?.url;
+    const uri = cachedImageUrl;
     if (!uri) {
       return;
     }
@@ -1230,7 +1354,7 @@ function MessageBubble({
       (width, height) => setImageSize(fitImageSize(width, height, windowWidth)),
       () => setImageSize(fitImageSize(250, 210, windowWidth)),
     );
-  }, [imageAttachment?.url, windowWidth]);
+  }, [cachedImageUrl, windowWidth]);
 
   useEffect(() => {
     if (!localFileUri) {
@@ -1340,7 +1464,7 @@ function MessageBubble({
         <Pressable onPress={() => setIsImageViewerVisible(true)}>
           <Image
             resizeMode="cover"
-            source={{ uri: imageAttachment.url }}
+            source={{ uri: cachedImageUrl ?? imageAttachment.url }}
             style={{ height: imageSize.height, width: imageSize.width }}
           />
           <View className="absolute bottom-2 right-2 rounded-full bg-black/45 px-2 py-1">
@@ -1366,7 +1490,7 @@ function MessageBubble({
             >
               <Image
                 resizeMode="contain"
-                source={{ uri: imageAttachment.url }}
+                source={{ uri: cachedImageUrl ?? imageAttachment.url }}
                 style={{ height: windowHeight, width: windowWidth }}
               />
             </Pressable>

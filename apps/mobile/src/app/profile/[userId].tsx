@@ -12,7 +12,7 @@ import { BlurView } from 'expo-blur';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Alert,
@@ -28,7 +28,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
 import { getDeviceId } from '../../lib/device-id';
-import { getCachedProfileByUserId } from '../../lib/local-cache';
+import {
+  getCachedProfileByUserId,
+  refreshCachedConversations,
+  refreshCachedProfileByUserId,
+  writeCachedConversation,
+} from '../../lib/local-cache';
+import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 
 const HEADER_SIDE_PADDING = 20;
@@ -56,6 +62,7 @@ export default function ProfileScreen() {
     queryKey: ['profile', 'user', profileUserId],
     queryFn: () => getCachedProfileByUserId(pb, profileUserId),
     enabled: Boolean(profileUserId),
+    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -67,6 +74,10 @@ export default function ProfileScreen() {
   const displayName = profile?.display_name || profile?.username || 'Profile';
   const username = profile?.username || 'unknown';
   const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
+  const cachedAvatarUrl = useCachedRemoteUri(
+    avatarUrl,
+    avatarUrl ? `profile-hero:${profileUserId}:${avatarUrl.split('?')[0]}` : undefined,
+  );
   const normalHeroTop = Math.max(headerHeight, insets.top + TOP_BAR_HEIGHT);
   const pullAvatarSize = Math.max(HERO_AVATAR_SIZE, windowWidth);
   const heroHeight = profileExpansion.interpolate({
@@ -109,7 +120,11 @@ export default function ProfileScreen() {
   const startChatMutation = useMutation({
     mutationFn: () => startPrivateConversation(pb, profileUserId),
     onSuccess: (conversation) => {
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void writeCachedConversation(pb, conversation).then(() => {
+        void refreshCachedConversations(pb).then((conversations) => {
+          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+        });
+      });
       router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
     },
     onError: (error) => {
@@ -128,7 +143,11 @@ export default function ProfileScreen() {
       return { call, conversation };
     },
     onSuccess: ({ call, conversation }) => {
-      queryClient.invalidateQueries({ queryKey: ['conversations'] });
+      void writeCachedConversation(pb, conversation).then(() => {
+        void refreshCachedConversations(pb).then((conversations) => {
+          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+        });
+      });
       queryClient.invalidateQueries({
         queryKey: ['active-call', conversation.id],
       });
@@ -142,6 +161,28 @@ export default function ProfileScreen() {
     },
   });
   const isContactActionPending = startChatMutation.isPending || startCallMutation.isPending;
+
+  useEffect(() => {
+    if (!profileUserId) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfileByUserId(pb, profileUserId)
+      .then((nextProfile) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profile', 'user', profileUserId], nextProfile);
+        }
+      })
+      .catch(() => {
+        // Keep the cached profile visible if this refresh fails.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [profileUserId, queryClient]);
 
   const handleOpenChat = () => {
     if (!canContactProfile || isContactActionPending) {
@@ -252,8 +293,8 @@ export default function ProfileScreen() {
                 width: avatarSize,
               }}
             >
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={StyleSheet.absoluteFillObject} />
+              {cachedAvatarUrl ? (
+                <Image source={{ uri: cachedAvatarUrl }} style={StyleSheet.absoluteFillObject} />
               ) : (
                 <Animated.Text
                   className="font-bold text-background"

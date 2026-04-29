@@ -13,7 +13,7 @@ import {
   type TrackReferenceOrPlaceholder,
 } from '@livekit/react-native';
 import { getProfileAvatarUrl, type CallRoomRecord, type ProfileRecord } from '@infchat/pocketbase';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { ConnectionState, Room, Track, type Participant } from 'livekit-client';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -35,7 +35,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useCallSession } from '../../lib/call-context';
-import { listCachedProfilesByUserIds } from '../../lib/local-cache';
+import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type CallLayoutMode = 'focus' | 'gallery';
@@ -144,6 +144,7 @@ function CallRoomView({
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const room = useRoomContext();
+  const queryClient = useQueryClient();
   const connectionState = useConnectionState();
   const remoteParticipants = useRemoteParticipants();
   const { isCameraEnabled, isMicrophoneEnabled, localParticipant } = useLocalParticipant();
@@ -178,7 +179,30 @@ function CallRoomView({
     queryKey: ['profiles', 'call-participants', participantUserIds],
     queryFn: () => listCachedProfilesByUserIds(pb, participantUserIds),
     enabled: participantUserIds.length > 0,
+    networkMode: 'always',
   });
+
+  useEffect(() => {
+    if (participantUserIds.length === 0) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void refreshCachedProfilesByUserIds(pb, participantUserIds)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profiles', 'call-participants', participantUserIds], profiles);
+        }
+      })
+      .catch(() => {
+        // Cached participant profiles are enough for call chrome while offline.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [participantUserIds, queryClient]);
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', pb.authStore.record?.id],
     queryFn: () => pb.files.getToken(),
