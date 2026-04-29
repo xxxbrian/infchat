@@ -381,24 +381,23 @@ function parsePlist(path: string) {
   return JSON.parse(result.stdout);
 }
 
-function verifyArchivedEntitlements(archivePath: string, scheme: string, bundleId: string) {
-  const appPath = join(archivePath, 'Products', 'Applications', `${scheme}.app`);
+function verifyAppEntitlements(appPath: string, bundleId: string, verificationLabel: string) {
   if (!existsSync(appPath)) {
-    throw new Error(`Archived app not found at ${appPath}.`);
+    throw new Error(`${verificationLabel} app not found at ${appPath}.`);
   }
 
-  const entitlementsPlist = join(tempRoot, 'archived-entitlements.plist');
+  const entitlementsPlist = join(tempRoot, `${verificationLabel}-entitlements.plist`);
   const result = spawnSync('codesign', ['-d', '--entitlements', ':-', appPath], {
     encoding: 'utf8',
   });
   writeFileSync(entitlementsLog, `${result.stderr || ''}${result.stdout || ''}`);
   if (result.status !== 0) {
     throw new Error(
-      `Failed to read archived app entitlements: ${(result.stderr || result.stdout).trim()}`,
+      `Failed to read ${verificationLabel} app entitlements: ${(result.stderr || result.stdout).trim()}`,
     );
   }
   if (!result.stdout.trim()) {
-    throw new Error('Archived app has no readable entitlements.');
+    throw new Error(`${verificationLabel} app has no readable entitlements.`);
   }
   writeFileSync(entitlementsPlist, result.stdout);
 
@@ -418,12 +417,12 @@ function verifyArchivedEntitlements(archivePath: string, scheme: string, bundleI
 
   if (apsEnvironment !== 'production') {
     throw new Error(
-      `Archived app entitlement aps-environment=${apsEnvironment || 'missing'}; expected production for TestFlight/App Store builds.`,
+      `${verificationLabel} app entitlement aps-environment=${apsEnvironment || 'missing'}; expected production for TestFlight/App Store builds.`,
     );
   }
   if (!applicationIdentifier.endsWith(`.${bundleId}`)) {
     throw new Error(
-      `Archived app entitlement application-identifier=${applicationIdentifier || 'missing'} does not match bundle id ${bundleId}.`,
+      `${verificationLabel} app entitlement application-identifier=${applicationIdentifier || 'missing'} does not match bundle id ${bundleId}.`,
     );
   }
   if (
@@ -431,17 +430,44 @@ function verifyArchivedEntitlements(archivePath: string, scheme: string, bundleI
     !associatedApplicationIdentifier.endsWith(`.${bundleId}`)
   ) {
     throw new Error(
-      `Archived app entitlement associated application identifier=${associatedApplicationIdentifier} does not match bundle id ${bundleId}.`,
+      `${verificationLabel} app entitlement associated application identifier=${associatedApplicationIdentifier} does not match bundle id ${bundleId}.`,
     );
   }
   if (missingBackgroundModes.length > 0) {
     throw new Error(
-      `Archived app Info.plist is missing UIBackgroundModes=${missingBackgroundModes.join(',')}.`,
+      `${verificationLabel} app Info.plist is missing UIBackgroundModes=${missingBackgroundModes.join(',')}.`,
     );
   }
 
-  console.log(`${label('Archive entitlements')} aps-environment=${apsEnvironment}`);
-  console.log(`${label('Archive background modes')} ${backgroundModes.join(', ')}`);
+  console.log(`${label(`${verificationLabel} entitlements`)} aps-environment=${apsEnvironment}`);
+  console.log(`${label(`${verificationLabel} background modes`)} ${backgroundModes.join(', ')}`);
+}
+
+function verifyArchivedEntitlements(archivePath: string, scheme: string, bundleId: string) {
+  verifyAppEntitlements(
+    join(archivePath, 'Products', 'Applications', `${scheme}.app`),
+    bundleId,
+    'Archive',
+  );
+}
+
+function verifyExportedIPAEntitlements(ipaPath: string, bundleId: string) {
+  const expandedDir = join(tempRoot, 'expanded-ipa');
+  mkdirSync(expandedDir, { recursive: true });
+  const result = spawnSync('ditto', ['-x', '-k', ipaPath, expandedDir], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to expand exported IPA: ${(result.stderr || result.stdout).trim()}`);
+  }
+
+  const payloadDir = join(expandedDir, 'Payload');
+  const appName = readdirSync(payloadDir).find((entry) => entry.endsWith('.app'));
+  if (!appName) {
+    throw new Error('Exported IPA does not contain a Payload/*.app bundle.');
+  }
+
+  verifyAppEntitlements(join(payloadDir, appName), bundleId, 'Exported IPA');
 }
 
 async function main() {
@@ -462,7 +488,7 @@ async function main() {
   }
 
   await runStep('setup', 'Validate toolchain and App Store Connect auth', async () => {
-    for (const command of ['xcodebuild', 'pod', 'pnpm']) {
+    for (const command of ['ditto', 'xcodebuild', 'pod', 'pnpm']) {
       if (!commandExists(command)) throw new Error(`${command} is not available on PATH.`);
     }
     await asc(['auth', 'status']);
@@ -669,6 +695,10 @@ async function main() {
     .filter((entry) => entry.endsWith('.ipa'))
     .map((entry) => join(exportDir, entry))[0];
   if (!ipaPath) throw new Error('xcodebuild export completed but no .ipa was produced.');
+
+  await runStep('entitlements', 'Verify exported IPA entitlements', async () => {
+    verifyExportedIPAEntitlements(ipaPath, bundleId);
+  });
 
   mkdirSync(distIosDir, { recursive: true });
   const stableIpaPath = join(distIosDir, `${scheme}-${appVersion}-${nextBuildNumber}.ipa`);
