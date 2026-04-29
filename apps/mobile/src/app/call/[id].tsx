@@ -11,10 +11,11 @@ import {
   VideoTrack,
   type TrackReferenceOrPlaceholder,
 } from '@livekit/react-native';
-import { type CallRoomRecord } from '@infchat/pocketbase';
+import { getProfileAvatarUrl, type CallRoomRecord, type ProfileRecord } from '@infchat/pocketbase';
+import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { ConnectionState, Room, Track, type Participant } from 'livekit-client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -30,7 +31,10 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useCallSession } from '../../lib/call-context';
+import { listCachedProfilesByUserIds } from '../../lib/local-cache';
+import { pb } from '../../lib/pocketbase';
 
 type CallLayoutMode = 'focus' | 'gallery';
 type ChromePointerEvents = 'auto' | 'none';
@@ -40,6 +44,13 @@ type ParticipantMetadata = {
   displayName?: string;
   userId?: string;
   username?: string;
+};
+
+type CallProfile = {
+  avatarUrl?: string | null;
+  displayName: string;
+  userId: string;
+  username: string;
 };
 
 const CONTROL_SIZE = 56;
@@ -150,6 +161,36 @@ function CallRoomView({
   );
   const stableTracks = useVisualStableUpdate(tracks, 3);
   const sortedTracks = sortTrackTiles(stableTracks, localParticipant.identity);
+  const participantUserIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          sortedTracks
+            .map((trackRef) => getParticipantMetadata(trackRef.participant).userId)
+            .filter((userId): userId is string => Boolean(userId)),
+        ),
+      ].sort(),
+    [sortedTracks],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ['profiles', 'call-participants', participantUserIds],
+    queryFn: () => listCachedProfilesByUserIds(pb, participantUserIds),
+    enabled: participantUserIds.length > 0,
+  });
+  const fileTokenQuery = useQuery({
+    queryKey: ['file-token', pb.authStore.record?.id],
+    queryFn: () => pb.files.getToken(),
+    staleTime: 1000 * 60 * 5,
+  });
+  const profilesByUserId = useMemo(() => {
+    const profiles = new Map<string, CallProfile>();
+
+    for (const profile of profilesQuery.data ?? []) {
+      profiles.set(profile.user, toCallProfile(profile, fileTokenQuery.data));
+    }
+
+    return profiles;
+  }, [fileTokenQuery.data, profilesQuery.data]);
   const mainTrack = getMainTrack(sortedTracks, selectedTrackKey, localParticipant.identity);
   const mainTrackKey = mainTrack ? getTrackKey(mainTrack) : '';
   const filmstripTracks = sortedTracks.filter((trackRef) => getTrackKey(trackRef) !== mainTrackKey);
@@ -307,6 +348,7 @@ function CallRoomView({
           <GalleryStage
             controlsBottom={controlsBottom}
             mirrorLocalCamera={isFrontCamera}
+            profilesByUserId={profilesByUserId}
             selectedTrackKey={selectedTrackKey}
             tracks={sortedTracks}
             windowHeight={windowHeight}
@@ -324,6 +366,7 @@ function CallRoomView({
             filmstripTracks={filmstripTracks}
             mainTrack={mainTrack}
             mirrorLocalCamera={isFrontCamera}
+            profilesByUserId={profilesByUserId}
             selectedTrackKey={selectedTrackKey}
             windowHeight={windowHeight}
             windowWidth={windowWidth}
@@ -331,7 +374,7 @@ function CallRoomView({
           />
         )
       ) : (
-        <VoiceStage tracks={sortedTracks} />
+        <VoiceStage profilesByUserId={profilesByUserId} tracks={sortedTracks} />
       )}
 
       <Animated.View
@@ -443,6 +486,7 @@ function FocusStage({
   mainTrack,
   mirrorLocalCamera,
   onSelect,
+  profilesByUserId,
   selectedTrackKey,
   windowHeight,
   windowWidth,
@@ -453,6 +497,7 @@ function FocusStage({
   filmstripTracks: TrackReferenceOrPlaceholder[];
   mainTrack: TrackReferenceOrPlaceholder | undefined;
   mirrorLocalCamera: boolean;
+  profilesByUserId: Map<string, CallProfile>;
   selectedTrackKey: string | null;
   windowHeight: number;
   windowWidth: number;
@@ -471,6 +516,7 @@ function FocusStage({
           hideFooter
           isLarge
           mirrorLocalCamera={mirrorLocalCamera}
+          profilesByUserId={profilesByUserId}
           trackRef={mainTrack}
         />
       ) : (
@@ -483,6 +529,7 @@ function FocusStage({
           isSelected={selectedTrackKey === getTrackKey(floatingTrack)}
           footerProgress={chromeProgress}
           mirrorLocalCamera={mirrorLocalCamera}
+          profilesByUserId={profilesByUserId}
           trackRef={floatingTrack}
           windowHeight={windowHeight}
           windowWidth={windowWidth}
@@ -512,6 +559,7 @@ function FocusStage({
                   isSelected={selectedTrackKey === trackKey}
                   key={trackKey}
                   mirrorLocalCamera={mirrorLocalCamera}
+                  profilesByUserId={profilesByUserId}
                   trackRef={trackRef}
                   onPress={() => onSelect(trackRef)}
                 />
@@ -530,6 +578,7 @@ function DraggablePip({
   isSelected,
   mirrorLocalCamera,
   onPress,
+  profilesByUserId,
   trackRef,
   windowHeight,
   windowWidth,
@@ -539,6 +588,7 @@ function DraggablePip({
   isSelected: boolean;
   mirrorLocalCamera: boolean;
   onPress: () => void;
+  profilesByUserId: Map<string, CallProfile>;
   trackRef: TrackReferenceOrPlaceholder;
   windowHeight: number;
   windowWidth: number;
@@ -637,6 +687,7 @@ function DraggablePip({
         footerProgress={footerProgress}
         isSelected={isSelected}
         mirrorLocalCamera={mirrorLocalCamera}
+        profilesByUserId={profilesByUserId}
         shouldHideBorder
         trackRef={trackRef}
       />
@@ -648,6 +699,7 @@ function GalleryStage({
   controlsBottom,
   mirrorLocalCamera,
   onSelect,
+  profilesByUserId,
   selectedTrackKey,
   tracks,
   windowHeight,
@@ -656,6 +708,7 @@ function GalleryStage({
   controlsBottom: number;
   mirrorLocalCamera: boolean;
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
+  profilesByUserId: Map<string, CallProfile>;
   selectedTrackKey: string | null;
   tracks: TrackReferenceOrPlaceholder[];
   windowHeight: number;
@@ -690,6 +743,7 @@ function GalleryStage({
             isSelected={selectedTrackKey === trackKey}
             key={trackKey}
             mirrorLocalCamera={mirrorLocalCamera}
+            profilesByUserId={profilesByUserId}
             trackRef={trackRef}
             onPress={() => onSelect(trackRef)}
           />
@@ -699,7 +753,13 @@ function GalleryStage({
   );
 }
 
-function VoiceStage({ tracks }: { tracks: TrackReferenceOrPlaceholder[] }) {
+function VoiceStage({
+  profilesByUserId,
+  tracks,
+}: {
+  profilesByUserId: Map<string, CallProfile>;
+  tracks: TrackReferenceOrPlaceholder[];
+}) {
   return (
     <View className="flex-1 px-4 pb-36 pt-28">
       <View className="flex-1 justify-center">
@@ -710,7 +770,13 @@ function VoiceStage({ tracks }: { tracks: TrackReferenceOrPlaceholder[] }) {
               return null;
             }
 
-            return <VoiceParticipantCard key={getTrackKey(trackRef)} participant={participant} />;
+            return (
+              <VoiceParticipantCard
+                key={getTrackKey(trackRef)}
+                participant={participant}
+                profilesByUserId={profilesByUserId}
+              />
+            );
           })}
         </View>
       </View>
@@ -726,6 +792,7 @@ function ParticipantTile({
   isSelected,
   mirrorLocalCamera = true,
   onPress,
+  profilesByUserId,
   shouldHideBorder,
   trackRef,
 }: {
@@ -736,12 +803,14 @@ function ParticipantTile({
   isSelected?: boolean;
   mirrorLocalCamera?: boolean;
   onPress?: () => void;
+  profilesByUserId: Map<string, CallProfile>;
   shouldHideBorder?: boolean;
   trackRef: TrackReferenceOrPlaceholder;
 }) {
   const participant = trackRef.participant;
   const hasVideo = isTrackReference(trackRef);
-  const label = participant ? getParticipantLabel(participant) : 'Joining';
+  const profile = participant ? getParticipantProfile(participant, profilesByUserId) : undefined;
+  const label = participant ? getParticipantLabel(participant, profile) : 'Joining';
   const isScreenShare = trackRef.source === Track.Source.ScreenShare;
   const isMicEnabled = participant?.isMicrophoneEnabled ?? true;
   const borderClass = shouldHideBorder
@@ -755,6 +824,9 @@ function ParticipantTile({
   });
   const footerContent = (
     <>
+      <View className="mr-2">
+        <CallParticipantAvatar participant={participant} profile={profile} size={28} />
+      </View>
       <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={1}>
         {label}
       </Text>
@@ -787,7 +859,7 @@ function ParticipantTile({
           trackRef={trackRef}
         />
       ) : (
-        <ParticipantPlaceholder isLarge={isLarge} participant={participant} />
+        <ParticipantPlaceholder isLarge={isLarge} participant={participant} profile={profile} />
       )}
       <View className="absolute left-3 right-3 top-3 flex-row items-center justify-between">
         {participant?.isSpeaking ? (
@@ -829,20 +901,17 @@ function ParticipantTile({
 function ParticipantPlaceholder({
   isLarge,
   participant,
+  profile,
 }: {
   isLarge?: boolean;
   participant: Participant | undefined;
+  profile?: CallProfile;
 }) {
+  const avatarSize = isLarge ? 104 : 62;
+
   return (
     <View className="flex-1 items-center justify-center bg-[#101624]">
-      <View
-        className="items-center justify-center rounded-[34px] bg-foreground"
-        style={{ height: isLarge ? 104 : 62, width: isLarge ? 104 : 62 }}
-      >
-        <Text className="font-black text-background" style={{ fontSize: isLarge ? 40 : 24 }}>
-          {getParticipantInitial(participant)}
-        </Text>
-      </View>
+      <CallParticipantAvatar participant={participant} profile={profile} size={avatarSize} />
       <Text className="mt-4 text-center text-base font-semibold text-white/60">
         {participant?.isLocal ? 'Your camera is off' : 'Camera is off'}
       </Text>
@@ -850,22 +919,23 @@ function ParticipantPlaceholder({
   );
 }
 
-function VoiceParticipantCard({ participant }: { participant: Participant }) {
+function VoiceParticipantCard({
+  participant,
+  profilesByUserId,
+}: {
+  participant: Participant;
+  profilesByUserId: Map<string, CallProfile>;
+}) {
   const isMicEnabled = participant.isMicrophoneEnabled ?? true;
+  const profile = getParticipantProfile(participant, profilesByUserId);
 
   return (
     <View className="w-[46%] items-center rounded-[30px] border border-white/10 bg-white/5 px-4 py-6">
-      <View
-        className={`h-20 w-20 items-center justify-center rounded-[28px] ${
-          participant.isSpeaking ? 'bg-emerald-400' : 'bg-foreground'
-        }`}
-      >
-        <Text className="text-3xl font-black text-background">
-          {getParticipantInitial(participant)}
-        </Text>
+      <View className={participant.isSpeaking ? 'rounded-full border-2 border-emerald-400' : ''}>
+        <CallParticipantAvatar participant={participant} profile={profile} size={80} />
       </View>
       <Text className="mt-4 text-center text-base font-bold text-foreground" numberOfLines={1}>
-        {getParticipantLabel(participant)}
+        {getParticipantLabel(participant, profile)}
       </Text>
       <View className="mt-3 flex-row items-center gap-1.5 rounded-full bg-background/70 px-3 py-1.5">
         <Ionicons
@@ -1045,30 +1115,70 @@ function getGalleryColumns(count: number, windowWidth: number): number {
   return count <= 2 ? 1 : 2;
 }
 
-function getParticipantLabel(participant: Participant): string {
+function toCallProfile(profile: ProfileRecord, fileToken?: string): CallProfile {
+  return {
+    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+    displayName: profile.display_name || profile.username,
+    userId: profile.user,
+    username: profile.username,
+  };
+}
+
+function getParticipantProfile(
+  participant: Participant,
+  profilesByUserId: Map<string, CallProfile>,
+): CallProfile | undefined {
+  const metadata = getParticipantMetadata(participant);
+
+  if (!metadata.userId) {
+    return undefined;
+  }
+
+  return profilesByUserId.get(metadata.userId);
+}
+
+function CallParticipantAvatar({
+  participant,
+  profile,
+  size,
+}: {
+  participant: Participant | undefined;
+  profile?: CallProfile;
+  size: number;
+}) {
+  const metadata = participant ? getParticipantMetadata(participant) : undefined;
+  const userId = profile?.userId || metadata?.userId || participant?.identity || 'joining';
+  const username = profile?.username || metadata?.username || participant?.name || userId;
+  const name = profile?.displayName || metadata?.displayName || participant?.name || username;
+
+  return (
+    <ProfileAvatar
+      avatarUrl={profile?.avatarUrl}
+      name={name}
+      size={size}
+      userId={userId}
+      username={username}
+    />
+  );
+}
+
+function getParticipantLabel(participant: Participant, profile?: CallProfile): string {
   if (participant.isLocal) {
     return 'You';
   }
 
   const metadata = getParticipantMetadata(participant);
   const userLabel =
+    profile?.displayName ||
     participant.name ||
     metadata.displayName ||
+    profile?.username ||
     metadata.username ||
     metadata.userId ||
     participant.identity;
   const deviceLabel = metadata.deviceId ? metadata.deviceId.slice(-4) : '';
 
   return deviceLabel ? `${shortenIdentity(userLabel)} #${deviceLabel}` : shortenIdentity(userLabel);
-}
-
-function getParticipantInitial(participant: Participant | undefined): string {
-  if (!participant) {
-    return '?';
-  }
-
-  const label = getParticipantLabel(participant);
-  return label.slice(0, 1).toUpperCase();
 }
 
 function getParticipantMetadata(participant: Participant): ParticipantMetadata {
