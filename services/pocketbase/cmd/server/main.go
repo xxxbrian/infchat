@@ -58,8 +58,10 @@ type callJoinRequest struct {
 }
 
 type liveKitParticipantMetadata struct {
-	DeviceId string `json:"deviceId"`
-	UserId   string `json:"userId"`
+	DeviceId    string `json:"deviceId"`
+	DisplayName string `json:"displayName,omitempty"`
+	UserId      string `json:"userId"`
+	Username    string `json:"username,omitempty"`
 }
 
 func bindCallRoutes(app *pocketbase.PocketBase) {
@@ -320,7 +322,8 @@ func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId 
 		return e.InternalServerError("LiveKit is not configured.", err)
 	}
 
-	token, err := createLiveKitToken(apiKey, apiSecret, callRoom.GetString("room_name"), e.Auth.Id, deviceId)
+	participantName, username := liveKitParticipantName(e.App, e.Auth.Id)
+	token, err := createLiveKitToken(apiKey, apiSecret, callRoom.GetString("room_name"), e.Auth.Id, deviceId, participantName, username)
 	if err != nil {
 		return e.InternalServerError("Could not create call token.", err)
 	}
@@ -332,14 +335,16 @@ func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId 
 	})
 }
 
-func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId string, deviceId string) (string, error) {
+func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId string, deviceId string, displayName string, username string) (string, error) {
 	canPublish := true
 	canSubscribe := true
 	canPublishData := true
 	normalizedDeviceId := normalizedDeviceId(deviceId)
 	metadata, err := json.Marshal(liveKitParticipantMetadata{
-		DeviceId: normalizedDeviceId,
-		UserId:   userId,
+		DeviceId:    normalizedDeviceId,
+		DisplayName: displayName,
+		UserId:      userId,
+		Username:    username,
 	})
 	if err != nil {
 		return "", err
@@ -347,7 +352,7 @@ func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId
 
 	return livekitauth.NewAccessToken(apiKey, apiSecret).
 		SetIdentity(fmt.Sprintf("%s:%s", userId, normalizedDeviceId)).
-		SetName(userId).
+		SetName(displayName).
 		SetMetadata(string(metadata)).
 		SetValidFor(liveKitTokenTTL).
 		SetVideoGrant(&livekitauth.VideoGrant{
@@ -358,6 +363,24 @@ func createLiveKitToken(apiKey string, apiSecret string, roomName string, userId
 			CanPublishData: &canPublishData,
 		}).
 		ToJWT()
+}
+
+func liveKitParticipantName(app core.App, userId string) (string, string) {
+	profile, err := app.FindFirstRecordByFilter("profiles", "user={:user}", dbx.Params{"user": userId})
+	if err != nil {
+		return userId, ""
+	}
+
+	displayName := strings.TrimSpace(profile.GetString("display_name"))
+	username := strings.TrimSpace(profile.GetString("username"))
+	if displayName == "" {
+		displayName = username
+	}
+	if displayName == "" {
+		displayName = userId
+	}
+
+	return displayName, username
 }
 
 func liveKitConfig() (string, string, string, error) {
@@ -634,7 +657,7 @@ func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status s
 		return err
 	}
 
-	message.Set("body", callMessageBody(callRoom.GetString("kind"), status))
+	message.Set("body", callMessageBody(callRoom, status))
 
 	return app.Save(message)
 }
@@ -672,9 +695,9 @@ func callUnavailableMessage(status string) string {
 	}
 }
 
-func callMessageBody(kind string, status string) string {
+func callMessageBody(callRoom *core.Record, status string) string {
 	label := "Voice call"
-	if kind == "video" {
+	if callRoom.GetString("kind") == "video" {
 		label = "Video call"
 	}
 
@@ -686,8 +709,27 @@ func callMessageBody(kind string, status string) string {
 	case "canceled":
 		return "Canceled " + strings.ToLower(label)
 	default:
-		return label + " ended"
+		return label + " · " + formatCallDuration(callRoom)
 	}
+}
+
+func formatCallDuration(callRoom *core.Record) string {
+	startedAt := callRoom.GetDateTime("created")
+	endedAt := callRoom.GetDateTime("ended_at")
+	if startedAt.IsZero() || endedAt.IsZero() || endedAt.Before(startedAt) {
+		return "00:00"
+	}
+
+	duration := endedAt.Sub(startedAt).Round(time.Second)
+	minutes := int(duration.Minutes())
+	seconds := int(duration.Seconds()) % 60
+	if minutes >= 60 {
+		hours := minutes / 60
+		minutes = minutes % 60
+		return fmt.Sprintf("%d:%02d:%02d", hours, minutes, seconds)
+	}
+
+	return fmt.Sprintf("%02d:%02d", minutes, seconds)
 }
 
 func activeCallMessageBody(kind string) string {

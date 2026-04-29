@@ -23,6 +23,8 @@ export type DevicePlatform = 'ios' | 'android' | 'web';
 export type LiveKitParticipantMetadata = {
   userId: string;
   deviceId: string;
+  displayName?: string;
+  username?: string;
 };
 
 export const USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;

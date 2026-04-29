@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
+  AudioSession,
   isTrackReference,
   useConnectionState,
   useLocalParticipant,
@@ -36,7 +37,9 @@ type ChromePointerEvents = 'auto' | 'none';
 
 type ParticipantMetadata = {
   deviceId?: string;
+  displayName?: string;
   userId?: string;
+  username?: string;
 };
 
 const CONTROL_SIZE = 56;
@@ -132,6 +135,8 @@ function CallRoomView({
   const remoteParticipants = useRemoteParticipants();
   const { isCameraEnabled, isMicrophoneEnabled, localParticipant } = useLocalParticipant();
   const [layoutMode, setLayoutMode] = useState<CallLayoutMode>('focus');
+  const [isFrontCamera, setIsFrontCamera] = useState(true);
+  const [isSpeakerEnabled, setIsSpeakerEnabled] = useState(true);
   const [selectedTrackKey, setSelectedTrackKey] = useState<string | null>(null);
   const [isChromeVisible, setIsChromeVisible] = useState(true);
   const chromeProgress = useRef(new Animated.Value(1)).current;
@@ -239,6 +244,25 @@ function CallRoomView({
     }
   };
 
+  const toggleSpeaker = async () => {
+    try {
+      const outputs = await AudioSession.getAudioOutputs();
+      const nextOutput = isSpeakerEnabled
+        ? outputs.find((output) => output === 'earpiece' || output === 'default')
+        : outputs.find((output) => output === 'speaker' || output === 'force_speaker');
+
+      if (!nextOutput) {
+        Alert.alert('Audio output unavailable', 'This device cannot switch audio output here.');
+        return;
+      }
+
+      await AudioSession.selectAudioOutput(nextOutput);
+      setIsSpeakerEnabled(!isSpeakerEnabled);
+    } catch {
+      Alert.alert('Audio output unavailable', 'Could not change speaker output.');
+    }
+  };
+
   const switchCamera = async () => {
     try {
       const devices = await Room.getLocalDevices('videoinput', true);
@@ -246,6 +270,7 @@ function CallRoomView({
       const nextDevice = devices.find((device) => device.deviceId !== activeDeviceId) ?? devices[0];
       if (nextDevice) {
         await room.switchActiveDevice('videoinput', nextDevice.deviceId);
+        setIsFrontCamera((current) => (devices.length > 1 ? !current : current));
       }
     } catch {
       Alert.alert('Camera unavailable', 'Could not switch cameras.');
@@ -281,6 +306,7 @@ function CallRoomView({
         layoutMode === 'gallery' ? (
           <GalleryStage
             controlsBottom={controlsBottom}
+            mirrorLocalCamera={isFrontCamera}
             selectedTrackKey={selectedTrackKey}
             tracks={sortedTracks}
             windowHeight={windowHeight}
@@ -297,6 +323,7 @@ function CallRoomView({
             filmstripBottom={filmstripBottom}
             filmstripTracks={filmstripTracks}
             mainTrack={mainTrack}
+            mirrorLocalCamera={isFrontCamera}
             selectedTrackKey={selectedTrackKey}
             windowHeight={windowHeight}
             windowWidth={windowWidth}
@@ -337,6 +364,12 @@ function CallRoomView({
           {callRoom.kind === 'video' ? (
             <CallControl icon="camera-reverse" isActive label="Flip" onPress={switchCamera} />
           ) : null}
+          <CallControl
+            icon={isSpeakerEnabled ? 'volume-high' : 'volume-low'}
+            isActive={isSpeakerEnabled}
+            label={isSpeakerEnabled ? 'Speaker' : 'Earpiece'}
+            onPress={toggleSpeaker}
+          />
           <CallControl
             icon="call"
             isDanger
@@ -408,6 +441,7 @@ function FocusStage({
   filmstripBottom,
   filmstripTracks,
   mainTrack,
+  mirrorLocalCamera,
   onSelect,
   selectedTrackKey,
   windowHeight,
@@ -418,6 +452,7 @@ function FocusStage({
   filmstripBottom: number;
   filmstripTracks: TrackReferenceOrPlaceholder[];
   mainTrack: TrackReferenceOrPlaceholder | undefined;
+  mirrorLocalCamera: boolean;
   selectedTrackKey: string | null;
   windowHeight: number;
   windowWidth: number;
@@ -432,7 +467,12 @@ function FocusStage({
   return (
     <View className="flex-1">
       {mainTrack ? (
-        <ParticipantTile hideFooter isLarge trackRef={mainTrack} />
+        <ParticipantTile
+          hideFooter
+          isLarge
+          mirrorLocalCamera={mirrorLocalCamera}
+          trackRef={mainTrack}
+        />
       ) : (
         <EmptyCallStage message="Waiting for participants" />
       )}
@@ -442,6 +482,7 @@ function FocusStage({
           filmstripBottom={filmstripBottom}
           isSelected={selectedTrackKey === getTrackKey(floatingTrack)}
           footerProgress={chromeProgress}
+          mirrorLocalCamera={mirrorLocalCamera}
           trackRef={floatingTrack}
           windowHeight={windowHeight}
           windowWidth={windowWidth}
@@ -470,6 +511,7 @@ function FocusStage({
                   containerStyle={styles.filmstripTile}
                   isSelected={selectedTrackKey === trackKey}
                   key={trackKey}
+                  mirrorLocalCamera={mirrorLocalCamera}
                   trackRef={trackRef}
                   onPress={() => onSelect(trackRef)}
                 />
@@ -486,6 +528,7 @@ function DraggablePip({
   filmstripBottom,
   footerProgress,
   isSelected,
+  mirrorLocalCamera,
   onPress,
   trackRef,
   windowHeight,
@@ -494,6 +537,7 @@ function DraggablePip({
   filmstripBottom: number;
   footerProgress: Animated.Value;
   isSelected: boolean;
+  mirrorLocalCamera: boolean;
   onPress: () => void;
   trackRef: TrackReferenceOrPlaceholder;
   windowHeight: number;
@@ -592,6 +636,7 @@ function DraggablePip({
         containerStyle={styles.floatingPipTile}
         footerProgress={footerProgress}
         isSelected={isSelected}
+        mirrorLocalCamera={mirrorLocalCamera}
         trackRef={trackRef}
       />
     </Animated.View>
@@ -600,6 +645,7 @@ function DraggablePip({
 
 function GalleryStage({
   controlsBottom,
+  mirrorLocalCamera,
   onSelect,
   selectedTrackKey,
   tracks,
@@ -607,6 +653,7 @@ function GalleryStage({
   windowWidth,
 }: {
   controlsBottom: number;
+  mirrorLocalCamera: boolean;
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
   selectedTrackKey: string | null;
   tracks: TrackReferenceOrPlaceholder[];
@@ -641,6 +688,7 @@ function GalleryStage({
             }}
             isSelected={selectedTrackKey === trackKey}
             key={trackKey}
+            mirrorLocalCamera={mirrorLocalCamera}
             trackRef={trackRef}
             onPress={() => onSelect(trackRef)}
           />
@@ -675,6 +723,7 @@ function ParticipantTile({
   hideFooter,
   isLarge,
   isSelected,
+  mirrorLocalCamera = true,
   onPress,
   trackRef,
 }: {
@@ -683,6 +732,7 @@ function ParticipantTile({
   hideFooter?: boolean;
   isLarge?: boolean;
   isSelected?: boolean;
+  mirrorLocalCamera?: boolean;
   onPress?: () => void;
   trackRef: TrackReferenceOrPlaceholder;
 }) {
@@ -720,7 +770,11 @@ function ParticipantTile({
     >
       {hasVideo ? (
         <VideoTrack
-          mirror={trackRef.participant?.isLocal && trackRef.source === Track.Source.Camera}
+          mirror={
+            Boolean(trackRef.participant?.isLocal) &&
+            trackRef.source === Track.Source.Camera &&
+            mirrorLocalCamera
+          }
           objectFit="cover"
           style={StyleSheet.absoluteFillObject}
           trackRef={trackRef}
@@ -990,12 +1044,15 @@ function getParticipantLabel(participant: Participant): string {
   }
 
   const metadata = getParticipantMetadata(participant);
-  const userLabel = participant.name || metadata.userId || participant.identity;
+  const userLabel =
+    participant.name ||
+    metadata.displayName ||
+    metadata.username ||
+    metadata.userId ||
+    participant.identity;
   const deviceLabel = metadata.deviceId ? metadata.deviceId.slice(-4) : '';
 
-  return deviceLabel
-    ? `${shortenIdentity(userLabel)} · ${deviceLabel}`
-    : shortenIdentity(userLabel);
+  return deviceLabel ? `${shortenIdentity(userLabel)} #${deviceLabel}` : shortenIdentity(userLabel);
 }
 
 function getParticipantInitial(participant: Participant | undefined): string {
