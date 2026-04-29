@@ -1,4 +1,4 @@
-import { registerPushDevice, type PushEnvironment } from '@infchat/pocketbase';
+import { endCall, registerPushDevice, type PushEnvironment } from '@infchat/pocketbase';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
@@ -20,6 +20,43 @@ type CallPushPayload = {
 };
 
 const callPushesByUUID = new Map<string, CallPushPayload>();
+const endingSystemCallUUIDs = new Set<string>();
+
+type SystemCallPayload = CallPushPayload & { callUUID: string };
+
+type SystemCallHandlers = {
+  onAnswerCall?: (payload: SystemCallPayload) => Promise<void> | void;
+  onEndCall?: (payload: SystemCallPayload) => Promise<void> | void;
+};
+
+let systemCallHandlers: SystemCallHandlers = {};
+
+export function setIOSSystemCallHandlers(handlers: SystemCallHandlers) {
+  systemCallHandlers = handlers;
+
+  return () => {
+    if (systemCallHandlers === handlers) {
+      systemCallHandlers = {};
+    }
+  };
+}
+
+export function endIOSSystemCallForCallRoom(callRoomId: string) {
+  if (Platform.OS !== 'ios') {
+    return;
+  }
+
+  for (const [callUUID, payload] of callPushesByUUID.entries()) {
+    if (payload.callRoomId !== callRoomId) {
+      continue;
+    }
+
+    endingSystemCallUUIDs.add(callUUID);
+    callPushesByUUID.delete(callUUID);
+    RNCallKeep.endCall(callUUID);
+    return;
+  }
+}
 
 export function setupNotificationPresentation() {
   Notifications.setNotificationHandler({
@@ -97,13 +134,37 @@ export function setupIOSSystemCalls() {
     }
 
     RNCallKeep.setCurrentCallActive(callUUID);
+    const actionPayload = { ...payload, callUUID };
+    if (systemCallHandlers.onAnswerCall) {
+      void Promise.resolve(systemCallHandlers.onAnswerCall(actionPayload)).catch(() => {
+        RNCallKeep.endCall(callUUID);
+      });
+      return;
+    }
+
     router.push({
       pathname: '/call/[id]',
       params: { id: payload.callRoomId },
     });
   });
   const endSubscription = RNCallKeep.addEventListener('endCall', ({ callUUID }) => {
+    const payload = callPushesByUUID.get(callUUID);
     callPushesByUUID.delete(callUUID);
+    if (endingSystemCallUUIDs.delete(callUUID)) {
+      return;
+    }
+
+    if (!payload?.callRoomId) {
+      return;
+    }
+
+    const actionPayload = { ...payload, callUUID };
+    if (systemCallHandlers.onEndCall) {
+      void systemCallHandlers.onEndCall(actionPayload);
+      return;
+    }
+
+    void endCall(pb, payload.callRoomId);
   });
 
   VoipPushNotification.addEventListener('register', (token) => {

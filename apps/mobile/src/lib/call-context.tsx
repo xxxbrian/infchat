@@ -33,6 +33,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getDeviceId } from './device-id';
 import { pb } from './pocketbase';
 import { useAuth } from './auth-context';
+import { endIOSSystemCallForCallRoom, setIOSSystemCallHandlers } from './push-notifications';
 
 const MINI_WINDOW_HEIGHT = 174;
 const MINI_WINDOW_MARGIN = 16;
@@ -65,6 +66,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const blockedAutoJoinCallRoomIdRef = useRef<string | null>(null);
   const didRequestEndRef = useRef(false);
   const deviceIdRef = useRef<string | null>(null);
+  const joiningCallRoomIdRef = useRef<string | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveCallSession | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isJoining, setIsJoining] = useState(false);
@@ -101,6 +103,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      if (joiningCallRoomIdRef.current === normalizedCallRoomId) {
+        return;
+      }
+
+      joiningCallRoomIdRef.current = normalizedCallRoomId;
       setIsJoining(true);
       setErrorMessage('');
 
@@ -113,6 +120,9 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       } catch {
         setErrorMessage('Could not join this call.');
       } finally {
+        if (joiningCallRoomIdRef.current === normalizedCallRoomId) {
+          joiningCallRoomIdRef.current = null;
+        }
         setIsJoining(false);
       }
     },
@@ -134,6 +144,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
+    endIOSSystemCallForCallRoom(activeSession.callRoom.id);
     dismissCallRoute();
   }, [activeSession, dismissCallRoute]);
 
@@ -166,6 +177,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
+    endIOSSystemCallForCallRoom(activeSession.callRoom.id);
     dismissCallRoute();
   }, [activeSession, authRecord.id, dismissCallRoute]);
 
@@ -199,6 +211,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
 
         didRequestEndRef.current = true;
+        endIOSSystemCallForCallRoom(callRoom.id);
         setActiveSession(null);
         dismissCallRoute();
       })
@@ -212,6 +225,35 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       void AudioSession.stopAudioSession();
     };
   }, [activeCallRoomId, dismissCallRoute]);
+
+  useEffect(() => {
+    return setIOSSystemCallHandlers({
+      onAnswerCall: async ({ callRoomId }) => {
+        if (!callRoomId) {
+          return;
+        }
+
+        await joinCallRoom(callRoomId);
+        router.push({ pathname: '/call/[id]', params: { id: callRoomId } });
+      },
+      onEndCall: async ({ callRoomId }) => {
+        if (!callRoomId) {
+          return;
+        }
+
+        if (activeSession?.callRoom.id === callRoomId) {
+          await endActiveCall();
+          return;
+        }
+
+        try {
+          await endCall(pb, callRoomId);
+        } catch {
+          // The system call has already ended locally; backend cleanup can still mark it missed.
+        }
+      },
+    });
+  }, [activeSession?.callRoom.id, endActiveCall, joinCallRoom]);
 
   useEffect(() => {
     if (!activeCallRoomId) {
