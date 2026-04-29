@@ -21,11 +21,17 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, PanResponder, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getDeviceId } from './device-id';
 import { pb } from './pocketbase';
+import { useAuth } from './auth-context';
+
+const MINI_WINDOW_HEIGHT = 174;
+const MINI_WINDOW_MARGIN = 16;
+const MINI_WINDOW_TAB_BAR_CLEARANCE = 92;
+const MINI_WINDOW_WIDTH = 132;
 
 type ActiveCallSession = {
   callRoom: CallRoomRecord;
@@ -39,18 +45,21 @@ type CallSessionContextValue = {
   errorMessage: string;
   isJoining: boolean;
   joinCallRoom: (callRoomId: string) => Promise<void>;
+  leaveActiveCall: () => Promise<void>;
   minimizeCall: () => void;
 };
 
 const CallSessionContext = createContext<CallSessionContextValue | null>(null);
 
 export function CallSessionProvider({ children }: { children: ReactNode }) {
+  const { authRecord } = useAuth();
   const pathname = usePathname();
   const pathnameRef = useRef(pathname);
   const didRequestEndRef = useRef(false);
   const [activeSession, setActiveSession] = useState<ActiveCallSession | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isJoining, setIsJoining] = useState(false);
+  const activeCallRoomId = activeSession?.callRoom.id;
 
   pathnameRef.current = pathname;
 
@@ -106,12 +115,34 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     dismissCallRoute();
   }, [activeSession, dismissCallRoute]);
 
+  const leaveActiveCall = useCallback(async () => {
+    if (!activeSession || didRequestEndRef.current) {
+      return;
+    }
+
+    didRequestEndRef.current = true;
+
+    if (
+      activeSession.callRoom.status === 'ringing' &&
+      activeSession.callRoom.created_by === authRecord.id
+    ) {
+      try {
+        await endCall(pb, activeSession.callRoom.id);
+      } catch {
+        // The local device should still leave if cancel signaling fails.
+      }
+    }
+
+    setActiveSession(null);
+    dismissCallRoute();
+  }, [activeSession, authRecord.id, dismissCallRoute]);
+
   const minimizeCall = useCallback(() => {
     dismissCallRoute();
   }, [dismissCallRoute]);
 
   useEffect(() => {
-    if (!activeSession) {
+    if (!activeCallRoomId) {
       return;
     }
 
@@ -120,8 +151,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     void AudioSession.startAudioSession();
 
     pb.collection('call_rooms')
-      .subscribe(activeSession.callRoom.id, (event) => {
-        if (!isMounted || event.record?.status !== 'ended') {
+      .subscribe(activeCallRoomId, (event) => {
+        const callRoom = event.record as unknown as CallRoomRecord | undefined;
+        if (!isMounted || !callRoom) {
+          return;
+        }
+
+        if (callRoom.status !== 'ended') {
+          setActiveSession((currentSession) =>
+            currentSession?.callRoom.id === callRoom.id
+              ? { ...currentSession, callRoom }
+              : currentSession,
+          );
           return;
         }
 
@@ -135,10 +176,10 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
     return () => {
       isMounted = false;
-      pb.collection('call_rooms').unsubscribe(activeSession.callRoom.id);
+      pb.collection('call_rooms').unsubscribe(activeCallRoomId);
       void AudioSession.stopAudioSession();
     };
-  }, [activeSession, dismissCallRoute]);
+  }, [activeCallRoomId, dismissCallRoute]);
 
   const contextValue = useMemo<CallSessionContextValue>(
     () => ({
@@ -147,9 +188,18 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       errorMessage,
       isJoining,
       joinCallRoom,
+      leaveActiveCall,
       minimizeCall,
     }),
-    [activeSession, endActiveCall, errorMessage, isJoining, joinCallRoom, minimizeCall],
+    [
+      activeSession,
+      endActiveCall,
+      errorMessage,
+      isJoining,
+      joinCallRoom,
+      leaveActiveCall,
+      minimizeCall,
+    ],
   );
 
   const content = activeSession ? (
@@ -200,7 +250,20 @@ export function useCallSession(): CallSessionContextValue {
 
 function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const { localParticipant } = useLocalParticipant();
+  const position = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const currentPosition = useRef({ x: 0, y: 0 });
+  const dragStartPosition = useRef({ x: 0, y: 0 });
+  const didDrag = useRef(false);
+  const minX = MINI_WINDOW_MARGIN;
+  const maxX = Math.max(minX, windowWidth - MINI_WINDOW_WIDTH - MINI_WINDOW_MARGIN);
+  const minY = Math.max(insets.top + MINI_WINDOW_MARGIN, MINI_WINDOW_MARGIN);
+  const maxY = Math.max(
+    minY,
+    windowHeight - Math.max(insets.bottom, 12) - MINI_WINDOW_TAB_BAR_CLEARANCE - MINI_WINDOW_HEIGHT,
+  );
+  const bounds = useRef({ maxX, maxY, minX, minY });
   const tracks = useTracks([{ source: Track.Source.Camera, withPlaceholder: true }], {
     onlySubscribed: false,
   });
@@ -210,11 +273,96 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
         isTrackReference(trackRef) && trackRef.participant.identity !== localParticipant.identity,
     ) ?? tracks.find((trackRef) => isTrackReference(trackRef));
 
+  bounds.current = { maxX, maxY, minX, minY };
+
+  useEffect(() => {
+    const nextPosition = {
+      x: clamp(currentPosition.current.x || maxX, minX, maxX),
+      y: clamp(currentPosition.current.y || maxY, minY, maxY),
+    };
+    currentPosition.current = nextPosition;
+    position.setValue(nextPosition);
+  }, [maxX, maxY, minX, minY, position]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_event, gestureState) =>
+        Math.abs(gestureState.dx) > 5 || Math.abs(gestureState.dy) > 5,
+      onPanResponderGrant: () => {
+        didDrag.current = false;
+        dragStartPosition.current = currentPosition.current;
+      },
+      onPanResponderMove: (_event, gestureState) => {
+        didDrag.current = true;
+        const nextPosition = {
+          x: clamp(
+            dragStartPosition.current.x + gestureState.dx,
+            bounds.current.minX,
+            bounds.current.maxX,
+          ),
+          y: clamp(
+            dragStartPosition.current.y + gestureState.dy,
+            bounds.current.minY,
+            bounds.current.maxY,
+          ),
+        };
+        currentPosition.current = nextPosition;
+        position.setValue(nextPosition);
+      },
+      onPanResponderRelease: (_event, gestureState) => {
+        if (!didDrag.current) {
+          router.push({ pathname: '/call/[id]', params: { id: callRoom.id } });
+          return;
+        }
+
+        const projectedX = currentPosition.current.x + gestureState.vx * 90;
+        const projectedY = currentPosition.current.y + gestureState.vy * 90;
+        const snapX =
+          projectedX + MINI_WINDOW_WIDTH / 2 < (bounds.current.minX + bounds.current.maxX) / 2
+            ? bounds.current.minX
+            : bounds.current.maxX;
+        const snapY =
+          projectedY + MINI_WINDOW_HEIGHT / 2 < (bounds.current.minY + bounds.current.maxY) / 2
+            ? bounds.current.minY
+            : bounds.current.maxY;
+        const nextPosition = { x: snapX, y: snapY };
+        currentPosition.current = nextPosition;
+        Animated.spring(position, {
+          damping: 20,
+          mass: 0.8,
+          stiffness: 210,
+          toValue: nextPosition,
+          useNativeDriver: false,
+        }).start();
+      },
+      onPanResponderTerminate: () => {
+        const nextPosition = {
+          x:
+            currentPosition.current.x + MINI_WINDOW_WIDTH / 2 <
+            (bounds.current.minX + bounds.current.maxX) / 2
+              ? bounds.current.minX
+              : bounds.current.maxX,
+          y:
+            currentPosition.current.y + MINI_WINDOW_HEIGHT / 2 <
+            (bounds.current.minY + bounds.current.maxY) / 2
+              ? bounds.current.minY
+              : bounds.current.maxY,
+        };
+        currentPosition.current = nextPosition;
+        position.setValue(nextPosition);
+      },
+      onStartShouldSetPanResponder: () => true,
+    }),
+  ).current;
+
   return (
-    <Pressable
-      className="absolute right-4 z-30 overflow-hidden rounded-[28px] border border-white/10 bg-background/90"
-      onPress={() => router.push({ pathname: '/call/[id]', params: { id: callRoom.id } })}
-      style={[styles.miniWindow, { bottom: Math.max(insets.bottom, 12) + 92 }]}
+    <Animated.View
+      className="absolute z-30 overflow-hidden rounded-[28px] border border-white/10 bg-background/90"
+      style={[
+        styles.miniWindow,
+        { transform: [{ translateX: position.x }, { translateY: position.y }] },
+      ]}
+      {...panResponder.panHandlers}
     >
       {previewTrack && isTrackReference(previewTrack) ? (
         <VideoTrack
@@ -238,16 +386,20 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
           Tap to return
         </Text>
       </View>
-    </Pressable>
+    </Animated.View>
   );
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 const styles = StyleSheet.create({
   miniWindow: {
-    height: 174,
+    height: MINI_WINDOW_HEIGHT,
     shadowColor: '#000',
     shadowOpacity: 0.28,
     shadowRadius: 24,
-    width: 132,
+    width: MINI_WINDOW_WIDTH,
   },
 });

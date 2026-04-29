@@ -53,8 +53,15 @@ export default function CallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const callRoomId = id ?? '';
   const entrance = useRef(new Animated.Value(0)).current;
-  const { activeSession, endActiveCall, errorMessage, isJoining, joinCallRoom, minimizeCall } =
-    useCallSession();
+  const {
+    activeSession,
+    endActiveCall,
+    errorMessage,
+    isJoining,
+    joinCallRoom,
+    leaveActiveCall,
+    minimizeCall,
+  } = useCallSession();
 
   useEffect(() => {
     Animated.timing(entrance, {
@@ -91,7 +98,8 @@ export default function CallScreen() {
         {activeSession?.callRoom.id === callRoomId ? (
           <CallRoomView
             callRoom={activeSession.callRoom}
-            onHangUp={endActiveCall}
+            onEndCall={endActiveCall}
+            onHangUp={leaveActiveCall}
             onMinimize={minimizeCall}
           />
         ) : (
@@ -108,10 +116,12 @@ export default function CallScreen() {
 
 function CallRoomView({
   callRoom,
+  onEndCall,
   onHangUp,
   onMinimize,
 }: {
   callRoom: CallRoomRecord;
+  onEndCall: () => void;
   onHangUp: () => void;
   onMinimize: () => void;
 }) {
@@ -242,6 +252,13 @@ function CallRoomView({
     }
   };
 
+  const confirmEndCall = () => {
+    Alert.alert('End call for everyone?', 'This will disconnect every participant in this call.', [
+      { style: 'cancel', text: 'Cancel' },
+      { onPress: onEndCall, style: 'destructive', text: 'End call' },
+    ]);
+  };
+
   return (
     <View className="flex-1 bg-background" onTouchStart={revealChrome}>
       <View className="absolute inset-0 bg-[#05070d]" />
@@ -320,7 +337,13 @@ function CallRoomView({
           {callRoom.kind === 'video' ? (
             <CallControl icon="camera-reverse" isActive label="Flip" onPress={switchCamera} />
           ) : null}
-          <CallControl icon="call" isDanger label="End" onPress={onHangUp} />
+          <CallControl
+            icon="call"
+            isDanger
+            label="Leave"
+            onLongPress={confirmEndCall}
+            onPress={onHangUp}
+          />
         </View>
       </Animated.View>
     </View>
@@ -842,12 +865,14 @@ function CallControl({
   isActive,
   isDanger,
   label,
+  onLongPress,
   onPress,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   isActive?: boolean;
   isDanger?: boolean;
   label: string;
+  onLongPress?: () => void;
   onPress: () => void;
 }) {
   const scale = useRef(new Animated.Value(1)).current;
@@ -858,6 +883,7 @@ function CallControl({
     <View className="items-center">
       <AnimatedPressable
         className={`items-center justify-center rounded-full ${backgroundClass}`}
+        onLongPress={onLongPress}
         onPress={onPress}
         onPressIn={() => {
           Animated.spring(scale, {

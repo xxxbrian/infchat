@@ -55,7 +55,7 @@
             "audioType": "communication"
           },
           "ios": {
-            "enableMultitaskingCameraAccess": false
+            "enableMultitaskingCameraAccess": true
           }
         }
       ],
