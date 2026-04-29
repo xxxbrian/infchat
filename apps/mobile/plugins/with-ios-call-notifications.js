@@ -58,6 +58,13 @@ extension AppDelegate: PKPushRegistryDelegate {
     let handle = payloadDictionary["handle"] as? String ?? callerName
     let hasVideo = (payloadDictionary["kind"] as? String) == "video"
 
+    if (payloadDictionary["type"] as? String) == "call_update" {
+      RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
+      RNCallKeep.endCall(withUUID: uuid, reason: infChatCallEndReason(payloadDictionary["status"] as? String ?? "ended"))
+      completion()
+      return
+    }
+
     RNVoipPushNotificationManager.addCompletionHandler(uuid, completionHandler: completion)
     RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
     RNCallKeep.reportNewIncomingCall(
@@ -74,6 +81,19 @@ extension AppDelegate: PKPushRegistryDelegate {
       payload: payloadDictionary,
       withCompletionHandler: completion
     )
+  }
+
+  private func infChatCallEndReason(_ status: String) -> Int32 {
+    switch status {
+    case "active":
+      return 4
+    case "declined":
+      return 5
+    case "missed":
+      return 6
+    default:
+      return 2
+    }
   }
 }
 `;

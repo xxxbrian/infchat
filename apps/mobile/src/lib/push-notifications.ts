@@ -15,6 +15,7 @@ type CallPushPayload = {
   conversationId?: string;
   handle?: string;
   kind?: 'video' | 'voice';
+  status?: string;
   type?: string;
   uuid?: string;
 };
@@ -122,6 +123,47 @@ function takePendingCallKeepActions(callUUID: string): PendingCallKeepAction[] {
   clearTimeout(pending.timeout);
   pendingCallKeepActionsByUUID.delete(callUUID);
   return pending.actions;
+}
+
+function clearPendingCallKeepActions(callUUID: string) {
+  const pending = pendingCallKeepActionsByUUID.get(callUUID);
+  if (!pending) {
+    return;
+  }
+
+  clearTimeout(pending.timeout);
+  pendingCallKeepActionsByUUID.delete(callUUID);
+}
+
+function handleCallUpdatePayload(payload: CallPushPayload): boolean {
+  if (payload.type !== 'call_update' || !payload.uuid) {
+    return false;
+  }
+
+  clearPendingCallKeepActions(payload.uuid);
+  callPushesByUUID.delete(payload.uuid);
+  endingSystemCallUUIDs.add(payload.uuid);
+  RNCallKeep.reportEndCallWithUUID(
+    payload.uuid,
+    toCallKeepEndReason(systemCallEndReasonForStatus(payload.status)),
+  );
+
+  return true;
+}
+
+function systemCallEndReasonForStatus(
+  status: string | undefined,
+): Exclude<IOSSystemCallEndReason, 'local'> {
+  switch (status) {
+    case 'active':
+      return 'answered-elsewhere';
+    case 'declined':
+      return 'declined-elsewhere';
+    case 'missed':
+      return 'missed';
+    default:
+      return 'remote-ended';
+  }
 }
 
 export function setupNotificationPresentation() {
@@ -268,6 +310,10 @@ export function setupIOSSystemCalls() {
   );
 
   const storeCallPushPayload = (payload: CallPushPayload) => {
+    if (handleCallUpdatePayload(payload)) {
+      return;
+    }
+
     if (!payload.uuid) {
       return;
     }

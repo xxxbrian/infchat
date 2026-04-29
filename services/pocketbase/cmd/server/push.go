@@ -289,6 +289,35 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 	}
 }
 
+func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status string, excludedUserId string) {
+	conversation, err := app.FindRecordById("conversations", callRoom.GetString("conversation"))
+	if err != nil {
+		log.Printf("push: could not load call update conversation: %v", err)
+		return
+	}
+
+	payload := map[string]any{
+		"aps": apnsAPS{
+			ContentAvailable: 1,
+		},
+		"callRoomId":     callRoom.Id,
+		"conversationId": conversation.Id,
+		"status":         status,
+		"type":           "call_update",
+		"uuid":           callUUID(callRoom.Id),
+	}
+
+	for _, userId := range conversation.GetStringSlice("members") {
+		if userId == excludedUserId {
+			continue
+		}
+
+		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload); err != nil {
+			log.Printf("push: call update notification failed for user %s: %v", userId, err)
+		}
+	}
+}
+
 func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, collapseID string, payload map[string]any) error {
 	provider, err := configuredAPNsProvider()
 	if err != nil {

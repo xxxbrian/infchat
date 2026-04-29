@@ -105,11 +105,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
-					existingCallRoom.Set("status", "active")
-					if err := e.App.Save(existingCallRoom); err != nil {
-						return err
-					}
+				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id); err != nil {
+					return err
 				}
 
 				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
@@ -163,11 +160,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
-					existingCallRoom.Set("status", "active")
-					if err := e.App.Save(existingCallRoom); err != nil {
-						return err
-					}
+				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id); err != nil {
+					return err
 				}
 				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
 					return err
@@ -211,11 +205,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return e.BadRequestError("You are already in another call.", err)
 			}
 
-			if callRoom.GetString("status") == "ringing" && callRoom.GetString("created_by") != e.Auth.Id {
-				callRoom.Set("status", "active")
-				if err := e.App.Save(callRoom); err != nil {
-					return err
-				}
+			if err := activateRingingCallRoom(e.App, callRoom, e.Auth.Id); err != nil {
+				return err
 			}
 
 			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
@@ -353,6 +344,21 @@ func findOpenCallForUser(app core.App, userId string, excludedConversationId str
 		"conversation!={:conversationId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
 		dbx.Params{"conversationId": excludedConversationId, "userId": userId},
 	)
+}
+
+func activateRingingCallRoom(app core.App, callRoom *core.Record, joiningUserId string) error {
+	if callRoom.GetString("status") != "ringing" || callRoom.GetString("created_by") == joiningUserId {
+		return nil
+	}
+
+	callRoom.Set("status", "active")
+	if err := app.Save(callRoom); err != nil {
+		return err
+	}
+
+	go sendCallUpdatePushNotifications(app, callRoom, "active", joiningUserId)
+
+	return nil
 }
 
 func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) error {
@@ -694,6 +700,8 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 	if err := markActiveCallParticipantsLeft(app, callRoom.Id); err != nil {
 		return err
 	}
+
+	go sendCallUpdatePushNotifications(app, callRoom, status, "")
 
 	return updateCallMessageForEndedCall(app, callRoom, status)
 }
