@@ -101,6 +101,10 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				dbx.Params{"conversationId": conversation.Id},
 			)
 			if err == nil {
+				if err := ensureUserCanJoinCall(e.App, e.Auth.Id, existingCallRoom); err != nil {
+					return e.BadRequestError("You are already in another call.", err)
+				}
+
 				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
 					existingCallRoom.Set("status", "active")
 					if err := e.App.Save(existingCallRoom); err != nil {
@@ -155,6 +159,9 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				if findErr != nil {
 					return err
 				}
+				if err := ensureUserCanJoinCall(e.App, e.Auth.Id, existingCallRoom); err != nil {
+					return e.BadRequestError("You are already in another call.", err)
+				}
 
 				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
 					existingCallRoom.Set("status", "active")
@@ -199,6 +206,9 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 
 			if !isJoinableCallStatus(callRoom.GetString("status")) {
 				return e.BadRequestError(callUnavailableMessage(callRoom.GetString("status")), nil)
+			}
+			if err := ensureUserCanJoinCall(e.App, e.Auth.Id, callRoom); err != nil {
+				return e.BadRequestError("You are already in another call.", err)
 			}
 
 			if callRoom.GetString("status") == "ringing" && callRoom.GetString("created_by") != e.Auth.Id {
@@ -343,6 +353,22 @@ func findOpenCallForUser(app core.App, userId string, excludedConversationId str
 		"conversation!={:conversationId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
 		dbx.Params{"conversationId": excludedConversationId, "userId": userId},
 	)
+}
+
+func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) error {
+	otherCallRoom, err := app.FindFirstRecordByFilter(
+		"call_rooms",
+		"id!={:callRoomId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
+		dbx.Params{"callRoomId": callRoom.Id, "userId": userId},
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return fmt.Errorf("user is already in call %s", otherCallRoom.Id)
 }
 
 func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId string) error {
