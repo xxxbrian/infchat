@@ -544,13 +544,27 @@ function ConversationRow({
             {conversation.message}
           </Text>
           {conversation.activeCall ? (
-            <View className="flex-row items-center gap-1 rounded-full bg-emerald-400/15 px-2.5 py-1">
+            <View
+              className={`flex-row items-center gap-1 rounded-full px-2.5 py-1 ${
+                conversation.activeCall.status === 'active'
+                  ? 'bg-emerald-400/15'
+                  : 'bg-amber-400/15'
+              }`}
+            >
               <Ionicons
-                color="#34d399"
+                color={conversation.activeCall.status === 'active' ? '#34d399' : '#fbbf24'}
                 name={conversation.activeCall.kind === 'video' ? 'videocam' : 'call'}
                 size={12}
               />
-              <Text className="text-[11px] font-black text-emerald-300">In call</Text>
+              <Text
+                className={`text-[11px] font-black ${
+                  conversation.activeCall.status === 'active'
+                    ? 'text-emerald-300'
+                    : 'text-amber-300'
+                }`}
+              >
+                {conversation.activeCall.status === 'active' ? 'In call' : 'Ringing'}
+              </Text>
             </View>
           ) : conversation.unread > 0 ? (
             <View className="h-6 min-w-6 items-center justify-center rounded-full bg-primary px-2">

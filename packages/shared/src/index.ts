@@ -5,7 +5,14 @@ import { z } from 'zod';
 export const MESSAGE_KINDS = ['text', 'image', 'file', 'voice', 'call'] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 
-export const CALL_ROOM_STATUSES = ['ringing', 'active', 'ended'] as const;
+export const CALL_ROOM_STATUSES = [
+  'ringing',
+  'active',
+  'ended',
+  'missed',
+  'declined',
+  'canceled',
+] as const;
 export type CallRoomStatus = (typeof CALL_ROOM_STATUSES)[number];
 
 export const CALL_KINDS = ['voice', 'video'] as const;

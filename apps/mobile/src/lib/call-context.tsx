@@ -157,7 +157,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        if (callRoom.status !== 'ended') {
+        if (!isTerminalCallStatus(callRoom.status)) {
           setActiveSession((currentSession) =>
             currentSession?.callRoom.id === callRoom.id
               ? { ...currentSession, callRoom }
@@ -392,6 +392,12 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function isTerminalCallStatus(status: CallRoomRecord['status']): boolean {
+  return (
+    status === 'ended' || status === 'missed' || status === 'declined' || status === 'canceled'
+  );
 }
 
 const styles = StyleSheet.create({

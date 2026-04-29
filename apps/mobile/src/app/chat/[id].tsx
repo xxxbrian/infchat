@@ -233,8 +233,11 @@ export default function ChatDetailScreen() {
         params: { id: response.callRoom.id },
       });
     },
-    onError: () => {
-      Alert.alert('Could not start or join call', 'Check your connection and try again.');
+    onError: (error) => {
+      Alert.alert(
+        'Call unavailable',
+        getErrorMessage(error, 'Check your connection and try again.'),
+      );
     },
   });
   useEffect(() => {
@@ -885,6 +888,17 @@ function formatMessageTime(value: string): string {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
+}
+
 function formatAttachmentName(name: string): string {
   return name.replace(/^\w+_/, '');
 }
@@ -975,6 +989,9 @@ function ConversationIdentity({ conversation }: { conversation: ConversationView
 function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJoin: () => void }) {
   const isVideo = callRoom.kind === 'video';
   const statusLabel = callRoom.status === 'ringing' ? 'Ringing' : 'In progress';
+  const title = `${isVideo ? 'Video call' : 'Voice call'} ${
+    callRoom.status === 'ringing' ? 'is ringing' : 'is active'
+  }`;
 
   return (
     <Pressable
@@ -985,9 +1002,7 @@ function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJo
         <Ionicons color="#080b12" name={isVideo ? 'videocam' : 'call'} size={20} />
       </View>
       <View className="ml-3 min-w-0 flex-1">
-        <Text className="text-base font-black text-foreground">
-          {isVideo ? 'Video call' : 'Voice call'} is active
-        </Text>
+        <Text className="text-base font-black text-foreground">{title}</Text>
         <Text className="mt-0.5 text-sm font-semibold text-emerald-100/70">
           {statusLabel} · tap to join from this device
         </Text>
@@ -1085,7 +1100,10 @@ function MessageBubble({
 
   if (message.kind === 'call') {
     const isVideo = message.text.toLowerCase().includes('video');
-    const isMissed = message.text.toLowerCase().includes('missed');
+    const isUnanswered =
+      message.text.toLowerCase().includes('missed') ||
+      message.text.toLowerCase().includes('declined') ||
+      message.text.toLowerCase().includes('canceled');
 
     return (
       <Animated.View
@@ -1094,10 +1112,10 @@ function MessageBubble({
       >
         <View className="flex-row items-center gap-2">
           <View
-            className={`h-7 w-7 items-center justify-center rounded-full ${isMissed ? 'bg-red-500/20' : 'bg-emerald-400/20'}`}
+            className={`h-7 w-7 items-center justify-center rounded-full ${isUnanswered ? 'bg-red-500/20' : 'bg-emerald-400/20'}`}
           >
             <Ionicons
-              color={isMissed ? '#fb7185' : '#34d399'}
+              color={isUnanswered ? '#fb7185' : '#34d399'}
               name={isVideo ? 'videocam' : 'call'}
               size={14}
             />

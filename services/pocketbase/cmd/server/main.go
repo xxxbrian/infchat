@@ -24,6 +24,9 @@ import (
 	"github.com/pocketbase/pocketbase/tools/types"
 )
 
+const callRingTimeout = 45 * time.Second
+const callRoomActiveFilter = "status='ringing' || status='active'"
+const staleRingingCleanupInterval = 15 * time.Second
 const liveKitTokenTTL = 2 * time.Hour
 
 func main() {
@@ -57,10 +60,16 @@ type liveKitParticipantMetadata struct {
 
 func bindCallRoutes(app *pocketbase.PocketBase) {
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
+		go runStaleRingingCallCleanup(app)
+
 		group := se.Router.Group("/api/infchat/calls")
 		group.Bind(apis.RequireAuth("users"))
 
 		group.POST("/start", func(e *core.RequestEvent) error {
+			if err := cleanupStaleRingingCalls(e.App); err != nil {
+				return err
+			}
+
 			data := callTokenRequest{}
 			if err := e.BindBody(&data); err != nil {
 				return e.BadRequestError("Failed to read call data.", err)
@@ -79,7 +88,7 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 
 			existingCallRoom, err := e.App.FindFirstRecordByFilter(
 				"call_rooms",
-				"conversation={:conversationId} && status!='ended'",
+				"conversation={:conversationId} && ("+callRoomActiveFilter+")",
 				dbx.Params{"conversationId": conversation.Id},
 			)
 			if err == nil {
@@ -87,6 +96,21 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
 				return err
+			}
+
+			members := conversation.GetStringSlice("members")
+			for _, memberId := range members {
+				_, err := findOpenCallForUser(e.App, memberId, conversation.Id)
+				if err == nil {
+					if memberId == e.Auth.Id {
+						return e.BadRequestError("You are already in another call.", nil)
+					}
+
+					return e.BadRequestError("The other person is already in another call.", nil)
+				}
+				if !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
 			}
 
 			collection, err := e.App.FindCollectionByNameOrId("call_rooms")
@@ -114,6 +138,10 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 		})
 
 		group.POST("/{id}/join", func(e *core.RequestEvent) error {
+			if err := cleanupStaleRingingCalls(e.App); err != nil {
+				return err
+			}
+
 			data := callJoinRequest{}
 			if err := e.BindBody(&data); err != nil {
 				return e.BadRequestError("Failed to read call data.", err)
@@ -124,8 +152,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return err
 			}
 
-			if callRoom.GetString("status") == "ended" {
-				return e.BadRequestError("This call has ended.", nil)
+			if !isJoinableCallStatus(callRoom.GetString("status")) {
+				return e.BadRequestError(callUnavailableMessage(callRoom.GetString("status")), nil)
 			}
 
 			if callRoom.GetString("status") == "ringing" && callRoom.GetString("created_by") != e.Auth.Id {
@@ -139,20 +167,18 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 		})
 
 		group.POST("/{id}/end", func(e *core.RequestEvent) error {
+			if err := cleanupStaleRingingCalls(e.App); err != nil {
+				return err
+			}
+
 			callRoom, err := findCallRoomForUser(e.App, e.Request.PathValue("id"), e.Auth.Id)
 			if err != nil {
 				return err
 			}
 
-			wasRinging := callRoom.GetString("status") == "ringing"
-			if callRoom.GetString("status") != "ended" {
-				callRoom.Set("status", "ended")
-				callRoom.Set("ended_at", types.NowDateTime())
-				if err := e.App.Save(callRoom); err != nil {
-					return err
-				}
-
-				if err := updateCallMessageForEndedCall(e.App, callRoom, wasRinging); err != nil {
+			if isJoinableCallStatus(callRoom.GetString("status")) {
+				status := finishedCallStatus(callRoom, e.Auth.Id)
+				if err := finishCallRoom(e.App, callRoom, status); err != nil {
 					return err
 				}
 			}
@@ -204,6 +230,14 @@ func findCallRoomForUser(app core.App, callRoomId string, userId string) (*core.
 	}
 
 	return callRoom, nil
+}
+
+func findOpenCallForUser(app core.App, userId string, excludedConversationId string) (*core.Record, error) {
+	return app.FindFirstRecordByFilter(
+		"call_rooms",
+		"conversation!={:conversationId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
+		dbx.Params{"conversationId": excludedConversationId, "userId": userId},
+	)
 }
 
 func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId string) error {
@@ -293,7 +327,63 @@ func createCallMessage(app core.App, callRoom *core.Record) error {
 	return app.Save(message)
 }
 
-func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, wasRinging bool) error {
+func runStaleRingingCallCleanup(app core.App) {
+	if err := cleanupStaleRingingCalls(app); err != nil {
+		log.Printf("failed to clean stale ringing calls: %v", err)
+	}
+
+	ticker := time.NewTicker(staleRingingCleanupInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if err := cleanupStaleRingingCalls(app); err != nil {
+			log.Printf("failed to clean stale ringing calls: %v", err)
+		}
+	}
+}
+
+func cleanupStaleRingingCalls(app core.App) error {
+	cutoff := types.NowDateTime().Add(-callRingTimeout)
+	callRooms, err := app.FindRecordsByFilter(
+		"call_rooms",
+		"status='ringing' && created <= {:cutoff}",
+		"created",
+		50,
+		0,
+		dbx.Params{"cutoff": cutoff},
+	)
+	if err != nil {
+		return err
+	}
+
+	for _, callRoom := range callRooms {
+		if err := finishCallRoom(app, callRoom, "missed"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
+	if !isTerminalCallStatus(status) {
+		return errors.New("call status must be terminal")
+	}
+
+	if isTerminalCallStatus(callRoom.GetString("status")) {
+		return nil
+	}
+
+	callRoom.Set("status", status)
+	callRoom.Set("ended_at", types.NowDateTime())
+	if err := app.Save(callRoom); err != nil {
+		return err
+	}
+
+	return updateCallMessageForEndedCall(app, callRoom, status)
+}
+
+func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status string) error {
 	message, err := app.FindFirstRecordByFilter(
 		"messages",
 		"call_room={:callRoomId}",
@@ -307,22 +397,60 @@ func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, wasRingi
 		return err
 	}
 
-	message.Set("body", callMessageBody(callRoom.GetString("kind"), wasRinging))
+	message.Set("body", callMessageBody(callRoom.GetString("kind"), status))
 
 	return app.Save(message)
 }
 
-func callMessageBody(kind string, wasMissed bool) string {
+func finishedCallStatus(callRoom *core.Record, userId string) string {
+	if callRoom.GetString("status") != "ringing" {
+		return "ended"
+	}
+
+	if callRoom.GetString("created_by") == userId {
+		return "canceled"
+	}
+
+	return "declined"
+}
+
+func isJoinableCallStatus(status string) bool {
+	return status == "ringing" || status == "active"
+}
+
+func isTerminalCallStatus(status string) bool {
+	return status == "ended" || status == "missed" || status == "declined" || status == "canceled"
+}
+
+func callUnavailableMessage(status string) string {
+	switch status {
+	case "missed":
+		return "This call was missed."
+	case "declined":
+		return "This call was declined."
+	case "canceled":
+		return "This call was canceled."
+	default:
+		return "This call has ended."
+	}
+}
+
+func callMessageBody(kind string, status string) string {
 	label := "Voice call"
 	if kind == "video" {
 		label = "Video call"
 	}
 
-	if wasMissed {
+	switch status {
+	case "missed":
 		return "Missed " + strings.ToLower(label)
+	case "declined":
+		return "Declined " + strings.ToLower(label)
+	case "canceled":
+		return "Canceled " + strings.ToLower(label)
+	default:
+		return label + " ended"
 	}
-
-	return label + " ended"
 }
 
 func activeCallMessageBody(kind string) string {

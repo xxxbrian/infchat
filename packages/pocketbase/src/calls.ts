@@ -21,6 +21,8 @@ export type CallTokenResponse = {
   token: string;
 };
 
+const ACTIVE_CALL_FILTER = '(status={:ringing} || status={:active})';
+
 export function startCall(
   pb: PocketBase,
   conversationId: string,
@@ -39,9 +41,10 @@ export async function getActiveCallForConversation(
 ): Promise<CallRoomRecord | null> {
   try {
     return await pb.collection('call_rooms').getFirstListItem<CallRoomRecord>(
-      pb.filter('conversation={:conversationId} && status!={:status}', {
+      pb.filter(`conversation={:conversationId} && ${ACTIVE_CALL_FILTER}`, {
+        active: 'active',
         conversationId,
-        status: 'ended',
+        ringing: 'ringing',
       }),
       { sort: '-created' },
     );
@@ -52,7 +55,10 @@ export async function getActiveCallForConversation(
 
 export function listActiveCalls(pb: PocketBase): Promise<CallRoomRecord[]> {
   return pb.collection('call_rooms').getFullList<CallRoomRecord>({
-    filter: pb.filter('status!={:status}', { status: 'ended' }),
+    filter: pb.filter(ACTIVE_CALL_FILTER, {
+      active: 'active',
+      ringing: 'ringing',
+    }),
     sort: '-created',
   });
 }

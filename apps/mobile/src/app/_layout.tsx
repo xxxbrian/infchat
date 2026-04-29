@@ -187,7 +187,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
           return;
         }
 
-        if (callRoom.status === 'ended') {
+        if (callRoom.status !== 'ringing') {
           setIncomingCall((currentCall) => (currentCall?.id === callRoom.id ? null : currentCall));
           return;
         }
