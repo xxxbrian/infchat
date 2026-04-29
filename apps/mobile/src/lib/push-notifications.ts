@@ -167,7 +167,7 @@ export function setupIOSSystemCalls() {
   });
   RNCallKeep.canMakeMultipleCalls(false);
 
-  const answerSubscription = RNCallKeep.addEventListener('answerCall', ({ callUUID }) => {
+  const handleAnswerCall = (callUUID: string) => {
     const payload = callPushesByUUID.get(callUUID);
     if (!payload?.callRoomId) {
       RNCallKeep.endCall(callUUID);
@@ -186,8 +186,8 @@ export function setupIOSSystemCalls() {
       pathname: '/call/[id]',
       params: { id: payload.callRoomId },
     });
-  });
-  const endSubscription = RNCallKeep.addEventListener('endCall', ({ callUUID }) => {
+  };
+  const handleEndCall = (callUUID: string) => {
     const payload = callPushesByUUID.get(callUUID);
     callPushesByUUID.delete(callUUID);
     if (endingSystemCallUUIDs.delete(callUUID)) {
@@ -205,7 +205,27 @@ export function setupIOSSystemCalls() {
     }
 
     void endCall(pb, payload.callRoomId);
+  };
+
+  const answerSubscription = RNCallKeep.addEventListener('answerCall', ({ callUUID }) => {
+    handleAnswerCall(callUUID);
   });
+  const endSubscription = RNCallKeep.addEventListener('endCall', ({ callUUID }) => {
+    handleEndCall(callUUID);
+  });
+  const callKeepInitialEventsSubscription = RNCallKeep.addEventListener(
+    'didLoadWithEvents',
+    (events) => {
+      for (const event of events ?? []) {
+        if (event.name === 'RNCallKeepPerformAnswerCallAction') {
+          handleAnswerCall(event.data.callUUID);
+        }
+        if (event.name === 'RNCallKeepPerformEndCallAction') {
+          handleEndCall(event.data.callUUID);
+        }
+      }
+    },
+  );
 
   VoipPushNotification.addEventListener('register', (token) => {
     void registerVoipToken(token, Constants.expoConfig?.version);
@@ -226,6 +246,7 @@ export function setupIOSSystemCalls() {
         const payload = event.data as CallPushPayload;
         if (payload.uuid) {
           callPushesByUUID.set(payload.uuid, payload);
+          VoipPushNotification.onVoipNotificationCompleted(payload.uuid);
         }
       }
     }
@@ -243,6 +264,7 @@ export function setupIOSSystemCalls() {
 
   return () => {
     answerSubscription.remove();
+    callKeepInitialEventsSubscription.remove();
     endSubscription.remove();
     notificationSubscription.remove();
     VoipPushNotification.removeEventListener('register');
