@@ -30,6 +30,7 @@ import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
 import { pb } from '../lib/pocketbase';
 import {
+  endIOSSystemCallForCallRoom,
   registerIOSPushDevice,
   setupIOSSystemCalls,
   setupNotificationPresentation,
@@ -226,6 +227,14 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
 
         if (callRoom.status !== 'ringing') {
           setIncomingCall((currentCall) => (currentCall?.id === callRoom.id ? null : currentCall));
+          if (activeCallRoomId !== callRoom.id) {
+            endIOSSystemCallForCallRoom(
+              callRoom.id,
+              callRoom.status === 'active'
+                ? 'answered-elsewhere'
+                : systemCallEndReasonForStatus(callRoom.status),
+            );
+          }
           return;
         }
 
@@ -330,4 +339,15 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
       </View>
     </Animated.View>
   );
+}
+
+function systemCallEndReasonForStatus(status: CallRoomRecord['status']) {
+  switch (status) {
+    case 'declined':
+      return 'declined-elsewhere' as const;
+    case 'missed':
+      return 'missed' as const;
+    default:
+      return 'remote-ended' as const;
+  }
 }

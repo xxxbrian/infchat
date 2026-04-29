@@ -147,7 +147,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
-    endIOSSystemCallForCallRoom(activeSession.callRoom.id);
+    endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
   }, [activeSession, dismissCallRoute]);
 
@@ -180,7 +180,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
-    endIOSSystemCallForCallRoom(activeSession.callRoom.id);
+    endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
   }, [activeSession, authRecord.id, dismissCallRoute]);
 
@@ -214,7 +214,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
 
         didRequestEndRef.current = true;
-        endIOSSystemCallForCallRoom(callRoom.id);
+        endIOSSystemCallForCallRoom(callRoom.id, systemCallEndReasonForStatus(callRoom.status));
         setActiveSession(null);
         dismissCallRoute();
       })
@@ -523,6 +523,17 @@ function isTerminalCallStatus(status: CallRoomRecord['status']): boolean {
   return (
     status === 'ended' || status === 'missed' || status === 'declined' || status === 'canceled'
   );
+}
+
+function systemCallEndReasonForStatus(status: CallRoomRecord['status']) {
+  switch (status) {
+    case 'declined':
+      return 'declined-elsewhere' as const;
+    case 'missed':
+      return 'missed' as const;
+    default:
+      return 'remote-ended' as const;
+  }
 }
 
 const styles = StyleSheet.create({

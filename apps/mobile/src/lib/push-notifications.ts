@@ -3,7 +3,7 @@ import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
 import { Platform } from 'react-native';
-import RNCallKeep from 'react-native-callkeep';
+import RNCallKeep, { CONSTANTS as CALLKEEP_CONSTANTS } from 'react-native-callkeep';
 import VoipPushNotification from 'react-native-voip-push-notification';
 
 import { getDeviceId } from './device-id';
@@ -29,6 +29,13 @@ type SystemCallHandlers = {
   onEndCall?: (payload: SystemCallPayload) => Promise<void> | void;
 };
 
+export type IOSSystemCallEndReason =
+  | 'answered-elsewhere'
+  | 'declined-elsewhere'
+  | 'local'
+  | 'missed'
+  | 'remote-ended';
+
 let systemCallHandlers: SystemCallHandlers = {};
 
 export function setIOSSystemCallHandlers(handlers: SystemCallHandlers) {
@@ -41,7 +48,10 @@ export function setIOSSystemCallHandlers(handlers: SystemCallHandlers) {
   };
 }
 
-export function endIOSSystemCallForCallRoom(callRoomId: string) {
+export function endIOSSystemCallForCallRoom(
+  callRoomId: string,
+  reason: IOSSystemCallEndReason = 'remote-ended',
+) {
   if (Platform.OS !== 'ios') {
     return;
   }
@@ -53,8 +63,25 @@ export function endIOSSystemCallForCallRoom(callRoomId: string) {
 
     endingSystemCallUUIDs.add(callUUID);
     callPushesByUUID.delete(callUUID);
-    RNCallKeep.endCall(callUUID);
+    if (reason === 'local') {
+      RNCallKeep.endCall(callUUID);
+    } else {
+      RNCallKeep.reportEndCallWithUUID(callUUID, toCallKeepEndReason(reason));
+    }
     return;
+  }
+}
+
+function toCallKeepEndReason(reason: Exclude<IOSSystemCallEndReason, 'local'>): number {
+  switch (reason) {
+    case 'answered-elsewhere':
+      return CALLKEEP_CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE;
+    case 'declined-elsewhere':
+      return CALLKEEP_CONSTANTS.END_CALL_REASONS.DECLINED_ELSEWHERE;
+    case 'missed':
+      return CALLKEEP_CONSTANTS.END_CALL_REASONS.MISSED;
+    case 'remote-ended':
+      return CALLKEEP_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
   }
 }
 
