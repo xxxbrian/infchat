@@ -101,6 +101,13 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				dbx.Params{"conversationId": conversation.Id},
 			)
 			if err == nil {
+				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
+					existingCallRoom.Set("status", "active")
+					if err := e.App.Save(existingCallRoom); err != nil {
+						return err
+					}
+				}
+
 				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
 					return err
 				}
@@ -140,7 +147,26 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 			callRoom.Set("ended_at", "")
 
 			if err := e.App.Save(callRoom); err != nil {
-				return err
+				existingCallRoom, findErr := e.App.FindFirstRecordByFilter(
+					"call_rooms",
+					"conversation={:conversationId} && ("+callRoomActiveFilter+")",
+					dbx.Params{"conversationId": conversation.Id},
+				)
+				if findErr != nil {
+					return err
+				}
+
+				if existingCallRoom.GetString("status") == "ringing" && existingCallRoom.GetString("created_by") != e.Auth.Id {
+					existingCallRoom.Set("status", "active")
+					if err := e.App.Save(existingCallRoom); err != nil {
+						return err
+					}
+				}
+				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
+					return err
+				}
+
+				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
 			}
 
 			if err := createCallMessage(e.App, callRoom); err != nil {
