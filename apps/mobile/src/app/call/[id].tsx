@@ -13,7 +13,7 @@ import {
 import { type CallRoomRecord } from '@infchat/pocketbase';
 import { useLocalSearchParams } from 'expo-router';
 import { ConnectionState, Room, Track, type Participant } from 'livekit-client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -32,6 +32,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useCallSession } from '../../lib/call-context';
 
 type CallLayoutMode = 'focus' | 'gallery';
+type ChromePointerEvents = 'auto' | 'none';
 
 type ParticipantMetadata = {
   deviceId?: string;
@@ -39,7 +40,8 @@ type ParticipantMetadata = {
 };
 
 const CONTROL_SIZE = 56;
-const CONTROL_BAR_HEIGHT = 124;
+const CONTROL_BAR_HEIGHT = 96;
+const CHROME_AUTO_HIDE_DELAY = 3200;
 const FILMSTRIP_GAP = 12;
 const PIP_HEIGHT = 178;
 const PIP_MARGIN = 16;
@@ -121,6 +123,9 @@ function CallRoomView({
   const { isCameraEnabled, isMicrophoneEnabled, localParticipant } = useLocalParticipant();
   const [layoutMode, setLayoutMode] = useState<CallLayoutMode>('focus');
   const [selectedTrackKey, setSelectedTrackKey] = useState<string | null>(null);
+  const [isChromeVisible, setIsChromeVisible] = useState(true);
+  const chromeProgress = useRef(new Animated.Value(1)).current;
+  const hideChromeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tracks = useTracks(
     [
       { source: Track.Source.ScreenShare, withPlaceholder: false },
@@ -138,6 +143,75 @@ function CallRoomView({
   const title = callRoom.kind === 'video' ? 'Video call' : 'Voice call';
   const controlsBottom = Math.max(insets.bottom, 14);
   const filmstripBottom = controlsBottom + CONTROL_BAR_HEIGHT + FILMSTRIP_GAP;
+  const shouldAutoHideChrome = callRoom.kind === 'video';
+  const chromePointerEvents = isChromeVisible ? 'auto' : 'none';
+  const headerTranslateY = chromeProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-16, 0],
+  });
+  const controlsTranslateY = chromeProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [18, 0],
+  });
+
+  const clearChromeTimer = useCallback(() => {
+    if (hideChromeTimer.current) {
+      clearTimeout(hideChromeTimer.current);
+      hideChromeTimer.current = null;
+    }
+  }, []);
+
+  const hideChrome = useCallback(() => {
+    if (!shouldAutoHideChrome) {
+      return;
+    }
+
+    setIsChromeVisible(false);
+    Animated.timing(chromeProgress, {
+      toValue: 0,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [chromeProgress, shouldAutoHideChrome]);
+
+  const scheduleChromeHide = useCallback(() => {
+    clearChromeTimer();
+
+    if (!shouldAutoHideChrome) {
+      return;
+    }
+
+    hideChromeTimer.current = setTimeout(hideChrome, CHROME_AUTO_HIDE_DELAY);
+  }, [clearChromeTimer, hideChrome, shouldAutoHideChrome]);
+
+  const revealChrome = useCallback(() => {
+    if (!shouldAutoHideChrome) {
+      return;
+    }
+
+    setIsChromeVisible(true);
+    Animated.timing(chromeProgress, {
+      toValue: 1,
+      duration: 180,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+    scheduleChromeHide();
+  }, [chromeProgress, scheduleChromeHide, shouldAutoHideChrome]);
+
+  useEffect(() => {
+    if (!shouldAutoHideChrome) {
+      clearChromeTimer();
+      setIsChromeVisible(true);
+      chromeProgress.setValue(1);
+      return;
+    }
+
+    revealChrome();
+
+    return clearChromeTimer;
+  }, [chromeProgress, clearChromeTimer, revealChrome, shouldAutoHideChrome]);
 
   const toggleMicrophone = async () => {
     try {
@@ -169,12 +243,17 @@ function CallRoomView({
   };
 
   return (
-    <View className="flex-1 bg-background">
+    <View className="flex-1 bg-background" onTouchStart={revealChrome}>
       <View className="absolute inset-0 bg-[#05070d]" />
       <CallHeader
+        chromeStyle={{
+          opacity: chromeProgress,
+          transform: [{ translateY: headerTranslateY }],
+        }}
         layoutMode={layoutMode}
         onChangeLayout={() => setLayoutMode(layoutMode === 'focus' ? 'gallery' : 'focus')}
         onMinimize={onMinimize}
+        pointerEvents={chromePointerEvents}
         participantCount={participantCount}
         statusLabel={statusLabel}
         style={{ top: insets.top + 12 }}
@@ -196,6 +275,8 @@ function CallRoomView({
           />
         ) : (
           <FocusStage
+            chromePointerEvents={chromePointerEvents}
+            chromeProgress={chromeProgress}
             filmstripBottom={filmstripBottom}
             filmstripTracks={filmstripTracks}
             mainTrack={mainTrack}
@@ -209,11 +290,19 @@ function CallRoomView({
         <VoiceStage tracks={sortedTracks} />
       )}
 
-      <View
-        className="absolute left-4 right-4 rounded-[30px] border border-white/10 bg-background/90 p-3"
-        style={[styles.controls, { bottom: controlsBottom }]}
+      <Animated.View
+        className="absolute left-6 right-6 z-20"
+        pointerEvents={chromePointerEvents}
+        style={[
+          styles.controls,
+          {
+            bottom: controlsBottom,
+            opacity: chromeProgress,
+            transform: [{ translateY: controlsTranslateY }],
+          },
+        ]}
       >
-        <View className="flex-row items-center justify-center gap-3">
+        <View className="flex-row items-start justify-between">
           <CallControl
             icon={isMicrophoneEnabled ? 'mic' : 'mic-off'}
             isActive={isMicrophoneEnabled}
@@ -233,32 +322,37 @@ function CallRoomView({
           ) : null}
           <CallControl icon="call" isDanger label="End" onPress={onHangUp} />
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }
 
 function CallHeader({
+  chromeStyle,
   layoutMode,
   onChangeLayout,
   onMinimize,
+  pointerEvents,
   participantCount,
   statusLabel,
   style,
   title,
 }: {
+  chromeStyle: object;
   layoutMode: CallLayoutMode;
   onChangeLayout: () => void;
   onMinimize: () => void;
+  pointerEvents: ChromePointerEvents;
   participantCount: number;
   statusLabel: string;
   style: ViewStyle;
   title: string;
 }) {
   return (
-    <View
+    <Animated.View
       className="absolute left-4 right-4 z-20 flex-row items-center justify-between"
-      style={style}
+      pointerEvents={pointerEvents}
+      style={[style, chromeStyle]}
     >
       <View>
         <Text className="text-[24px] font-bold tracking-[-0.6px] text-foreground">{title}</Text>
@@ -281,11 +375,13 @@ function CallHeader({
           <Ionicons color="#f8fafc" name={layoutMode === 'focus' ? 'grid' : 'expand'} size={19} />
         </Pressable>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
 function FocusStage({
+  chromePointerEvents,
+  chromeProgress,
   filmstripBottom,
   filmstripTracks,
   mainTrack,
@@ -294,6 +390,8 @@ function FocusStage({
   windowHeight,
   windowWidth,
 }: {
+  chromePointerEvents: ChromePointerEvents;
+  chromeProgress: Animated.Value;
   filmstripBottom: number;
   filmstripTracks: TrackReferenceOrPlaceholder[];
   mainTrack: TrackReferenceOrPlaceholder | undefined;
@@ -303,6 +401,10 @@ function FocusStage({
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
 }) {
   const floatingTrack = filmstripTracks.length === 1 ? filmstripTracks[0] : undefined;
+  const filmstripTranslateY = chromeProgress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [16, 0],
+  });
 
   return (
     <View className="flex-1">
@@ -316,13 +418,22 @@ function FocusStage({
         <DraggablePip
           filmstripBottom={filmstripBottom}
           isSelected={selectedTrackKey === getTrackKey(floatingTrack)}
+          footerProgress={chromeProgress}
           trackRef={floatingTrack}
           windowHeight={windowHeight}
           windowWidth={windowWidth}
           onPress={() => onSelect(floatingTrack)}
         />
       ) : filmstripTracks.length ? (
-        <View className="absolute left-0 right-0 z-10" style={{ bottom: filmstripBottom }}>
+        <Animated.View
+          className="absolute left-0 right-0 z-10"
+          pointerEvents={chromePointerEvents}
+          style={{
+            bottom: filmstripBottom,
+            opacity: chromeProgress,
+            transform: [{ translateY: filmstripTranslateY }],
+          }}
+        >
           <ScrollView
             horizontal
             contentContainerStyle={styles.filmstripContent}
@@ -342,7 +453,7 @@ function FocusStage({
               );
             })}
           </ScrollView>
-        </View>
+        </Animated.View>
       ) : null}
     </View>
   );
@@ -350,6 +461,7 @@ function FocusStage({
 
 function DraggablePip({
   filmstripBottom,
+  footerProgress,
   isSelected,
   onPress,
   trackRef,
@@ -357,6 +469,7 @@ function DraggablePip({
   windowWidth,
 }: {
   filmstripBottom: number;
+  footerProgress: Animated.Value;
   isSelected: boolean;
   onPress: () => void;
   trackRef: TrackReferenceOrPlaceholder;
@@ -454,6 +567,7 @@ function DraggablePip({
     >
       <ParticipantTile
         containerStyle={styles.floatingPipTile}
+        footerProgress={footerProgress}
         isSelected={isSelected}
         trackRef={trackRef}
       />
@@ -534,6 +648,7 @@ function VoiceStage({ tracks }: { tracks: TrackReferenceOrPlaceholder[] }) {
 
 function ParticipantTile({
   containerStyle,
+  footerProgress,
   hideFooter,
   isLarge,
   isSelected,
@@ -541,6 +656,7 @@ function ParticipantTile({
   trackRef,
 }: {
   containerStyle?: ViewStyle;
+  footerProgress?: Animated.Value;
   hideFooter?: boolean;
   isLarge?: boolean;
   isSelected?: boolean;
@@ -553,6 +669,24 @@ function ParticipantTile({
   const isScreenShare = trackRef.source === Track.Source.ScreenShare;
   const isMicEnabled = participant?.isMicrophoneEnabled ?? true;
   const borderClass = isSelected ? 'border-foreground/90' : 'border-white/10';
+  const footerTranslateY = footerProgress?.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 0],
+  });
+  const footerContent = (
+    <>
+      <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={1}>
+        {label}
+      </Text>
+      <View className="ml-2 h-7 w-7 items-center justify-center rounded-full bg-white/10">
+        <Ionicons
+          color={isMicEnabled ? '#f8fafc' : '#fb7185'}
+          name={isMicEnabled ? 'mic' : 'mic-off'}
+          size={14}
+        />
+      </View>
+    </>
+  );
 
   return (
     <Pressable
@@ -589,18 +723,19 @@ function ParticipantTile({
           </View>
         ) : null}
       </View>
-      {hideFooter ? null : (
+      {hideFooter ? null : footerProgress && footerTranslateY ? (
+        <Animated.View
+          className="absolute bottom-3 left-3 right-3 flex-row items-center justify-between rounded-full bg-background/70 px-3 py-2"
+          style={{
+            opacity: footerProgress,
+            transform: [{ translateY: footerTranslateY }],
+          }}
+        >
+          {footerContent}
+        </Animated.View>
+      ) : (
         <View className="absolute bottom-3 left-3 right-3 flex-row items-center justify-between rounded-full bg-background/70 px-3 py-2">
-          <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={1}>
-            {label}
-          </Text>
-          <View className="ml-2 h-7 w-7 items-center justify-center rounded-full bg-white/10">
-            <Ionicons
-              color={isMicEnabled ? '#f8fafc' : '#fb7185'}
-              name={isMicEnabled ? 'mic' : 'mic-off'}
-              size={14}
-            />
-          </View>
+          {footerContent}
         </View>
       )}
     </Pressable>
