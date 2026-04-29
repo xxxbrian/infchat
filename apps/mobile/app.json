@@ -43,11 +43,14 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
+      "apnsEnv": "sandbox",
       "pocketbaseUrl": "http://127.0.0.1:8090",
       "livekitUrl": "ws://127.0.0.1:7880"
     },
     "plugins": [
       "expo-router",
+      "expo-notifications",
+      "./plugins/with-ios-call-notifications",
       [
         "@livekit/react-native-expo-plugin",
         {

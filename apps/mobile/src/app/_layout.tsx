@@ -29,6 +29,13 @@ import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-contex
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider } from '../lib/call-context';
 import { pb } from '../lib/pocketbase';
+import {
+  registerIOSPushDevice,
+  setupIOSSystemCalls,
+  setupNotificationPresentation,
+} from '../lib/push-notifications';
+
+setupNotificationPresentation();
 
 export default function RootLayout() {
   const [queryClient] = useState(
@@ -102,6 +109,7 @@ export default function RootLayout() {
                   <Stack.Screen name="profile/[userId]" />
                   <Stack.Screen name="profile/edit" />
                 </Stack>
+                <PushRegistration authRecord={authRecord} />
                 <IncomingCallListener authRecord={authRecord} />
               </View>
             </CallSessionProvider>
@@ -121,6 +129,15 @@ export default function RootLayout() {
       </SafeAreaProvider>
     </QueryClientProvider>
   );
+}
+
+function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
+  useEffect(() => {
+    void registerIOSPushDevice();
+    return setupIOSSystemCalls();
+  }, [authRecord.id]);
+
+  return null;
 }
 
 function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
