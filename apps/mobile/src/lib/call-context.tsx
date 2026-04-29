@@ -447,10 +447,10 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
           />
         </View>
       )}
-      <View className="absolute bottom-2 left-2 right-2 flex-row items-center rounded-full bg-background/75 px-3 py-2">
-        <View className="mr-2 h-2 w-2 rounded-full bg-emerald-400" />
-        <Text className="flex-1 text-xs font-black text-foreground" numberOfLines={1}>
-          Tap to return
+      <View className="absolute bottom-2 left-2 right-2 flex-row items-center justify-center rounded-full bg-background/75 px-2.5 py-2">
+        <View className="mr-1.5 h-2 w-2 rounded-full bg-emerald-400" />
+        <Text className="text-xs font-black text-foreground" numberOfLines={1}>
+          Back to call
         </Text>
       </View>
     </Animated.View>
