@@ -35,6 +35,7 @@ let tempRoot = '';
 let prebuildLog = '';
 let podLog = '';
 let archiveLog = '';
+let entitlementsLog = '';
 let exportLog = '';
 let uploadLog = '';
 let ascAppId = '';
@@ -315,6 +316,7 @@ function handleError(error: unknown) {
   if (currentStage === 'prebuild') printLog('expo prebuild log', prebuildLog);
   if (currentStage === 'pods') printLog('pod install log', podLog);
   if (currentStage === 'archive') printLog('xcodebuild archive log', archiveLog);
+  if (currentStage === 'entitlements') printLog('entitlements log', entitlementsLog);
   if (currentStage === 'export') printLog('xcodebuild export log', exportLog);
   if (['upload', 'resolve-build', 'assign-group'].includes(currentStage))
     printLog('upload log', uploadLog);
@@ -366,6 +368,80 @@ async function waitForGroupAssignment(buildId: string) {
 
 function readJson(path: string) {
   return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+function parsePlist(path: string) {
+  const result = spawnSync('plutil', ['-convert', 'json', '-o', '-', path], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(`Failed to parse plist ${path}: ${(result.stderr || result.stdout).trim()}`);
+  }
+
+  return JSON.parse(result.stdout);
+}
+
+function verifyArchivedEntitlements(archivePath: string, scheme: string, bundleId: string) {
+  const appPath = join(archivePath, 'Products', 'Applications', `${scheme}.app`);
+  if (!existsSync(appPath)) {
+    throw new Error(`Archived app not found at ${appPath}.`);
+  }
+
+  const entitlementsPlist = join(tempRoot, 'archived-entitlements.plist');
+  const result = spawnSync('codesign', ['-d', '--entitlements', ':-', appPath], {
+    encoding: 'utf8',
+  });
+  writeFileSync(entitlementsLog, `${result.stderr || ''}${result.stdout || ''}`);
+  if (result.status !== 0) {
+    throw new Error(
+      `Failed to read archived app entitlements: ${(result.stderr || result.stdout).trim()}`,
+    );
+  }
+  if (!result.stdout.trim()) {
+    throw new Error('Archived app has no readable entitlements.');
+  }
+  writeFileSync(entitlementsPlist, result.stdout);
+
+  const entitlements = parsePlist(entitlementsPlist);
+  const apsEnvironment = entitlements['aps-environment'];
+  const applicationIdentifier = String(entitlements['application-identifier'] || '');
+  const associatedApplicationIdentifier = String(
+    entitlements['com.apple.developer.associated-application-identifier'] || '',
+  );
+  const infoPlist = parsePlist(join(appPath, 'Info.plist'));
+  const backgroundModes = Array.isArray(infoPlist.UIBackgroundModes)
+    ? infoPlist.UIBackgroundModes
+    : [];
+  const missingBackgroundModes = ['audio', 'remote-notification', 'voip'].filter(
+    (mode) => !backgroundModes.includes(mode),
+  );
+
+  if (apsEnvironment !== 'production') {
+    throw new Error(
+      `Archived app entitlement aps-environment=${apsEnvironment || 'missing'}; expected production for TestFlight/App Store builds.`,
+    );
+  }
+  if (!applicationIdentifier.endsWith(`.${bundleId}`)) {
+    throw new Error(
+      `Archived app entitlement application-identifier=${applicationIdentifier || 'missing'} does not match bundle id ${bundleId}.`,
+    );
+  }
+  if (
+    associatedApplicationIdentifier &&
+    !associatedApplicationIdentifier.endsWith(`.${bundleId}`)
+  ) {
+    throw new Error(
+      `Archived app entitlement associated application identifier=${associatedApplicationIdentifier} does not match bundle id ${bundleId}.`,
+    );
+  }
+  if (missingBackgroundModes.length > 0) {
+    throw new Error(
+      `Archived app Info.plist is missing UIBackgroundModes=${missingBackgroundModes.join(',')}.`,
+    );
+  }
+
+  console.log(`${label('Archive entitlements')} aps-environment=${apsEnvironment}`);
+  console.log(`${label('Archive background modes')} ${backgroundModes.join(', ')}`);
 }
 
 async function main() {
@@ -446,6 +522,7 @@ async function main() {
   prebuildLog = join(tempRoot, 'prebuild.log');
   podLog = join(tempRoot, 'pods.log');
   archiveLog = join(tempRoot, 'archive.log');
+  entitlementsLog = join(tempRoot, 'entitlements.log');
   exportLog = join(tempRoot, 'export.log');
   uploadLog = join(tempRoot, 'upload.log');
 
@@ -563,6 +640,10 @@ async function main() {
       { cwd: iosDir, env: buildEnv, logFile: archiveLog, printOutput: verbose },
     ),
   );
+
+  await runStep('entitlements', 'Verify archive entitlements', async () => {
+    verifyArchivedEntitlements(archivePath, scheme, bundleId);
+  });
   console.log(`\n${green('Source snapshot is no longer needed by this release build.')}`);
   console.log(green('You can safely continue editing TypeScript/JS files now.'));
   console.log(dim('Export and upload use the completed Xcode archive.'));
