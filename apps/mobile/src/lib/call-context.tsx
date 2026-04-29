@@ -254,7 +254,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
 
         if (activeSession?.callRoom.id === callRoomId) {
-          await endActiveCall();
+          await leaveActiveCall();
           return;
         }
 
@@ -274,7 +274,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
       },
     });
-  }, [activeSession?.callRoom.id, endActiveCall, joinCallRoom]);
+  }, [activeSession?.callRoom.id, joinCallRoom, leaveActiveCall]);
 
   useEffect(() => {
     if (!activeCallRoomId) {
