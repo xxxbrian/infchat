@@ -102,11 +102,8 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 		return nil, errors.New("at least one push token is required")
 	}
 
-	device, err := app.FindFirstRecordByFilter(
-		"push_devices",
-		"user={:userId} && device_id={:deviceId} && platform={:platform}",
-		dbx.Params{"deviceId": deviceId, "platform": platform, "userId": userId},
-	)
+	device, err := findPushDevice(app, userId, deviceId, platform)
+	createdDevice := false
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return nil, err
@@ -121,28 +118,26 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 		device.Set("user", userId)
 		device.Set("device_id", deviceId)
 		device.Set("platform", platform)
+		createdDevice = true
 	}
 
-	now := types.NowDateTime()
-	device.Set("environment", environment)
-	if apnsToken != "" {
-		device.Set("apns_token", apnsToken)
-		device.Set("apns_disabled_at", "")
-	}
-	if voipToken != "" {
-		device.Set("voip_token", voipToken)
-		device.Set("voip_disabled_at", "")
-	}
-	if fcmToken != "" {
-		device.Set("fcm_token", fcmToken)
-		device.Set("fcm_disabled_at", "")
-	}
-	device.Set("app_version", strings.TrimSpace(data.AppVersion))
-	device.Set("last_seen_at", now)
-	device.Set("disabled_at", "")
+	applyPushDeviceRegistration(device, environment, data.AppVersion, apnsToken, voipToken, fcmToken)
 
 	if err := app.Save(device); err != nil {
-		return nil, err
+		if !createdDevice {
+			return nil, err
+		}
+
+		existingDevice, findErr := findPushDevice(app, userId, deviceId, platform)
+		if findErr != nil {
+			return nil, err
+		}
+
+		device = existingDevice
+		applyPushDeviceRegistration(device, environment, data.AppVersion, apnsToken, voipToken, fcmToken)
+		if err := app.Save(device); err != nil {
+			return nil, err
+		}
 	}
 	if apnsToken != "" {
 		if err := clearDuplicatePushToken(app, device, "apns_token", apnsToken); err != nil {
@@ -163,6 +158,33 @@ func upsertPushDevice(app core.App, userId string, data pushDeviceRegisterReques
 	return device, nil
 }
 
+func findPushDevice(app core.App, userId string, deviceId string, platform string) (*core.Record, error) {
+	return app.FindFirstRecordByFilter(
+		"push_devices",
+		"user={:userId} && device_id={:deviceId} && platform={:platform}",
+		dbx.Params{"deviceId": deviceId, "platform": platform, "userId": userId},
+	)
+}
+
+func applyPushDeviceRegistration(device *core.Record, environment string, appVersion string, apnsToken string, voipToken string, fcmToken string) {
+	device.Set("environment", environment)
+	if apnsToken != "" {
+		device.Set("apns_token", apnsToken)
+		device.Set("apns_disabled_at", "")
+	}
+	if voipToken != "" {
+		device.Set("voip_token", voipToken)
+		device.Set("voip_disabled_at", "")
+	}
+	if fcmToken != "" {
+		device.Set("fcm_token", fcmToken)
+		device.Set("fcm_disabled_at", "")
+	}
+	device.Set("app_version", strings.TrimSpace(appVersion))
+	device.Set("last_seen_at", types.NowDateTime())
+	device.Set("disabled_at", "")
+}
+
 func clearDuplicatePushToken(app core.App, currentDevice *core.Record, tokenField string, tokenValue string) error {
 	disabledField := disabledFieldForPushToken(tokenField)
 	if disabledField == "" {
@@ -171,11 +193,11 @@ func clearDuplicatePushToken(app core.App, currentDevice *core.Record, tokenFiel
 
 	devices, err := app.FindRecordsByFilter(
 		"push_devices",
-		fmt.Sprintf("%s={:token} && id!={:currentDeviceId}", tokenField),
+		fmt.Sprintf("%s={:token} && id!={:currentDeviceId} && (last_seen_at < {:lastSeenAt} || (last_seen_at = {:lastSeenAt} && id < {:currentDeviceId}))", tokenField),
 		"",
 		0,
 		0,
-		dbx.Params{"currentDeviceId": currentDevice.Id, "token": tokenValue},
+		dbx.Params{"currentDeviceId": currentDevice.Id, "lastSeenAt": currentDevice.GetString("last_seen_at"), "token": tokenValue},
 	)
 	if err != nil {
 		return err
