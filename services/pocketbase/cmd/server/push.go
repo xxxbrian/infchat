@@ -209,6 +209,7 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 	if body == "" {
 		body = "New message"
 	}
+	body = truncatePushPreview(body)
 
 	payload := map[string]any{
 		"aps": apnsAPS{
@@ -229,6 +230,17 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 			log.Printf("push: message notification failed for user %s: %v", userId, err)
 		}
 	}
+}
+
+func truncatePushPreview(value string) string {
+	const maxRunes = 180
+
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
