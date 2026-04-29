@@ -9,6 +9,7 @@ import {
 } from '@livekit/react-native';
 import {
   endCall,
+  getCallRoom,
   heartbeatCall,
   joinCall,
   leaveCall,
@@ -52,7 +53,7 @@ type CallSessionContextValue = {
   endActiveCall: () => Promise<void>;
   errorMessage: string;
   isJoining: boolean;
-  joinCallRoom: (callRoomId: string) => Promise<void>;
+  joinCallRoom: (callRoomId: string) => Promise<boolean>;
   leaveActiveCall: () => Promise<void>;
   minimizeCall: () => void;
 };
@@ -92,19 +93,19 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       const normalizedCallRoomId = callRoomId.trim();
       if (!normalizedCallRoomId) {
         setErrorMessage('Call was not found.');
-        return;
+        return false;
       }
 
       if (activeSession?.callRoom.id === normalizedCallRoomId) {
-        return;
+        return true;
       }
 
       if (blockedAutoJoinCallRoomIdRef.current === normalizedCallRoomId) {
-        return;
+        return false;
       }
 
       if (joiningCallRoomIdRef.current === normalizedCallRoomId) {
-        return;
+        return false;
       }
 
       joiningCallRoomIdRef.current = normalizedCallRoomId;
@@ -117,8 +118,10 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         const nextSession = await joinCall(pb, normalizedCallRoomId, deviceId);
         didRequestEndRef.current = false;
         setActiveSession(nextSession);
+        return true;
       } catch {
         setErrorMessage('Could not join this call.');
+        return false;
       } finally {
         if (joiningCallRoomIdRef.current === normalizedCallRoomId) {
           joiningCallRoomIdRef.current = null;
@@ -233,7 +236,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
           return;
         }
 
-        await joinCallRoom(callRoomId);
+        const didJoin = await joinCallRoom(callRoomId);
+        if (!didJoin) {
+          throw new Error('Could not join this call.');
+        }
+
         router.push({ pathname: '/call/[id]', params: { id: callRoomId } });
       },
       onEndCall: async ({ callRoomId }) => {
@@ -243,6 +250,15 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
         if (activeSession?.callRoom.id === callRoomId) {
           await endActiveCall();
+          return;
+        }
+
+        try {
+          const callRoom = await getCallRoom(pb, callRoomId);
+          if (callRoom.status !== 'ringing') {
+            return;
+          }
+        } catch {
           return;
         }
 

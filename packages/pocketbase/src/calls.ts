@@ -74,6 +74,10 @@ export function joinCall(
   });
 }
 
+export function getCallRoom(pb: PocketBase, callRoomId: string): Promise<CallRoomRecord> {
+  return pb.collection('call_rooms').getOne<CallRoomRecord>(callRoomId);
+}
+
 export function heartbeatCall(
   pb: PocketBase,
   callRoomId: string,

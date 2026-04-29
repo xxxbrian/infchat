@@ -133,12 +133,11 @@ export function setupIOSSystemCalls() {
       return;
     }
 
-    RNCallKeep.setCurrentCallActive(callUUID);
     const actionPayload = { ...payload, callUUID };
     if (systemCallHandlers.onAnswerCall) {
-      void Promise.resolve(systemCallHandlers.onAnswerCall(actionPayload)).catch(() => {
-        RNCallKeep.endCall(callUUID);
-      });
+      void Promise.resolve(systemCallHandlers.onAnswerCall(actionPayload))
+        .then(() => RNCallKeep.setCurrentCallActive(callUUID))
+        .catch(() => RNCallKeep.endCall(callUUID));
       return;
     }
 
