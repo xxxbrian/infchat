@@ -33,9 +33,10 @@ function addPushKitExtension(contents) {
     'RNVoipPushNotificationManager.didUpdate(pushCredentials, forType: type.rawValue)',
   );
 
-  const extensionStart = contents.indexOf('extension AppDelegate: PKPushRegistryDelegate');
-  if (extensionStart >= 0) {
-    return `${contents.slice(0, extensionStart).trimEnd()}\n\n${pushKitExtension()}`;
+  const existingExtensionPattern =
+    /(?:private var infChatTerminalCallUUIDs = Set<String>\(\)\s*)*extension AppDelegate: PKPushRegistryDelegate[\s\S]*$/;
+  if (existingExtensionPattern.test(contents)) {
+    return contents.replace(existingExtensionPattern, pushKitExtension()).trimEnd();
   }
 
   return `${contents}
