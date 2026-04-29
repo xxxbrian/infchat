@@ -292,6 +292,17 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        if (isTerminalCallStatus(response.callRoom.status)) {
+          didRequestEndRef.current = true;
+          endIOSSystemCallForCallRoom(
+            response.callRoom.id,
+            systemCallEndReasonForStatus(response.callRoom.status),
+          );
+          setActiveSession(null);
+          dismissCallRoute();
+          return;
+        }
+
         setActiveSession((currentSession) =>
           currentSession?.callRoom.id === response.callRoom.id
             ? { ...currentSession, callRoom: response.callRoom }
@@ -342,6 +353,8 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
             return;
           }
 
+          const disconnectedCallRoomId = activeSession.callRoom.id;
+          void getDeviceId().then((deviceId) => leaveCall(pb, disconnectedCallRoomId, deviceId));
           setActiveSession(null);
           dismissCallRoute();
         }}
