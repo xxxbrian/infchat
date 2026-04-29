@@ -49,6 +49,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
+import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useCallSession } from '../../lib/call-context';
 import { getDeviceId } from '../../lib/device-id';
 import {
@@ -994,7 +995,13 @@ function ConversationIdentity({ conversation }: { conversation: ConversationView
 
 function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJoin: () => void }) {
   const isVideo = callRoom.kind === 'video';
-  const statusLabel = callRoom.status === 'ringing' ? 'Ringing' : 'In progress';
+  const ringingSecondsLeft = useRingingSecondsLeft(callRoom);
+  const statusLabel =
+    callRoom.status === 'ringing'
+      ? ringingSecondsLeft === null
+        ? 'Ringing'
+        : `Ringing · ${ringingSecondsLeft}s left`
+      : 'In progress';
   const title = `${isVideo ? 'Video call' : 'Voice call'} ${
     callRoom.status === 'ringing' ? 'is ringing' : 'is active'
   }`;

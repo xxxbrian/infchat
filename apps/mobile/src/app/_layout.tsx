@@ -26,6 +26,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
+import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider } from '../lib/call-context';
 import { pb } from '../lib/pocketbase';
 
@@ -128,6 +129,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
   const slide = useRef(new Animated.Value(0)).current;
   const seenCallIds = useRef(new Set<string>());
   const [incomingCall, setIncomingCall] = useState<CallRoomRecord | null>(null);
+  const ringingSecondsLeft = useRingingSecondsLeft(incomingCall);
 
   const showIncomingCall = (callRoom: CallRoomRecord | null | undefined) => {
     if (
@@ -274,7 +276,11 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
           <Text className="text-lg font-bold text-foreground">
             Incoming {incomingCall?.kind === 'video' ? 'video' : 'voice'} call
           </Text>
-          <Text className="text-sm font-medium text-muted-foreground">Join or decline</Text>
+          <Text className="text-sm font-medium text-muted-foreground">
+            {ringingSecondsLeft === null
+              ? 'Join or decline'
+              : `Ringing · ${ringingSecondsLeft}s left`}
+          </Text>
         </View>
         <Pressable
           className="h-11 w-11 items-center justify-center rounded-full bg-red-500"
