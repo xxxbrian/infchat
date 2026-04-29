@@ -1,10 +1,11 @@
 # PocketBase Service
 
-This directory holds the self-hosted PocketBase backend surface.
+This directory holds the self-hosted PocketBase backend service. It wraps PocketBase in a small Go server so we can register migrations, hooks, and custom API routes from code.
 
-- `pb_hooks/` is for PocketBase JavaScript hooks.
-- `pb_migrations/` is for PocketBase collection migrations.
-- `pb_data/` is runtime data and is intentionally ignored by git.
+- `cmd/server/` contains the service entrypoint.
+- `internal/migrations/` contains Go-based PocketBase collection migrations.
+- `.env.example` documents the local environment variables used by the service.
+- `pb_data/` is runtime data created by PocketBase and is intentionally ignored by git.
 
 Start it locally with:
 
