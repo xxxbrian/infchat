@@ -100,6 +100,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         return true;
       }
 
+      if (activeSession) {
+        setErrorMessage('Leave your current call before joining another one.');
+        return false;
+      }
+
       if (blockedAutoJoinCallRoomIdRef.current === normalizedCallRoomId) {
         return false;
       }

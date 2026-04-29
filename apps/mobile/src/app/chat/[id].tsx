@@ -192,8 +192,9 @@ export default function ChatDetailScreen() {
     [authRecord.id, fileTokenQuery.data, messagesQuery.data, profilesByUserId],
   );
   const activeCall = activeCallQuery.data;
+  const activeSessionCallRoomId = activeSession?.callRoom.id;
   const shouldShowActiveCallBanner = Boolean(
-    activeCall && activeSession?.callRoom.id !== activeCall.id,
+    activeCall && activeSessionCallRoomId !== activeCall.id,
   );
   const sendMessageMutation = useMutation({
     mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
@@ -632,16 +633,49 @@ export default function ChatDetailScreen() {
       return;
     }
 
-    startCallMutation.mutate(kind);
-  };
+    if (activeSessionCallRoomId) {
+      if (activeSession?.callRoom.conversation === conversationId) {
+        router.push({
+          pathname: '/call/[id]',
+          params: { id: activeSessionCallRoomId },
+        });
+        return;
+      }
 
-  const handleJoinActiveCall = () => {
-    const activeCall = activeCallQuery.data;
-    if (!activeCall) {
+      Alert.alert('Already in a call', 'Leave your current call before starting another one.');
       return;
     }
 
-    router.push({ pathname: '/call/[id]', params: { id: activeCall.id } });
+    if (activeCall) {
+      router.push({ pathname: '/call/[id]', params: { id: activeCall.id } });
+      return;
+    }
+
+    startCallMutation.mutate(kind);
+  };
+
+  const handleJoinActiveCall = async () => {
+    if (activeSessionCallRoomId) {
+      if (activeSessionCallRoomId === activeCall?.id) {
+        router.push({
+          pathname: '/call/[id]',
+          params: { id: activeSessionCallRoomId },
+        });
+        return;
+      }
+
+      Alert.alert('Already in a call', 'Leave your current call before joining another one.');
+      return;
+    }
+
+    const latest = await activeCallQuery.refetch();
+    const latestCall = latest.data;
+    if (!latestCall || (latestCall.status !== 'ringing' && latestCall.status !== 'active')) {
+      Alert.alert('Call ended', 'This call is no longer available.');
+      return;
+    }
+
+    router.push({ pathname: '/call/[id]', params: { id: latestCall.id } });
   };
 
   const handlePickImage = async () => {
@@ -719,8 +753,16 @@ export default function ChatDetailScreen() {
             <IconButton name="chevron-back" onPress={() => router.back()} />
             <ConversationIdentity conversation={conversation} />
             <View className="flex-row items-center gap-2">
-              <IconButton name="call" onPress={() => handleStartCall('voice')} />
-              <IconButton name="videocam" onPress={() => handleStartCall('video')} />
+              <IconButton
+                disabled={startCallMutation.isPending}
+                name="call"
+                onPress={() => handleStartCall('voice')}
+              />
+              <IconButton
+                disabled={startCallMutation.isPending}
+                name="videocam"
+                onPress={() => handleStartCall('video')}
+              />
               {/*<IconButton
                 name={conversation.kind === 'group' ? 'information-circle' : 'person-circle'}
               />*/}
@@ -1556,15 +1598,18 @@ function AttachmentMenuAction({
 }
 
 function IconButton({
+  disabled,
   name,
   onPress,
 }: {
+  disabled?: boolean;
   name: keyof typeof Ionicons.glyphMap;
   onPress?: () => void;
 }) {
   return (
     <Pressable
-      className="h-10 w-10 items-center justify-center rounded-full bg-muted"
+      className={`h-10 w-10 items-center justify-center rounded-full bg-muted ${disabled ? 'opacity-40' : ''}`}
+      disabled={disabled}
       onPress={onPress}
     >
       <Ionicons color="#f8fafc" name={name} size={20} />
