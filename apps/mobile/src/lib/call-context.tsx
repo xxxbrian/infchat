@@ -269,35 +269,35 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  const content = activeSession ? (
-    <LiveKitRoom
-      audio
-      connect
-      onDisconnected={() => {
-        if (!didRequestEndRef.current) {
+  return (
+    <CallSessionContext.Provider value={contextValue}>
+      <LiveKitRoom
+        audio={Boolean(activeSession)}
+        connect={Boolean(activeSession)}
+        onDisconnected={() => {
+          if (!activeSession || didRequestEndRef.current) {
+            return;
+          }
+
           setActiveSession(null);
           dismissCallRoute();
-        }
-      }}
-      options={{
-        adaptiveStream: { pixelDensity: 'screen' },
-        dynacast: true,
-      }}
-      serverUrl={activeSession.livekitUrl}
-      token={activeSession.token}
-      video={activeSession.callRoom.kind === 'video'}
-    >
-      <ActiveCallKeepAwake />
-      {children}
-      {pathname.startsWith('/call/') ? null : (
-        <ActiveCallMiniWindow callRoom={activeSession.callRoom} />
-      )}
-    </LiveKitRoom>
-  ) : (
-    children
+        }}
+        options={{
+          adaptiveStream: { pixelDensity: 'screen' },
+          dynacast: true,
+        }}
+        serverUrl={activeSession?.livekitUrl}
+        token={activeSession?.token}
+        video={activeSession?.callRoom.kind === 'video'}
+      >
+        {activeSession ? <ActiveCallKeepAwake /> : null}
+        {children}
+        {activeSession && !pathname.startsWith('/call/') ? (
+          <ActiveCallMiniWindow callRoom={activeSession.callRoom} />
+        ) : null}
+      </LiveKitRoom>
+    </CallSessionContext.Provider>
   );
-
-  return <CallSessionContext.Provider value={contextValue}>{content}</CallSessionContext.Provider>;
 }
 
 function ActiveCallKeepAwake() {
