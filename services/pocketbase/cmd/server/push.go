@@ -179,6 +179,16 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 }
 
 func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
+	latestCallRoom, err := app.FindRecordById("call_rooms", callRoom.Id)
+	if err != nil {
+		log.Printf("push: could not reload call room before notification: %v", err)
+		return
+	}
+	if latestCallRoom.GetString("status") != "ringing" {
+		return
+	}
+	callRoom = latestCallRoom
+
 	conversation, err := app.FindRecordById("conversations", callRoom.GetString("conversation"))
 	if err != nil {
 		log.Printf("push: could not load call conversation: %v", err)
