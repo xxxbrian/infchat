@@ -22,6 +22,7 @@ type CallPushPayload = {
 
 const callPushesByUUID = new Map<string, CallPushPayload>();
 const endingSystemCallUUIDs = new Set<string>();
+const terminalCallUUIDTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 let currentNotificationRoute = '';
 let lastHandledNotificationResponseId = '';
 
@@ -35,6 +36,7 @@ type SystemCallHandlers = {
 type PendingCallKeepAction = 'answer' | 'end';
 
 const PENDING_CALLKEEP_ACTION_TIMEOUT = 30_000;
+const TERMINAL_CALL_UUID_TIMEOUT = 10 * 60_000;
 
 export type IOSSystemCallEndReason =
   | 'answered-elsewhere'
@@ -73,6 +75,7 @@ export function endIOSSystemCallForCallRoom(
     }
 
     endingSystemCallUUIDs.add(callUUID);
+    markTerminalCallUUID(callUUID);
     callPushesByUUID.delete(callUUID);
     if (reason === 'local') {
       RNCallKeep.endCall(callUUID);
@@ -81,6 +84,22 @@ export function endIOSSystemCallForCallRoom(
     }
     return;
   }
+}
+
+function markTerminalCallUUID(callUUID: string) {
+  const existingTimeout = terminalCallUUIDTimeouts.get(callUUID);
+  if (existingTimeout) {
+    clearTimeout(existingTimeout);
+  }
+
+  const timeout = setTimeout(() => {
+    terminalCallUUIDTimeouts.delete(callUUID);
+  }, TERMINAL_CALL_UUID_TIMEOUT);
+  terminalCallUUIDTimeouts.set(callUUID, timeout);
+}
+
+function isTerminalCallUUID(callUUID: string) {
+  return terminalCallUUIDTimeouts.has(callUUID);
 }
 
 function toCallKeepEndReason(reason: Exclude<IOSSystemCallEndReason, 'local'>): number {
@@ -143,6 +162,7 @@ function handleCallUpdatePayload(payload: CallPushPayload): boolean {
   clearPendingCallKeepActions(payload.uuid);
   callPushesByUUID.delete(payload.uuid);
   endingSystemCallUUIDs.add(payload.uuid);
+  markTerminalCallUUID(payload.uuid);
   RNCallKeep.reportEndCallWithUUID(
     payload.uuid,
     toCallKeepEndReason(systemCallEndReasonForStatus(payload.status)),
@@ -330,6 +350,9 @@ export function setupIOSSystemCalls() {
     }
 
     if (!payload.uuid) {
+      return;
+    }
+    if (isTerminalCallUUID(payload.uuid)) {
       return;
     }
 

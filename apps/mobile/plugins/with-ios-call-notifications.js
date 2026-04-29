@@ -33,11 +33,18 @@ function addPushKitExtension(contents) {
     'RNVoipPushNotificationManager.didUpdate(pushCredentials, forType: type.rawValue)',
   );
 
-  if (contents.includes('extension AppDelegate: PKPushRegistryDelegate')) {
-    return contents;
+  const extensionStart = contents.indexOf('extension AppDelegate: PKPushRegistryDelegate');
+  if (extensionStart >= 0) {
+    return `${contents.slice(0, extensionStart).trimEnd()}\n\n${pushKitExtension()}`;
   }
 
   return `${contents}
+
+${pushKitExtension()}`;
+}
+
+function pushKitExtension() {
+  return `private var infChatTerminalCallUUIDs = Set<String>()
 
 extension AppDelegate: PKPushRegistryDelegate {
   public func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
@@ -59,8 +66,14 @@ extension AppDelegate: PKPushRegistryDelegate {
     let hasVideo = (payloadDictionary["kind"] as? String) == "video"
 
     if (payloadDictionary["type"] as? String) == "call_update" {
+      infChatTerminalCallUUIDs.insert(uuid)
       RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
       RNCallKeep.endCall(withUUID: uuid, reason: infChatCallEndReason(payloadDictionary["status"] as? String ?? "ended"))
+      completion()
+      return
+    }
+
+    if infChatTerminalCallUUIDs.contains(uuid) {
       completion()
       return
     }

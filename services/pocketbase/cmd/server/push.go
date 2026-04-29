@@ -312,6 +312,16 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 }
 
 func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status string, excludedUserId string) {
+	currentCallRoom, err := app.FindRecordById("call_rooms", callRoom.Id)
+	if err != nil {
+		log.Printf("push: could not reload call room for update notification: %v", err)
+		return
+	}
+	if currentCallRoom.GetString("status") != status {
+		return
+	}
+
+	callRoom = currentCallRoom
 	conversation, err := app.FindRecordById("conversations", callRoom.GetString("conversation"))
 	if err != nil {
 		log.Printf("push: could not load call update conversation: %v", err)
