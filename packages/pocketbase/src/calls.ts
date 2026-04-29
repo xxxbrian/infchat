@@ -74,6 +74,28 @@ export function joinCall(
   });
 }
 
+export function heartbeatCall(
+  pb: PocketBase,
+  callRoomId: string,
+  deviceId: string,
+): Promise<{ callRoom: CallRoomRecord }> {
+  return pb.send(`/api/infchat/calls/${callRoomId}/heartbeat`, {
+    body: { deviceId },
+    method: 'POST',
+  });
+}
+
+export function leaveCall(
+  pb: PocketBase,
+  callRoomId: string,
+  deviceId: string,
+): Promise<{ callRoom: CallRoomRecord }> {
+  return pb.send(`/api/infchat/calls/${callRoomId}/leave`, {
+    body: { deviceId },
+    method: 'POST',
+  });
+}
+
 export function endCall(pb: PocketBase, callRoomId: string): Promise<{ callRoom: CallRoomRecord }> {
   return pb.send(`/api/infchat/calls/${callRoomId}/end`, {
     method: 'POST',

@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	_ "infchat/services/pocketbase/internal/migrations"
@@ -25,9 +26,12 @@ import (
 )
 
 const callRingTimeout = 45 * time.Second
+const callParticipantStaleTimeout = 45 * time.Second
 const callRoomActiveFilter = "status='ringing' || status='active'"
 const staleRingingCleanupInterval = 15 * time.Second
 const liveKitTokenTTL = 2 * time.Hour
+
+var callCleanupOnce sync.Once
 
 func main() {
 	app := pocketbase.New()
@@ -60,13 +64,15 @@ type liveKitParticipantMetadata struct {
 
 func bindCallRoutes(app *pocketbase.PocketBase) {
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
-		go runStaleRingingCallCleanup(app)
+		callCleanupOnce.Do(func() {
+			go runCallCleanup(app)
+		})
 
 		group := se.Router.Group("/api/infchat/calls")
 		group.Bind(apis.RequireAuth("users"))
 
 		group.POST("/start", func(e *core.RequestEvent) error {
-			if err := cleanupStaleRingingCalls(e.App); err != nil {
+			if err := cleanupStaleCalls(e.App); err != nil {
 				return err
 			}
 
@@ -92,6 +98,10 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				dbx.Params{"conversationId": conversation.Id},
 			)
 			if err == nil {
+				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
+					return err
+				}
+
 				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
@@ -134,11 +144,15 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return err
 			}
 
+			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
+				return err
+			}
+
 			return respondWithCallToken(e, callRoom, data.DeviceId)
 		})
 
 		group.POST("/{id}/join", func(e *core.RequestEvent) error {
-			if err := cleanupStaleRingingCalls(e.App); err != nil {
+			if err := cleanupStaleCalls(e.App); err != nil {
 				return err
 			}
 
@@ -163,11 +177,71 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				}
 			}
 
+			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
+				return err
+			}
+
 			return respondWithCallToken(e, callRoom, data.DeviceId)
 		})
 
+		group.POST("/{id}/heartbeat", func(e *core.RequestEvent) error {
+			if err := cleanupStaleCalls(e.App); err != nil {
+				return err
+			}
+
+			data := callJoinRequest{}
+			if err := e.BindBody(&data); err != nil {
+				return e.BadRequestError("Failed to read call data.", err)
+			}
+
+			callRoom, err := findCallRoomForUser(e.App, e.Request.PathValue("id"), e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
+			if !isJoinableCallStatus(callRoom.GetString("status")) {
+				return e.BadRequestError(callUnavailableMessage(callRoom.GetString("status")), nil)
+			}
+
+			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
+				return err
+			}
+
+			return e.JSON(http.StatusOK, map[string]any{"callRoom": callRoomPayload(callRoom)})
+		})
+
+		group.POST("/{id}/leave", func(e *core.RequestEvent) error {
+			if err := cleanupStaleCalls(e.App); err != nil {
+				return err
+			}
+
+			data := callJoinRequest{}
+			if err := e.BindBody(&data); err != nil {
+				return e.BadRequestError("Failed to read call data.", err)
+			}
+
+			callRoom, err := findCallRoomForUser(e.App, e.Request.PathValue("id"), e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
+			if isJoinableCallStatus(callRoom.GetString("status")) {
+				if err := markCallParticipantLeft(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
+					return err
+				}
+
+				if callRoom.GetString("status") == "active" {
+					if err := finishCallRoomIfEmpty(e.App, callRoom); err != nil {
+						return err
+					}
+				}
+			}
+
+			return e.JSON(http.StatusOK, map[string]any{"callRoom": callRoomPayload(callRoom)})
+		})
+
 		group.POST("/{id}/end", func(e *core.RequestEvent) error {
-			if err := cleanupStaleRingingCalls(e.App); err != nil {
+			if err := cleanupStaleCalls(e.App); err != nil {
 				return err
 			}
 
@@ -327,19 +401,30 @@ func createCallMessage(app core.App, callRoom *core.Record) error {
 	return app.Save(message)
 }
 
-func runStaleRingingCallCleanup(app core.App) {
-	if err := cleanupStaleRingingCalls(app); err != nil {
-		log.Printf("failed to clean stale ringing calls: %v", err)
+func runCallCleanup(app core.App) {
+	if err := cleanupStaleCalls(app); err != nil {
+		log.Printf("failed to clean stale calls: %v", err)
 	}
 
 	ticker := time.NewTicker(staleRingingCleanupInterval)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if err := cleanupStaleRingingCalls(app); err != nil {
-			log.Printf("failed to clean stale ringing calls: %v", err)
+		if err := cleanupStaleCalls(app); err != nil {
+			log.Printf("failed to clean stale calls: %v", err)
 		}
 	}
+}
+
+func cleanupStaleCalls(app core.App) error {
+	if err := cleanupStaleRingingCalls(app); err != nil {
+		return err
+	}
+	if err := cleanupStaleCallParticipants(app); err != nil {
+		return err
+	}
+
+	return cleanupEmptyActiveCalls(app)
 }
 
 func cleanupStaleRingingCalls(app core.App) error {
@@ -365,6 +450,155 @@ func cleanupStaleRingingCalls(app core.App) error {
 	return nil
 }
 
+func cleanupStaleCallParticipants(app core.App) error {
+	cutoff := types.NowDateTime().Add(-callParticipantStaleTimeout)
+	participants, err := app.FindRecordsByFilter(
+		"call_participants",
+		"status='active' && last_seen_at <= {:cutoff}",
+		"last_seen_at",
+		100,
+		0,
+		dbx.Params{"cutoff": cutoff},
+	)
+	if err != nil {
+		return err
+	}
+
+	now := types.NowDateTime()
+	for _, participant := range participants {
+		participant.Set("status", "left")
+		participant.Set("left_at", now)
+		if err := app.Save(participant); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func cleanupEmptyActiveCalls(app core.App) error {
+	callRooms, err := app.FindRecordsByFilter("call_rooms", "status='active'", "created", 100, 0)
+	if err != nil {
+		return err
+	}
+
+	for _, callRoom := range callRooms {
+		if err := finishCallRoomIfEmpty(app, callRoom); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func finishCallRoomIfEmpty(app core.App, callRoom *core.Record) error {
+	hasParticipants, err := hasActiveCallParticipants(app, callRoom.Id)
+	if err != nil {
+		return err
+	}
+	if hasParticipants {
+		return nil
+	}
+
+	return finishCallRoom(app, callRoom, "ended")
+}
+
+func hasActiveCallParticipants(app core.App, callRoomId string) (bool, error) {
+	participants, err := app.FindRecordsByFilter(
+		"call_participants",
+		"call_room={:callRoomId} && status='active'",
+		"",
+		1,
+		0,
+		dbx.Params{"callRoomId": callRoomId},
+	)
+	if err != nil {
+		return false, err
+	}
+
+	return len(participants) > 0, nil
+}
+
+func markCallParticipantActive(app core.App, callRoom *core.Record, userId string, deviceId string) error {
+	deviceId = normalizedDeviceId(deviceId)
+	now := types.NowDateTime()
+	participant, err := findCallParticipant(app, callRoom.Id, userId, deviceId)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		collection, err := app.FindCollectionByNameOrId("call_participants")
+		if err != nil {
+			return err
+		}
+
+		participant = core.NewRecord(collection)
+		participant.Set("call_room", callRoom.Id)
+		participant.Set("user", userId)
+		participant.Set("device_id", deviceId)
+		participant.Set("joined_at", now)
+	}
+
+	participant.Set("status", "active")
+	participant.Set("left_at", "")
+	participant.Set("last_seen_at", now)
+
+	return app.Save(participant)
+}
+
+func markCallParticipantLeft(app core.App, callRoom *core.Record, userId string, deviceId string) error {
+	participant, err := findCallParticipant(app, callRoom.Id, userId, normalizedDeviceId(deviceId))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+
+		return err
+	}
+
+	now := types.NowDateTime()
+	participant.Set("status", "left")
+	participant.Set("left_at", now)
+	participant.Set("last_seen_at", now)
+
+	return app.Save(participant)
+}
+
+func markActiveCallParticipantsLeft(app core.App, callRoomId string) error {
+	participants, err := app.FindRecordsByFilter(
+		"call_participants",
+		"call_room={:callRoomId} && status='active'",
+		"",
+		0,
+		0,
+		dbx.Params{"callRoomId": callRoomId},
+	)
+	if err != nil {
+		return err
+	}
+
+	now := types.NowDateTime()
+	for _, participant := range participants {
+		participant.Set("status", "left")
+		participant.Set("left_at", now)
+		participant.Set("last_seen_at", now)
+		if err := app.Save(participant); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func findCallParticipant(app core.App, callRoomId string, userId string, deviceId string) (*core.Record, error) {
+	return app.FindFirstRecordByFilter(
+		"call_participants",
+		"call_room={:callRoomId} && user={:userId} && device_id={:deviceId}",
+		dbx.Params{"callRoomId": callRoomId, "deviceId": deviceId, "userId": userId},
+	)
+}
+
 func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 	if !isTerminalCallStatus(status) {
 		return errors.New("call status must be terminal")
@@ -377,6 +611,9 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 	callRoom.Set("status", status)
 	callRoom.Set("ended_at", types.NowDateTime())
 	if err := app.Save(callRoom); err != nil {
+		return err
+	}
+	if err := markActiveCallParticipantsLeft(app, callRoom.Id); err != nil {
 		return err
 	}
 

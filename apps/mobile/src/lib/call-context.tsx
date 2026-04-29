@@ -7,7 +7,13 @@ import {
   useTracks,
   VideoTrack,
 } from '@livekit/react-native';
-import { endCall, joinCall, type CallRoomRecord } from '@infchat/pocketbase';
+import {
+  endCall,
+  heartbeatCall,
+  joinCall,
+  leaveCall,
+  type CallRoomRecord,
+} from '@infchat/pocketbase';
 import { router, usePathname } from 'expo-router';
 import { useKeepAwake } from 'expo-keep-awake';
 import { Track } from 'livekit-client';
@@ -32,6 +38,7 @@ const MINI_WINDOW_HEIGHT = 174;
 const MINI_WINDOW_MARGIN = 16;
 const MINI_WINDOW_TAB_BAR_CLEARANCE = 92;
 const MINI_WINDOW_WIDTH = 132;
+const CALL_HEARTBEAT_INTERVAL = 15_000;
 
 type ActiveCallSession = {
   callRoom: CallRoomRecord;
@@ -57,6 +64,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const pathnameRef = useRef(pathname);
   const blockedAutoJoinCallRoomIdRef = useRef<string | null>(null);
   const didRequestEndRef = useRef(false);
+  const deviceIdRef = useRef<string | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveCallSession | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isJoining, setIsJoining] = useState(false);
@@ -98,6 +106,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
       try {
         const deviceId = await getDeviceId();
+        deviceIdRef.current = deviceId;
         const nextSession = await joinCall(pb, normalizedCallRoomId, deviceId);
         didRequestEndRef.current = false;
         setActiveSession(nextSession);
@@ -116,6 +125,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     didRequestEndRef.current = true;
+    blockedAutoJoinCallRoomIdRef.current = activeSession.callRoom.id;
 
     try {
       await endCall(pb, activeSession.callRoom.id);
@@ -135,6 +145,9 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     didRequestEndRef.current = true;
     blockedAutoJoinCallRoomIdRef.current = activeSession.callRoom.id;
 
+    const deviceId = deviceIdRef.current ?? (await getDeviceId());
+    deviceIdRef.current = deviceId;
+
     if (
       activeSession.callRoom.status === 'ringing' &&
       activeSession.callRoom.created_by === authRecord.id
@@ -143,6 +156,12 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         await endCall(pb, activeSession.callRoom.id);
       } catch {
         // The local device should still leave if cancel signaling fails.
+      }
+    } else {
+      try {
+        await leaveCall(pb, activeSession.callRoom.id, deviceId);
+      } catch {
+        // Local teardown is still safest when leave signaling fails.
       }
     }
 
@@ -193,6 +212,41 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       void AudioSession.stopAudioSession();
     };
   }, [activeCallRoomId, dismissCallRoute]);
+
+  useEffect(() => {
+    if (!activeCallRoomId) {
+      return;
+    }
+
+    let isMounted = true;
+
+    const sendHeartbeat = async () => {
+      try {
+        const deviceId = deviceIdRef.current ?? (await getDeviceId());
+        deviceIdRef.current = deviceId;
+        const response = await heartbeatCall(pb, activeCallRoomId, deviceId);
+        if (!isMounted) {
+          return;
+        }
+
+        setActiveSession((currentSession) =>
+          currentSession?.callRoom.id === response.callRoom.id
+            ? { ...currentSession, callRoom: response.callRoom }
+            : currentSession,
+        );
+      } catch {
+        // Realtime status updates and server stale cleanup handle temporary heartbeat failures.
+      }
+    };
+
+    void sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, CALL_HEARTBEAT_INTERVAL);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [activeCallRoomId]);
 
   const contextValue = useMemo<CallSessionContextValue>(
     () => ({
