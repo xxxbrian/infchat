@@ -105,7 +105,7 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id); err != nil {
+				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
 					return err
 				}
 
@@ -160,7 +160,7 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id); err != nil {
+				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
 					return err
 				}
 				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
@@ -205,7 +205,7 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return e.BadRequestError("You are already in another call.", err)
 			}
 
-			if err := activateRingingCallRoom(e.App, callRoom, e.Auth.Id); err != nil {
+			if err := activateRingingCallRoom(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
 				return err
 			}
 
@@ -346,7 +346,7 @@ func findOpenCallForUser(app core.App, userId string, excludedConversationId str
 	)
 }
 
-func activateRingingCallRoom(app core.App, callRoom *core.Record, joiningUserId string) error {
+func activateRingingCallRoom(app core.App, callRoom *core.Record, joiningUserId string, joiningDeviceId string) error {
 	if callRoom.GetString("status") != "ringing" || callRoom.GetString("created_by") == joiningUserId {
 		return nil
 	}
@@ -356,7 +356,7 @@ func activateRingingCallRoom(app core.App, callRoom *core.Record, joiningUserId 
 		return err
 	}
 
-	go sendCallUpdatePushNotifications(app, callRoom, "active", joiningUserId)
+	go sendCallUpdatePushNotifications(app, callRoom, "active", joiningUserId, joiningDeviceId)
 
 	return nil
 }
@@ -701,7 +701,7 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 		return err
 	}
 
-	go sendCallUpdatePushNotifications(app, callRoom, status, "")
+	go sendCallUpdatePushNotifications(app, callRoom, status, "", "")
 
 	return updateCallMessageForEndedCall(app, callRoom, status)
 }

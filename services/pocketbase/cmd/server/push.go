@@ -250,7 +250,7 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 			continue
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "apns_token", apns2.PushTypeAlert, apns2.PriorityHigh, "", "", payload); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "apns_token", apns2.PushTypeAlert, apns2.PriorityHigh, "", "", payload, "", nil); err != nil {
 			log.Printf("push: message notification failed for user %s: %v", userId, err)
 		}
 	}
@@ -305,13 +305,15 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 			continue
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload, "", func() bool {
+			return callRoomHasStatus(app, callRoom.Id, "ringing")
+		}); err != nil {
 			log.Printf("push: incoming call notification failed for user %s: %v", userId, err)
 		}
 	}
 }
 
-func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status string, excludedUserId string) {
+func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status string, excludedUserId string, excludedDeviceId string) {
 	currentCallRoom, err := app.FindRecordById("call_rooms", callRoom.Id)
 	if err != nil {
 		log.Printf("push: could not reload call room for update notification: %v", err)
@@ -340,17 +342,28 @@ func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status
 	}
 
 	for _, userId := range conversation.GetStringSlice("members") {
+		deviceIdToExclude := ""
 		if userId == excludedUserId {
-			continue
+			deviceIdToExclude = excludedDeviceId
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload, deviceIdToExclude, nil); err != nil {
 			log.Printf("push: call update notification failed for user %s: %v", userId, err)
 		}
 	}
 }
 
-func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, collapseID string, payload map[string]any) error {
+func callRoomHasStatus(app core.App, callRoomId string, status string) bool {
+	callRoom, err := app.FindRecordById("call_rooms", callRoomId)
+	if err != nil {
+		log.Printf("push: could not reload call room before APNs send: %v", err)
+		return false
+	}
+
+	return callRoom.GetString("status") == status
+}
+
+func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushType apns2.EPushType, priority int, topicSuffix string, collapseID string, payload map[string]any, excludedDeviceId string, shouldSend func() bool) error {
 	provider, err := configuredAPNsProvider()
 	if err != nil {
 		log.Printf("push: APNs disabled: %v", err)
@@ -369,8 +382,16 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 		return err
 	}
 
+	excludedDeviceId = strings.TrimSpace(excludedDeviceId)
+	if excludedDeviceId != "" {
+		excludedDeviceId = normalizedDeviceId(excludedDeviceId)
+	}
+
 	var sendErr error
 	for _, device := range devices {
+		if excludedDeviceId != "" && device.GetString("device_id") == excludedDeviceId {
+			continue
+		}
 		if device.GetString(disabledFieldForPushToken(tokenField)) != "" {
 			continue
 		}
@@ -378,6 +399,9 @@ func sendAPNsToUserDevices(app core.App, userId string, tokenField string, pushT
 		token := strings.TrimSpace(device.GetString(tokenField))
 		if token == "" {
 			continue
+		}
+		if shouldSend != nil && !shouldSend() {
+			return nil
 		}
 
 		response, err := provider.send(device.GetString("environment"), token, pushType, priority, topicSuffix, collapseID, payload)

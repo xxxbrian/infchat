@@ -416,6 +416,7 @@ function handleNotificationResponse(response: Notifications.NotificationResponse
       pathname: '/chat/[id]',
       params: { id: data.conversationId },
     });
+    void Notifications.clearLastNotificationResponseAsync();
   }
 }
 
