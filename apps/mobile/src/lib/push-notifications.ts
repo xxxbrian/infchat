@@ -31,6 +31,10 @@ type SystemCallHandlers = {
   onEndCall?: (payload: SystemCallPayload) => Promise<void> | void;
 };
 
+type PendingCallKeepAction = 'answer' | 'end';
+
+const PENDING_CALLKEEP_ACTION_TIMEOUT = 30_000;
+
 export type IOSSystemCallEndReason =
   | 'answered-elsewhere'
   | 'declined-elsewhere'
@@ -39,6 +43,10 @@ export type IOSSystemCallEndReason =
   | 'remote-ended';
 
 let systemCallHandlers: SystemCallHandlers = {};
+const pendingCallKeepActionsByUUID = new Map<
+  string,
+  { actions: PendingCallKeepAction[]; timeout: ReturnType<typeof setTimeout> }
+>();
 
 export function setIOSSystemCallHandlers(handlers: SystemCallHandlers) {
   systemCallHandlers = handlers;
@@ -85,6 +93,35 @@ function toCallKeepEndReason(reason: Exclude<IOSSystemCallEndReason, 'local'>): 
     case 'remote-ended':
       return CALLKEEP_CONSTANTS.END_CALL_REASONS.REMOTE_ENDED;
   }
+}
+
+function queuePendingCallKeepAction(callUUID: string, action: PendingCallKeepAction) {
+  const existing = pendingCallKeepActionsByUUID.get(callUUID);
+  if (existing) {
+    existing.actions.push(action);
+    return;
+  }
+
+  const timeout = setTimeout(() => {
+    const pending = pendingCallKeepActionsByUUID.get(callUUID);
+    pendingCallKeepActionsByUUID.delete(callUUID);
+    if (pending?.actions.includes('answer')) {
+      RNCallKeep.endCall(callUUID);
+    }
+  }, PENDING_CALLKEEP_ACTION_TIMEOUT);
+
+  pendingCallKeepActionsByUUID.set(callUUID, { actions: [action], timeout });
+}
+
+function takePendingCallKeepActions(callUUID: string): PendingCallKeepAction[] {
+  const pending = pendingCallKeepActionsByUUID.get(callUUID);
+  if (!pending) {
+    return [];
+  }
+
+  clearTimeout(pending.timeout);
+  pendingCallKeepActionsByUUID.delete(callUUID);
+  return pending.actions;
 }
 
 export function setupNotificationPresentation() {
@@ -170,7 +207,7 @@ export function setupIOSSystemCalls() {
   const handleAnswerCall = (callUUID: string) => {
     const payload = callPushesByUUID.get(callUUID);
     if (!payload?.callRoomId) {
-      RNCallKeep.endCall(callUUID);
+      queuePendingCallKeepAction(callUUID, 'answer');
       return;
     }
 
@@ -189,14 +226,17 @@ export function setupIOSSystemCalls() {
   };
   const handleEndCall = (callUUID: string) => {
     const payload = callPushesByUUID.get(callUUID);
-    callPushesByUUID.delete(callUUID);
     if (endingSystemCallUUIDs.delete(callUUID)) {
+      callPushesByUUID.delete(callUUID);
       return;
     }
 
     if (!payload?.callRoomId) {
+      queuePendingCallKeepAction(callUUID, 'end');
       return;
     }
+
+    callPushesByUUID.delete(callUUID);
 
     const actionPayload = { ...payload, callUUID };
     if (systemCallHandlers.onEndCall) {
@@ -227,13 +267,29 @@ export function setupIOSSystemCalls() {
     },
   );
 
+  const storeCallPushPayload = (payload: CallPushPayload) => {
+    if (!payload.uuid) {
+      return;
+    }
+
+    callPushesByUUID.set(payload.uuid, payload);
+    const pendingActions = takePendingCallKeepActions(payload.uuid);
+    for (const action of pendingActions) {
+      if (action === 'answer') {
+        handleAnswerCall(payload.uuid);
+      } else {
+        handleEndCall(payload.uuid);
+      }
+    }
+  };
+
   VoipPushNotification.addEventListener('register', (token) => {
     void registerVoipToken(token, Constants.expoConfig?.version);
   });
   VoipPushNotification.addEventListener('notification', (notification) => {
     const payload = notification as CallPushPayload;
     if (payload.uuid) {
-      callPushesByUUID.set(payload.uuid, payload);
+      storeCallPushPayload(payload);
       VoipPushNotification.onVoipNotificationCompleted(payload.uuid);
     }
   });
@@ -245,7 +301,7 @@ export function setupIOSSystemCalls() {
       if (event.name === VoipPushNotification.RNVoipPushRemoteNotificationReceivedEvent) {
         const payload = event.data as CallPushPayload;
         if (payload.uuid) {
-          callPushesByUUID.set(payload.uuid, payload);
+          storeCallPushPayload(payload);
           VoipPushNotification.onVoipNotificationCompleted(payload.uuid);
         }
       }
