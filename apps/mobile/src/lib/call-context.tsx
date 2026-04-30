@@ -239,6 +239,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
 
     void AudioSession.startAudioSession();
 
@@ -264,13 +265,20 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         setActiveSession(null);
         dismissCallRoute();
       })
+      .then((nextUnsubscribe) => {
+        if (isMounted) {
+          unsubscribe = nextUnsubscribe;
+        } else {
+          nextUnsubscribe();
+        }
+      })
       .catch(() => {
         // A failed status subscription should not drop an already connected call.
       });
 
     return () => {
       isMounted = false;
-      pb.collection('call_rooms').unsubscribe(activeCallRoomId);
+      unsubscribe?.();
       void AudioSession.stopAudioSession();
     };
   }, [activeCallRoomId, clearLiveKitDisconnectTimeout, dismissCallRoute]);
