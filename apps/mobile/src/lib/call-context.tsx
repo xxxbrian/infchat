@@ -370,6 +370,10 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
   }, [activeCallRoomId, clearLiveKitDisconnectTimeout]);
 
+  useEffect(() => {
+    return () => clearLiveKitDisconnectTimeout();
+  }, [clearLiveKitDisconnectTimeout]);
+
   const contextValue = useMemo<CallSessionContextValue>(
     () => ({
       activeSession,
