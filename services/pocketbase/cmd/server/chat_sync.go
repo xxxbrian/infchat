@@ -454,6 +454,30 @@ func emitMessageCreatedEvents(app core.App, conversation *core.Record, message *
 	return nil
 }
 
+func emitConversationUpdatedEvents(app core.App, conversation *core.Record, cursor int) error {
+	conversation.Set("last_change_cursor", cursor)
+	if err := app.Save(conversation); err != nil {
+		return err
+	}
+
+	for _, memberId := range conversation.GetStringSlice("members") {
+		state, err := findOrCreateConversationUserState(app, conversation, memberId)
+		if err != nil {
+			return err
+		}
+		state.Set("last_delivered_cursor", cursor)
+		if err := app.Save(state); err != nil {
+			return err
+		}
+
+		if err := createSyncEvent(app, memberId, conversation.Id, "conversation.updated", conversation.Id, cursor, syncEventPayload{Conversation: conversation, ReadState: state}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func emitMessageUpdatedEvents(app core.App, conversation *core.Record, message *core.Record, cursor int) error {
 	for _, memberId := range conversation.GetStringSlice("members") {
 		state, err := findOrCreateConversationUserState(app, conversation, memberId)

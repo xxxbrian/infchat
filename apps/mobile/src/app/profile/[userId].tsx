@@ -1,9 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
+  type CallKind,
   getProfileAvatarUrl,
   startCall,
   startPrivateConversation,
-  type CallKind,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -14,8 +14,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Animated,
   Alert,
+  Animated,
   Image,
   Pressable,
   StyleSheet,
@@ -27,13 +27,9 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import { useChatSyncService } from '../../lib/chat-sync-context';
 import { getDeviceId } from '../../lib/device-id';
-import {
-  getCachedProfileByUserId,
-  refreshCachedConversations,
-  refreshCachedProfileByUserId,
-  writeCachedConversation,
-} from '../../lib/local-cache';
+import { getCachedProfileByUserId, refreshCachedProfileByUserId } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 
@@ -50,6 +46,7 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { authRecord } = useAuth();
+  const chatSyncService = useChatSyncService();
   const queryClient = useQueryClient();
   const scrollY = useRef(new Animated.Value(0)).current;
   const profileExpansion = useRef(new Animated.Value(0)).current;
@@ -120,12 +117,9 @@ export default function ProfileScreen() {
   const fallbackAvatarColor = getAvatarColor(profile?.user || profileUserId || username);
   const startChatMutation = useMutation({
     mutationFn: () => startPrivateConversation(pb, profileUserId),
-    onSuccess: (conversation) => {
-      void writeCachedConversation(pb, conversation).then(() => {
-        void refreshCachedConversations(pb).then((conversations) => {
-          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-        });
-      });
+    onSuccess: async (conversation) => {
+      await chatSyncService.applyConversationSnapshot(conversation);
+      await chatSyncService.syncNow('manual');
       router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
     },
     onError: (error) => {
@@ -138,17 +132,14 @@ export default function ProfileScreen() {
   const startCallMutation = useMutation({
     mutationFn: async (kind: CallKind) => {
       const conversation = await startPrivateConversation(pb, profileUserId);
+      await chatSyncService.applyConversationSnapshot(conversation);
+      await chatSyncService.syncNow('manual');
       const deviceId = await getDeviceId();
       const call = await startCall(pb, conversation.id, kind, deviceId);
 
       return { call, conversation };
     },
     onSuccess: ({ call, conversation }) => {
-      void writeCachedConversation(pb, conversation).then(() => {
-        void refreshCachedConversations(pb).then((conversations) => {
-          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-        });
-      });
       queryClient.invalidateQueries({
         queryKey: ['active-call', conversation.id],
       });

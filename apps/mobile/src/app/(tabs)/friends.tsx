@@ -1,18 +1,18 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useNetInfo } from '@react-native-community/netinfo';
 import {
   acceptFriendRequest,
   cancelFriendRequest,
   declineFriendRequest,
-  getProfileAvatarUrl,
-  listFriendSuggestions,
-  sendFriendRequest,
-  startPrivateConversation,
   type FriendSuggestion,
   type FriendshipRecord,
+  getProfileAvatarUrl,
+  listFriendSuggestions,
   type ProfileRecord,
+  sendFriendRequest,
+  startPrivateConversation,
 } from '@infchat/pocketbase';
 import { normalizeUsername } from '@infchat/shared';
+import { useNetInfo } from '@react-native-community/netinfo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -33,10 +33,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
+import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   listCachedFriendships,
   listCachedProfilesByUserIds,
-  refreshCachedConversations,
   refreshCachedFriendships,
   refreshCachedProfileSearch,
   refreshCachedProfilesByUserIds,
@@ -70,6 +70,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function FriendsTab() {
   const { authRecord } = useAuth();
+  const chatSyncService = useChatSyncService();
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
@@ -272,10 +273,9 @@ export default function FriendsTab() {
   });
   const startPrivateChatMutation = useMutation({
     mutationFn: (recipientUserId: string) => startPrivateConversation(pb, recipientUserId),
-    onSuccess: (conversation) => {
-      void refreshCachedConversations(pb).then((conversations) => {
-        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-      });
+    onSuccess: async (conversation) => {
+      await chatSyncService.applyConversationSnapshot(conversation);
+      await chatSyncService.syncNow('manual');
       router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
     },
   });

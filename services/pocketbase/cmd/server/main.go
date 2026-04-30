@@ -1109,6 +1109,18 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		return e.Next()
 	})
 
+	app.OnRecordAfterCreateSuccess("conversations").BindFunc(func(e *core.RecordEvent) error {
+		cursor, err := nextSyncCursor(e.App)
+		if err != nil {
+			return err
+		}
+		if err := emitConversationUpdatedEvents(e.App, e.Record, cursor); err != nil {
+			return err
+		}
+
+		return e.Next()
+	})
+
 	app.OnRecordCreateRequest("messages").BindFunc(func(e *core.RecordRequestEvent) error {
 		if e.Auth == nil {
 			return router.NewForbiddenError("Sign in to send messages.", nil)

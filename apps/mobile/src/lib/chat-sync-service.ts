@@ -1,5 +1,6 @@
 import {
   bootstrapChatSync,
+  type ConversationRecord,
   listConversationMessagesBeforeSeq,
   markConversationReadBySeq,
   sendTextMessageCommand,
@@ -73,6 +74,11 @@ export class ChatSyncService {
     void this.pumpOutbox();
 
     return message;
+  }
+
+  async applyConversationSnapshot(conversation: ConversationRecord) {
+    await applyLocalChatRecords(this.authId, { conversation });
+    this.invalidateChatQueries(conversation.id);
   }
 
   async syncConversationHistory(conversationId: string, beforeSeq?: number) {
