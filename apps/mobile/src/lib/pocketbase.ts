@@ -21,3 +21,5 @@ export const pb = createPocketBaseClient({
   baseUrl: pocketBaseUrl,
   authStore,
 });
+
+pb.autoCancellation(false);

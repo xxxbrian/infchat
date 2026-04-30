@@ -38,6 +38,16 @@ export type LocalOutboxMessage = {
 const CHAT_SYNC_SCHEMA_VERSION = 1;
 const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v3.db');
 let schemaPromise: Promise<void> | null = null;
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+type SqliteWriter = Pick<SQLite.SQLiteDatabase, 'runAsync'>;
+
+function enqueueDbWrite<T>(task: () => Promise<T>): Promise<T> {
+  const write = writeQueue.then(task, task);
+  writeQueue = write.catch(() => {});
+
+  return write;
+}
 
 async function getDb() {
   const db = await dbPromise;
@@ -130,18 +140,20 @@ async function getDb() {
         return;
       }
 
-      await db.withTransactionAsync(async () => {
-        await db.runAsync('DELETE FROM local_conversations');
-        await db.runAsync('DELETE FROM local_conversation_states');
-        await db.runAsync('DELETE FROM local_messages');
-        await db.runAsync('DELETE FROM outbox_messages');
-        await db.runAsync('DELETE FROM sync_journal');
-        await db.runAsync(
-          'INSERT OR REPLACE INTO chat_meta (key, value) VALUES (?, ?)',
-          'schema_version',
-          String(CHAT_SYNC_SCHEMA_VERSION),
-        );
-      });
+      await enqueueDbWrite(() =>
+        db.withExclusiveTransactionAsync(async (txn) => {
+          await txn.runAsync('DELETE FROM local_conversations');
+          await txn.runAsync('DELETE FROM local_conversation_states');
+          await txn.runAsync('DELETE FROM local_messages');
+          await txn.runAsync('DELETE FROM outbox_messages');
+          await txn.runAsync('DELETE FROM sync_journal');
+          await txn.runAsync(
+            'INSERT OR REPLACE INTO chat_meta (key, value) VALUES (?, ?)',
+            'schema_version',
+            String(CHAT_SYNC_SCHEMA_VERSION),
+          );
+        }),
+      );
     });
 
   await schemaPromise;
@@ -162,11 +174,7 @@ export async function getChatSyncCursor(authId: string): Promise<number> {
 export async function setChatSyncCursor(authId: string, cursor: number): Promise<void> {
   const db = await getDb();
 
-  await db.runAsync(
-    'INSERT OR REPLACE INTO chat_meta (key, value) VALUES (?, ?)',
-    cursorKey(authId),
-    String(cursor),
-  );
+  await enqueueDbWrite(() => writeChatSyncCursor(db, authId, cursor));
 }
 
 export async function applyChatBootstrap(
@@ -177,17 +185,19 @@ export async function applyChatBootstrap(
 ): Promise<void> {
   const db = await getDb();
 
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('DELETE FROM local_conversations WHERE auth_id = ?', authId);
-    await db.runAsync('DELETE FROM local_conversation_states WHERE auth_id = ?', authId);
-    for (const conversation of conversations) {
-      await writeConversationRow(authId, conversation);
-    }
-    for (const state of states) {
-      await writeConversationStateRow(authId, state);
-    }
-    await setChatSyncCursor(authId, cursor);
-  });
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync(async (txn) => {
+      await txn.runAsync('DELETE FROM local_conversations WHERE auth_id = ?', authId);
+      await txn.runAsync('DELETE FROM local_conversation_states WHERE auth_id = ?', authId);
+      for (const conversation of conversations) {
+        await writeConversationRow(txn, authId, conversation);
+      }
+      for (const state of states) {
+        await writeConversationStateRow(txn, authId, state);
+      }
+      await writeChatSyncCursor(txn, authId, cursor);
+    }),
+  );
 }
 
 export async function applyChatSyncEvents(
@@ -202,26 +212,28 @@ export async function applyChatSyncEvents(
 
   const db = await getDb();
 
-  await db.withTransactionAsync(async () => {
-    for (const event of events) {
-      const payload = normalizeSyncPayload(event.payload);
-      if (payload.conversation) {
-        await writeConversationRow(authId, payload.conversation);
-      }
-      if (payload.message) {
-        if (event.type === 'message.deleted') {
-          await removeMessageRow(authId, payload.message.id);
-        } else {
-          await writeMessageRow(authId, payload.message);
-          await confirmOutboxMessage(authId, payload.message);
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync(async (txn) => {
+      for (const event of events) {
+        const payload = normalizeSyncPayload(event.payload);
+        if (payload.conversation) {
+          await writeConversationRow(txn, authId, payload.conversation);
+        }
+        if (payload.message) {
+          if (event.type === 'message.deleted') {
+            await removeMessageRow(txn, authId, payload.message.id);
+          } else {
+            await writeMessageRow(txn, authId, payload.message);
+            await confirmOutboxMessage(txn, authId, payload.message);
+          }
+        }
+        if (payload.readState) {
+          await writeConversationStateRow(txn, authId, payload.readState);
         }
       }
-      if (payload.readState) {
-        await writeConversationStateRow(authId, payload.readState);
-      }
-    }
-    await setChatSyncCursor(authId, cursor);
-  });
+      await writeChatSyncCursor(txn, authId, cursor);
+    }),
+  );
 }
 
 export async function applyConversationHistory(
@@ -234,12 +246,14 @@ export async function applyConversationHistory(
 
   const db = await getDb();
 
-  await db.withTransactionAsync(async () => {
-    for (const message of messages) {
-      await writeMessageRow(authId, message);
-      await confirmOutboxMessage(authId, message);
-    }
-  });
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync(async (txn) => {
+      for (const message of messages) {
+        await writeMessageRow(txn, authId, message);
+        await confirmOutboxMessage(txn, authId, message);
+      }
+    }),
+  );
 }
 
 export async function applyLocalChatRecords(
@@ -252,18 +266,20 @@ export async function applyLocalChatRecords(
 ): Promise<void> {
   const db = await getDb();
 
-  await db.withTransactionAsync(async () => {
-    if (records.conversation) {
-      await writeConversationRow(authId, records.conversation);
-    }
-    if (records.message) {
-      await writeMessageRow(authId, records.message);
-      await confirmOutboxMessage(authId, records.message);
-    }
-    if (records.state) {
-      await writeConversationStateRow(authId, records.state);
-    }
-  });
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync(async (txn) => {
+      if (records.conversation) {
+        await writeConversationRow(txn, authId, records.conversation);
+      }
+      if (records.message) {
+        await writeMessageRow(txn, authId, records.message);
+        await confirmOutboxMessage(txn, authId, records.message);
+      }
+      if (records.state) {
+        await writeConversationStateRow(txn, authId, records.state);
+      }
+    }),
+  );
 }
 
 export async function listLocalConversations(authId: string): Promise<ConversationRecord[]> {
@@ -359,17 +375,19 @@ export async function enqueueTextOutboxMessage(
     updated_at: now,
   };
 
-  await db.runAsync(
-    `INSERT INTO outbox_messages
-      (auth_id, client_message_id, conversation_id, body, state, client_created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    message.auth_id,
-    message.client_message_id,
-    message.conversation_id,
-    message.body,
-    message.state,
-    message.client_created_at,
-    message.updated_at,
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `INSERT INTO outbox_messages
+        (auth_id, client_message_id, conversation_id, body, state, client_created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      message.auth_id,
+      message.client_message_id,
+      message.conversation_id,
+      message.body,
+      message.state,
+      message.client_created_at,
+      message.updated_at,
+    ),
   );
 
   return message;
@@ -405,13 +423,15 @@ export async function listOutboxMessagesForConversation(
 
 export async function markOutboxSending(authId: string, clientMessageId: string): Promise<void> {
   const db = await getDb();
-  await db.runAsync(
-    `UPDATE outbox_messages
-     SET state = 'sending_create', updated_at = ?
-     WHERE auth_id = ? AND client_message_id = ?`,
-    new Date().toISOString(),
-    authId,
-    clientMessageId,
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE outbox_messages
+       SET state = 'sending_create', updated_at = ?
+       WHERE auth_id = ? AND client_message_id = ?`,
+      new Date().toISOString(),
+      authId,
+      clientMessageId,
+    ),
   );
 }
 
@@ -422,15 +442,17 @@ export async function markOutboxRetry(
 ): Promise<void> {
   const db = await getDb();
   const now = new Date().toISOString();
-  await db.runAsync(
-    `UPDATE outbox_messages
-     SET state = 'retry_wait', last_error = ?, next_attempt_at = ?, updated_at = ?
-     WHERE auth_id = ? AND client_message_id = ?`,
-    error,
-    now,
-    now,
-    authId,
-    clientMessageId,
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE outbox_messages
+       SET state = 'retry_wait', last_error = ?, next_attempt_at = ?, updated_at = ?
+       WHERE auth_id = ? AND client_message_id = ?`,
+      error,
+      now,
+      now,
+      authId,
+      clientMessageId,
+    ),
   );
 }
 
@@ -444,22 +466,27 @@ export async function writeSyncJournal(
 ): Promise<void> {
   const db = await getDb();
 
-  await db.runAsync(
-    `INSERT INTO sync_journal
-      (auth_id, trigger, from_cursor, to_cursor, result, error, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    authId,
-    trigger,
-    fromCursor,
-    toCursor,
-    result,
-    error ?? null,
-    new Date().toISOString(),
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `INSERT INTO sync_journal
+        (auth_id, trigger, from_cursor, to_cursor, result, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      authId,
+      trigger,
+      fromCursor,
+      toCursor,
+      result,
+      error ?? null,
+      new Date().toISOString(),
+    ),
   );
 }
 
-async function writeConversationRow(authId: string, conversation: ConversationRecord) {
-  const db = await getDb();
+async function writeConversationRow(
+  db: SqliteWriter,
+  authId: string,
+  conversation: ConversationRecord,
+) {
   await db.runAsync(
     `INSERT OR REPLACE INTO local_conversations
       (auth_id, id, value, last_message_seq, last_change_cursor, updated_at)
@@ -473,8 +500,11 @@ async function writeConversationRow(authId: string, conversation: ConversationRe
   );
 }
 
-async function writeConversationStateRow(authId: string, state: ConversationUserStateRecord) {
-  const db = await getDb();
+async function writeConversationStateRow(
+  db: SqliteWriter,
+  authId: string,
+  state: ConversationUserStateRecord,
+) {
   await db.runAsync(
     `INSERT OR REPLACE INTO local_conversation_states
       (auth_id, conversation_id, user_id, value, last_read_seq, unread_count, last_delivered_cursor, updated_at)
@@ -490,8 +520,7 @@ async function writeConversationStateRow(authId: string, state: ConversationUser
   );
 }
 
-async function writeMessageRow(authId: string, message: MessageRecord) {
-  const db = await getDb();
+async function writeMessageRow(db: SqliteWriter, authId: string, message: MessageRecord) {
   await db.runAsync(
     `INSERT OR REPLACE INTO local_messages
       (auth_id, conversation_id, id, client_message_id, value, message_seq, updated_at)
@@ -506,17 +535,15 @@ async function writeMessageRow(authId: string, message: MessageRecord) {
   );
 }
 
-async function removeMessageRow(authId: string, messageId: string) {
-  const db = await getDb();
+async function removeMessageRow(db: SqliteWriter, authId: string, messageId: string) {
   await db.runAsync('DELETE FROM local_messages WHERE auth_id = ? AND id = ?', authId, messageId);
 }
 
-async function confirmOutboxMessage(authId: string, message: MessageRecord) {
+async function confirmOutboxMessage(db: SqliteWriter, authId: string, message: MessageRecord) {
   if (!message.client_message_id) {
     return;
   }
 
-  const db = await getDb();
   await db.runAsync(
     `UPDATE outbox_messages
      SET state = 'confirmed', server_message_id = ?, updated_at = ?
@@ -525,6 +552,14 @@ async function confirmOutboxMessage(authId: string, message: MessageRecord) {
     new Date().toISOString(),
     authId,
     message.client_message_id,
+  );
+}
+
+async function writeChatSyncCursor(db: SqliteWriter, authId: string, cursor: number) {
+  await db.runAsync(
+    'INSERT OR REPLACE INTO chat_meta (key, value) VALUES (?, ?)',
+    cursorKey(authId),
+    String(cursor),
   );
 }
 
