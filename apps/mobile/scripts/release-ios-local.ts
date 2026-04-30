@@ -667,9 +667,11 @@ async function main() {
     ),
   );
 
-  await runStep('entitlements', 'Verify archive entitlements', async () => {
-    verifyArchivedEntitlements(archivePath, scheme, bundleId);
-  });
+  console.log(
+    yellow(
+      'Skipping archive entitlement verification; Xcode may re-sign the archive during export.',
+    ),
+  );
   console.log(`\n${green('Source snapshot is no longer needed by this release build.')}`);
   console.log(green('You can safely continue editing TypeScript/JS files now.'));
   console.log(dim('Export and upload use the completed Xcode archive.'));
