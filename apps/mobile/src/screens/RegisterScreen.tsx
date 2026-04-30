@@ -46,7 +46,10 @@ export function RegisterScreen(props: RegisterScreenProps) {
     <AuthScreen>
       <View className="mb-12 gap-2">
         <Text className="text-[44px] font-bold tracking-[-1.5px] text-foreground">InfChat</Text>
-        <Text className="text-2xl font-semibold text-muted-foreground">Create account</Text>
+        <Text className="text-2xl font-semibold text-muted-foreground">Create your account</Text>
+        <Text className="text-base font-medium leading-6 text-muted-foreground">
+          Pick a username first. You can add your name, bio, and photo next.
+        </Text>
       </View>
 
       <View className="gap-4">
@@ -57,24 +60,34 @@ export function RegisterScreen(props: RegisterScreenProps) {
           placeholder="username"
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="username-new"
           returnKeyType="next"
+          textContentType="username"
         />
+        <Text className="-mt-2 px-1 text-xs font-semibold text-muted-foreground">
+          3-32 lowercase letters, numbers, or underscores.
+        </Text>
         <AuthField
           label="Password"
           value={password}
           onChangeText={setPassword}
           placeholder="password"
           secureTextEntry
+          autoComplete="new-password"
           returnKeyType="done"
           onSubmitEditing={submit}
+          textContentType="newPassword"
         />
+        <Text className="-mt-2 px-1 text-xs font-semibold text-muted-foreground">
+          At least 8 characters.
+        </Text>
       </View>
 
       {error ? <Text className="mt-4 px-1 text-sm font-medium text-danger">{error}</Text> : null}
 
       <View className="mt-7 gap-5">
         <AuthButton label="Create account" isLoading={isSubmitting} onPress={submit} />
-        <Pressable className="items-center py-2" onPress={props.onSignIn}>
+        <Pressable className="items-center py-2" disabled={isSubmitting} onPress={props.onSignIn}>
           <Text className="text-base font-semibold text-foreground">Sign in</Text>
         </Pressable>
       </View>

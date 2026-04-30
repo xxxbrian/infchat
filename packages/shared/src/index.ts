@@ -29,6 +29,7 @@ export type LiveKitParticipantMetadata = {
 
 export const USERNAME_PATTERN = /^[a-z0-9_]{3,32}$/;
 export const DISPLAY_NAME_MAX_LENGTH = 48;
+export const BIO_MAX_LENGTH = 160;
 
 export const usernameSchema = z
   .string()
@@ -47,6 +48,11 @@ export const displayNameSchema = z
     DISPLAY_NAME_MAX_LENGTH,
     `Display name must be at most ${DISPLAY_NAME_MAX_LENGTH} characters`,
   );
+
+export const bioSchema = z
+  .string()
+  .trim()
+  .max(BIO_MAX_LENGTH, `Bio must be at most ${BIO_MAX_LENGTH} characters`);
 
 export const friendSearchSchema = z
   .string()

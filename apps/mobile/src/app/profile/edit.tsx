@@ -5,7 +5,7 @@ import {
   type ProfileRecord,
   type ProfileUploadFile,
 } from '@infchat/pocketbase';
-import { displayNameSchema } from '@infchat/shared';
+import { BIO_MAX_LENGTH, bioSchema, displayNameSchema } from '@infchat/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
@@ -40,6 +40,7 @@ export default function EditProfileScreen() {
   const queryClient = useQueryClient();
   const didSetInitialProfile = useRef(false);
   const [displayName, setDisplayName] = useState('');
+  const [bio, setBio] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState<ImagePicker.ImagePickerAsset | null>(null);
 
   const profileQuery = useQuery({
@@ -56,10 +57,19 @@ export default function EditProfileScreen() {
   const avatarUrl =
     selectedAvatar?.uri || (profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null);
   const parsedDisplayName = displayNameSchema.safeParse(displayName);
+  const parsedBio = bioSchema.safeParse(bio);
   const hasChanges =
-    Boolean(selectedAvatar) || Boolean(profile && displayName.trim() !== profile.display_name);
+    Boolean(selectedAvatar) ||
+    Boolean(
+      profile &&
+        (displayName.trim() !== profile.display_name || bio.trim() !== (profile.bio ?? '')),
+    );
   const canSave = Boolean(
-    profile && parsedDisplayName.success && hasChanges && !profileQuery.isLoading,
+    profile &&
+      parsedDisplayName.success &&
+      parsedBio.success &&
+      hasChanges &&
+      !profileQuery.isLoading,
   );
   const uploadFile = useMemo(
     () => (selectedAvatar ? toProfileUploadFile(selectedAvatar) : undefined),
@@ -88,6 +98,7 @@ export default function EditProfileScreen() {
     if (profile && !didSetInitialProfile.current) {
       didSetInitialProfile.current = true;
       setDisplayName(profile.display_name || profile.username);
+      setBio(profile.bio ?? '');
     }
   }, [profile]);
 
@@ -99,6 +110,7 @@ export default function EditProfileScreen() {
 
       return updateProfile(pb, profile.id, {
         avatar: uploadFile,
+        bio,
         displayName,
       });
     },
@@ -210,6 +222,26 @@ export default function EditProfileScreen() {
             <View className="ml-5 border-b border-border/70" />
             <View className="px-5 py-4">
               <Text className="text-xs font-bold uppercase tracking-[0.8px] text-muted-foreground">
+                Bio
+              </Text>
+              <TextInput
+                className="mt-2 min-h-[74px] min-w-0 py-1 text-[17px] font-semibold leading-6 text-foreground"
+                maxLength={BIO_MAX_LENGTH}
+                multiline
+                onChangeText={setBio}
+                placeholder="A short line about you"
+                placeholderTextColor="#64748b"
+                selectionColor="#f8fafc"
+                textAlignVertical="top"
+                value={bio}
+              />
+              <Text className="mt-1 text-right text-xs font-semibold text-muted-foreground">
+                {bio.trim().length}/{BIO_MAX_LENGTH}
+              </Text>
+            </View>
+            <View className="ml-5 border-b border-border/70" />
+            <View className="px-5 py-4">
+              <Text className="text-xs font-bold uppercase tracking-[0.8px] text-muted-foreground">
                 Username
               </Text>
               <Text
@@ -228,6 +260,12 @@ export default function EditProfileScreen() {
           {!parsedDisplayName.success && displayName.length > 0 ? (
             <Text className="mt-3 px-2 text-sm font-medium text-red-300">
               {parsedDisplayName.error.issues[0]?.message}
+            </Text>
+          ) : null}
+
+          {!parsedBio.success ? (
+            <Text className="mt-3 px-2 text-sm font-medium text-red-300">
+              {parsedBio.error.issues[0]?.message}
             </Text>
           ) : null}
         </View>

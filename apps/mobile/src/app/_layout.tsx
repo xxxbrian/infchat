@@ -16,6 +16,8 @@ import {
   onlineManager,
   QueryClient,
   QueryClientProvider,
+  useQuery,
+  useQueryClient,
 } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
 import { router, Stack, usePathname } from 'expo-router';
@@ -28,7 +30,9 @@ import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
+import { refreshCachedCurrentProfile } from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
+import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
   endIOSSystemCallForCallRoom,
   registerIOSPushDevice,
@@ -112,8 +116,10 @@ export default function RootLayout() {
                   <Stack.Screen name="debug" />
                   <Stack.Screen name="profile/[userId]" />
                   <Stack.Screen name="profile/edit" />
+                  <Stack.Screen name="profile/setup" />
                   <Stack.Screen name="settings/notifications" />
                 </Stack>
+                <ProfileSetupGate authRecord={authRecord} />
                 <NotificationRouteTracker />
                 <PushRegistration authRecord={authRecord} />
                 <IncomingCallListener authRecord={authRecord} />
@@ -135,6 +141,61 @@ export default function RootLayout() {
       </SafeAreaProvider>
     </QueryClientProvider>
   );
+}
+
+function ProfileSetupGate({ authRecord }: { authRecord: AuthRecord }) {
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const profileQuery = useQuery({
+    queryKey: ['profile', 'current', authRecord.id],
+    queryFn: () => refreshCachedCurrentProfile(pb),
+    networkMode: 'always',
+    retry: 1,
+  });
+
+  useEffect(() => {
+    const profile = profileQuery.data;
+    if (!profile || pathname === '/profile/setup' || pathname.startsWith('/call/')) {
+      return;
+    }
+
+    if (getMissingProfileSetupFields(profile).length > 0) {
+      router.replace({
+        pathname: '/profile/setup',
+        params: { returnTo: pathname },
+      } as never);
+    }
+  }, [pathname, profileQuery.data]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
+
+    void pb
+      .collection('profiles')
+      .subscribe('*', (event) => {
+        const record = event.record as { user?: string } | undefined;
+        if (record?.user === authRecord.id) {
+          void queryClient.invalidateQueries({
+            queryKey: ['profile', 'current', authRecord.id],
+          });
+        }
+      })
+      .then((cleanup) => {
+        if (isMounted) {
+          unsubscribe = cleanup;
+        } else {
+          cleanup();
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribe?.();
+    };
+  }, [authRecord.id, queryClient]);
+
+  return null;
 }
 
 function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {

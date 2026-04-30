@@ -1,5 +1,7 @@
-import { displayNameSchema, friendSearchSchema } from '@infchat/shared';
+import { bioSchema, displayNameSchema, friendSearchSchema } from '@infchat/shared';
 import type PocketBase from 'pocketbase';
+
+export type ProfileSetupField = 'avatar' | 'bio' | 'displayName';
 
 export type ProfileRecord = {
   id: string;
@@ -7,8 +9,10 @@ export type ProfileRecord = {
   username: string;
   display_name: string;
   avatar?: string;
+  bio?: string;
   collectionId: string;
   collectionName: string;
+  setup_skipped_fields?: string;
 };
 
 export type ProfileUploadFile = {
@@ -18,8 +22,10 @@ export type ProfileUploadFile = {
 };
 
 export type UpdateProfileInput = {
-  displayName: string;
+  bio?: string;
+  displayName?: string;
   avatar?: ProfileUploadFile;
+  setupSkippedFields?: ProfileSetupField[];
 };
 
 export async function getCurrentProfile(pb: PocketBase): Promise<ProfileRecord> {
@@ -67,19 +73,33 @@ export async function updateProfile(
   profileId: string,
   input: UpdateProfileInput,
 ): Promise<ProfileRecord> {
-  const displayName = displayNameSchema.parse(input.displayName);
+  const data = {
+    ...(input.displayName === undefined
+      ? {}
+      : { display_name: displayNameSchema.parse(input.displayName) }),
+    ...(input.bio === undefined ? {} : { bio: bioSchema.parse(input.bio) }),
+    ...(input.setupSkippedFields === undefined
+      ? {}
+      : {
+          setup_skipped_fields: serializeProfileSetupFields(input.setupSkippedFields),
+        }),
+  };
 
   if (!input.avatar) {
-    return pb.collection('profiles').update<ProfileRecord>(profileId, {
-      display_name: displayName,
-    });
+    return pb.collection('profiles').update<ProfileRecord>(profileId, data);
   }
 
   const formData = new FormData();
-  formData.append('display_name', displayName);
+  for (const [key, value] of Object.entries(data)) {
+    formData.append(key, value);
+  }
   formData.append('avatar', input.avatar as unknown as Blob);
 
   return pb.collection('profiles').update<ProfileRecord>(profileId, formData);
+}
+
+export function serializeProfileSetupFields(fields: ProfileSetupField[]): string {
+  return [...new Set(fields)].sort().join(',');
 }
 
 export function getProfileAvatarUrl(

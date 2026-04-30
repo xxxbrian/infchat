@@ -73,6 +73,7 @@ export default function ProfileScreen() {
   const canContactProfile = Boolean(profileUserId && profileUserId !== authRecord.id && profile);
   const displayName = profile?.display_name || profile?.username || 'Profile';
   const username = profile?.username || 'unknown';
+  const bio = profile?.bio?.trim() || 'No bio yet';
   const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
   const cachedAvatarUrl = useCachedRemoteUri(
     avatarUrl,
@@ -381,7 +382,7 @@ export default function ProfileScreen() {
 
           <View className="mb-5 overflow-hidden rounded-[24px] bg-muted" style={styles.section}>
             <InfoRow label="Username" value={`@${username}`} />
-            <InfoRow label="About" value="Unknown" />
+            <InfoRow label="Bio" value={bio} />
             <InfoRow label="Birthday" value="Unknown" />
             <InfoRow label="Member since" value="Unknown" isLast />
           </View>

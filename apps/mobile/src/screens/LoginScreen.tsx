@@ -41,7 +41,10 @@ export function LoginScreen(props: LoginScreenProps) {
     <AuthScreen>
       <View className="mb-12 gap-2">
         <Text className="text-[44px] font-bold tracking-[-1.5px] text-foreground">InfChat</Text>
-        <Text className="text-2xl font-semibold text-muted-foreground">Sign in</Text>
+        <Text className="text-2xl font-semibold text-muted-foreground">Welcome back</Text>
+        <Text className="text-base font-medium leading-6 text-muted-foreground">
+          Sign in with your username to continue your chats.
+        </Text>
       </View>
 
       <View className="gap-4">
@@ -52,7 +55,9 @@ export function LoginScreen(props: LoginScreenProps) {
           placeholder="username"
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="username"
           returnKeyType="next"
+          textContentType="username"
         />
         <AuthField
           label="Password"
@@ -60,8 +65,10 @@ export function LoginScreen(props: LoginScreenProps) {
           onChangeText={setPassword}
           placeholder="password"
           secureTextEntry
+          autoComplete="password"
           returnKeyType="done"
           onSubmitEditing={submit}
+          textContentType="password"
         />
       </View>
 
@@ -69,7 +76,11 @@ export function LoginScreen(props: LoginScreenProps) {
 
       <View className="mt-7 gap-5">
         <AuthButton label="Sign in" isLoading={isSubmitting} onPress={submit} />
-        <Pressable className="items-center py-2" onPress={props.onCreateAccount}>
+        <Pressable
+          className="items-center py-2"
+          disabled={isSubmitting}
+          onPress={props.onCreateAccount}
+        >
           <Text className="text-base font-semibold text-foreground">Create account</Text>
         </Pressable>
       </View>
