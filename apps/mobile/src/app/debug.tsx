@@ -5,7 +5,7 @@ import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import { router } from 'expo-router';
 import * as Sharing from 'expo-sharing';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -42,6 +43,7 @@ export default function DebugScreen() {
   const [deviceId, setDeviceId] = useState<string>(NOT_SET);
   const [logs, setLogs] = useState<DebugLogEntry[]>([]);
   const [networkState, setNetworkState] = useState<NetInfoState | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const extra = Constants.expoConfig?.extra ?? {};
 
@@ -218,6 +220,8 @@ export default function DebugScreen() {
             onCopy={copyLogs}
             onRefresh={refreshLogs}
             onShare={shareLogs}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
             statusMessage={statusMessage}
           />
         </View>
@@ -232,6 +236,8 @@ function DebugLogSection({
   onCopy,
   onRefresh,
   onShare,
+  searchQuery,
+  setSearchQuery,
   statusMessage,
 }: {
   logs: DebugLogEntry[];
@@ -239,13 +245,29 @@ function DebugLogSection({
   onCopy: () => void;
   onRefresh: () => void;
   onShare: () => void;
+  searchQuery: string;
+  setSearchQuery: (value: string) => void;
   statusMessage: string | null;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+  const visibleLogs = useMemo(() => {
+    const orderedLogs = [...logs].reverse();
+    const normalizedQuery = searchQuery.trim().toLowerCase();
+    if (normalizedQuery.length === 0) {
+      return orderedLogs;
+    }
+
+    return orderedLogs.filter((log) =>
+      formatTerminalLogLine(log).toLowerCase().includes(normalizedQuery),
+    );
+  }, [logs, searchQuery]);
+  const terminalText = visibleLogs.map(formatTerminalLogLine).join('\n');
+
   return (
     <View className="mt-5">
       <View className="mb-2 flex-row items-center justify-between px-2">
         <Text className="text-xs font-bold uppercase tracking-[0.8px] text-muted-foreground">
-          Logs ({logs.length})
+          Logs ({visibleLogs.length}/{logs.length})
         </Text>
         {statusMessage ? (
           <Text className="text-xs font-semibold text-blue-300">{statusMessage}</Text>
@@ -259,40 +281,56 @@ function DebugLogSection({
         <DebugActionButton destructive icon="trash-outline" label="Clear" onPress={onClear} />
       </View>
 
-      <View className="overflow-hidden rounded-[28px] bg-muted" style={styles.group}>
+      <View className="mb-3 flex-row items-center gap-2 rounded-2xl bg-muted px-4 py-2">
+        <Ionicons color="#64748b" name="search" size={16} />
+        <TextInput
+          autoCapitalize="none"
+          autoCorrect={false}
+          className="min-h-9 flex-1 py-0 font-mono text-sm text-foreground"
+          onChangeText={setSearchQuery}
+          placeholder="Filter logs"
+          placeholderTextColor="#64748b"
+          value={searchQuery}
+        />
+        {searchQuery.length > 0 ? (
+          <Pressable
+            className="h-8 w-8 items-center justify-center"
+            onPress={() => setSearchQuery('')}
+          >
+            <Ionicons color="#94a3b8" name="close-circle" size={18} />
+          </Pressable>
+        ) : null}
+      </View>
+
+      <View
+        className="overflow-hidden rounded-[18px] border border-border/70 bg-[#05070c]"
+        style={styles.terminal}
+      >
         {logs.length === 0 ? (
-          <View className="px-5 py-5">
-            <Text className="text-sm font-semibold text-muted-foreground">No debug logs yet.</Text>
+          <View className="flex-1 justify-center px-4">
+            <Text className="font-mono text-xs text-muted-foreground">No debug logs yet.</Text>
           </View>
         ) : (
-          logs.map((log, index) => (
-            <View className="px-5" key={log.id}>
-              <View
-                className={`py-4 ${index < logs.length - 1 ? 'border-b border-border/70' : ''}`}
-              >
-                <View className="mb-2 flex-row items-center gap-2">
-                  <Text className={`text-xs font-black uppercase ${levelClassName(log.level)}`}>
-                    {log.level}
-                  </Text>
-                  <Text className="text-xs font-semibold text-muted-foreground">[{log.scope}]</Text>
-                  <Text className="ml-auto text-[11px] font-medium text-muted-foreground">
-                    {formatLogTime(log.created_at)}
-                  </Text>
-                </View>
-                <Text className="text-sm font-semibold leading-5 text-foreground" selectable>
-                  {log.message}
-                </Text>
-                {log.details ? (
-                  <Text
-                    className="mt-2 rounded-2xl bg-background/70 p-3 font-mono text-xs leading-5 text-muted-foreground"
-                    selectable
-                  >
-                    {log.details}
-                  </Text>
-                ) : null}
-              </View>
-            </View>
-          ))
+          <ScrollView
+            ref={scrollRef}
+            className="flex-1"
+            contentContainerStyle={styles.terminalContent}
+            nestedScrollEnabled
+            onContentSizeChange={() => {
+              scrollRef.current?.scrollToEnd({ animated: false });
+            }}
+            showsVerticalScrollIndicator
+          >
+            {terminalText.length > 0 ? (
+              <Text className="font-mono text-[11px] leading-4 text-slate-300" selectable>
+                {terminalText}
+              </Text>
+            ) : (
+              <Text className="font-mono text-xs text-muted-foreground">
+                No logs match this filter.
+              </Text>
+            )}
+          </ScrollView>
         )}
       </View>
     </View>
@@ -367,17 +405,13 @@ function stringValue(value: unknown): string {
   return NOT_SET;
 }
 
-function levelClassName(level: DebugLogEntry['level']) {
-  switch (level) {
-    case 'error':
-      return 'text-red-300';
-    case 'warn':
-      return 'text-amber-300';
-    case 'debug':
-      return 'text-slate-400';
-    default:
-      return 'text-blue-300';
-  }
+function formatTerminalLogLine(log: DebugLogEntry) {
+  const details = log.details ? ` ${compactLogText(log.details)}` : '';
+  return `${formatLogTime(log.created_at)} ${log.level.toUpperCase().padEnd(5)} [${log.scope}] ${compactLogText(log.message)}${details}`;
+}
+
+function compactLogText(value: string) {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function formatLogTime(value: string) {
@@ -386,15 +420,19 @@ function formatLogTime(value: string) {
     return value;
   }
 
-  return date.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return date.toISOString().replace('T', ' ').replace('Z', '');
 }
 
 const styles = StyleSheet.create({
   group: {
     borderCurve: 'continuous',
   } as ViewStyle,
+  terminal: {
+    borderCurve: 'continuous',
+    height: 420,
+  } as ViewStyle,
+  terminalContent: {
+    minWidth: '100%',
+    padding: 12,
+  },
 });
