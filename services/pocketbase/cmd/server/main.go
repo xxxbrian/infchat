@@ -1300,6 +1300,41 @@ func updateConversationPreviewFromMessageWithCursor(app core.App, message *core.
 	return conversation, app.Save(conversation)
 }
 
+func updateConversationPreviewAfterMessageDelete(app core.App, conversation *core.Record, deletedMessage *core.Record) (*core.Record, error) {
+	if conversation.GetString("last_message_id") != deletedMessage.Id {
+		return conversation, nil
+	}
+
+	messages, err := app.FindRecordsByFilter(
+		"messages",
+		"conversation={:conversation} && deleted_at=''",
+		"-message_seq",
+		1,
+		0,
+		dbx.Params{"conversation": conversation.Id},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(messages) == 0 {
+		conversation.Set("last_message_id", "")
+		conversation.Set("last_message_seq", 0)
+		conversation.Set("last_message_text", "")
+		conversation.Set("last_message_at", "")
+
+		return conversation, nil
+	}
+
+	message := messages[0]
+	conversation.Set("last_message_id", message.Id)
+	conversation.Set("last_message_seq", message.GetInt("message_seq"))
+	conversation.Set("last_message_text", getMessagePreview(message))
+	conversation.Set("last_message_at", message.GetString("created"))
+
+	return conversation, nil
+}
+
 func shouldEmitMessageUpdate(message *core.Record) bool {
 	switch message.GetString("kind") {
 	case "call", "image", "file", "voice":

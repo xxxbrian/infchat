@@ -15,6 +15,7 @@ import (
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/pocketbase/pocketbase/tools/types"
 )
 
 const chatSyncDefaultLimit = 200
@@ -32,6 +33,10 @@ type sendMessageCommandRequest struct {
 
 type markConversationReadRequest struct {
 	LastReadSeq int `json:"lastReadSeq" form:"lastReadSeq"`
+}
+
+type deleteMessagesRequest struct {
+	MessageIds []string `json:"messageIds" form:"messageIds"`
 }
 
 type syncEventPayload struct {
@@ -156,6 +161,20 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 			}
 
 			result, err := markConversationReadCommand(e.App, e.Auth.Id, e.Request.PathValue("id"), data.LastReadSeq)
+			if err != nil {
+				return err
+			}
+
+			return e.JSON(http.StatusOK, result)
+		})
+
+		group.POST("/conversations/{id}/messages/delete", func(e *core.RequestEvent) error {
+			data := deleteMessagesRequest{}
+			if err := e.BindBody(&data); err != nil {
+				return e.BadRequestError("Failed to read delete message data.", err)
+			}
+
+			result, err := deleteChatMessagesCommand(e.App, e.Auth.Id, e.Request.PathValue("id"), data.MessageIds)
 			if err != nil {
 				return err
 			}
@@ -380,6 +399,95 @@ func markConversationReadCommand(app core.App, userId string, conversationId str
 	return result, err
 }
 
+func deleteChatMessagesCommand(app core.App, userId string, conversationId string, messageIds []string) (map[string]any, error) {
+	messageIds = uniqueStrings(messageIds)
+	if len(messageIds) == 0 {
+		return nil, router.NewBadRequestError("messageIds is required.", nil)
+	}
+	if len(messageIds) > 100 {
+		return nil, router.NewBadRequestError("Too many messages to delete.", nil)
+	}
+
+	var result map[string]any
+	err := app.RunInTransaction(func(txApp core.App) error {
+		conversation, err := findConversationForChatSync(txApp, conversationId, userId)
+		if err != nil {
+			return err
+		}
+
+		messages := make([]*core.Record, 0, len(messageIds))
+		for _, messageId := range messageIds {
+			message, err := txApp.FindRecordById("messages", messageId)
+			if err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return router.NewBadRequestError("Message was not found.", nil)
+				}
+
+				return err
+			}
+			if message.GetString("conversation") != conversation.Id {
+				return router.NewBadRequestError("Message does not belong to this conversation.", nil)
+			}
+			if conversation.GetString("kind") != "private" && message.GetString("sender") != userId {
+				return router.NewForbiddenError("Only your own group messages can be deleted.", nil)
+			}
+
+			messages = append(messages, message)
+		}
+
+		deletedMessages := make([]*core.Record, 0, len(messages))
+		lastCursor := 0
+		for _, message := range messages {
+			if message.GetString("deleted_at") != "" {
+				continue
+			}
+
+			message.Set("deleted_at", types.NowDateTime())
+			message.Set("deleted_by", userId)
+			if err := txApp.Save(message); err != nil {
+				return err
+			}
+
+			conversation, err = updateConversationPreviewAfterMessageDelete(txApp, conversation, message)
+			if err != nil {
+				return err
+			}
+
+			cursor, err := nextSyncCursor(txApp)
+			if err != nil {
+				return err
+			}
+			lastCursor = cursor
+			conversation.Set("last_change_cursor", cursor)
+			if err := txApp.Save(conversation); err != nil {
+				return err
+			}
+			if err := emitMessageDeletedEvents(txApp, conversation, message, cursor); err != nil {
+				return err
+			}
+
+			deletedMessages = append(deletedMessages, message)
+		}
+
+		if lastCursor == 0 {
+			lastCursor, err = latestSyncCursorForUser(txApp, userId)
+			if err != nil {
+				return err
+			}
+		}
+
+		result = map[string]any{
+			"conversation": conversation,
+			"cursor":       lastCursor,
+			"messages":     deletedMessages,
+		}
+
+		return nil
+	})
+
+	return result, err
+}
+
 func findConversationForChatSync(app core.App, conversationId string, userId string) (*core.Record, error) {
 	if strings.TrimSpace(conversationId) == "" {
 		return nil, router.NewBadRequestError("Conversation is required.", nil)
@@ -563,6 +671,31 @@ func emitMessageUpdatedEvents(app core.App, conversation *core.Record, message *
 		}
 
 		if err := createSyncEvent(app, memberId, conversation.Id, "message.updated", message.Id, cursor, syncEventPayload{Conversation: conversation, Message: message, ReadState: state}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func emitMessageDeletedEvents(app core.App, conversation *core.Record, message *core.Record, cursor int) error {
+	for _, memberId := range conversation.GetStringSlice("members") {
+		state, err := findOrCreateConversationUserState(app, conversation, memberId)
+		if err != nil {
+			return err
+		}
+
+		unreadCount, err := countUnreadMessagesAfterSeq(app, conversation.Id, memberId, state.GetInt("last_read_seq"))
+		if err != nil {
+			return err
+		}
+		state.Set("unread_count", unreadCount)
+		state.Set("last_delivered_cursor", cursor)
+		if err := app.Save(state); err != nil {
+			return err
+		}
+
+		if err := createSyncEvent(app, memberId, conversation.Id, "message.deleted", message.Id, cursor, syncEventPayload{Conversation: conversation, Message: message, ReadState: state}); err != nil {
 			return err
 		}
 	}

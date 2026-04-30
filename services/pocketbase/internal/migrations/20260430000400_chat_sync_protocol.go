@@ -38,6 +38,9 @@ func init() {
 		if messages.Fields.GetByName("deleted_at") == nil {
 			messages.Fields.Add(&core.DateField{Name: "deleted_at"})
 		}
+		if messages.Fields.GetByName("deleted_by") == nil {
+			messages.Fields.Add(&core.RelationField{Name: "deleted_by", CollectionId: users.Id, CascadeDelete: false, MaxSelect: 1})
+		}
 		if messages.Fields.GetByName("edited_at") == nil {
 			messages.Fields.Add(&core.DateField{Name: "edited_at"})
 		}
@@ -123,6 +126,7 @@ func init() {
 		messages.Fields.RemoveByName("sender_device_id")
 		messages.Fields.RemoveByName("message_seq")
 		messages.Fields.RemoveByName("deleted_at")
+		messages.Fields.RemoveByName("deleted_by")
 		messages.Fields.RemoveByName("edited_at")
 		messages.Fields.RemoveByName("edit_version")
 		messages.Indexes = removeIndex(messages.Indexes, "idx_messages_conversation_seq")

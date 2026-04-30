@@ -28,6 +28,13 @@ func init() {
 		if messages.Fields.GetByName("deleted_at") == nil {
 			messages.Fields.Add(&core.DateField{Name: "deleted_at"})
 		}
+		users, err := app.FindCollectionByNameOrId("users")
+		if err != nil {
+			return err
+		}
+		if messages.Fields.GetByName("deleted_by") == nil {
+			messages.Fields.Add(&core.RelationField{Name: "deleted_by", CollectionId: users.Id, CascadeDelete: false, MaxSelect: 1})
+		}
 		if messages.Fields.GetByName("edited_at") == nil {
 			messages.Fields.Add(&core.DateField{Name: "edited_at"})
 		}
