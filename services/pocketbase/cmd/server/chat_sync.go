@@ -15,7 +15,6 @@ import (
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/router"
-	"github.com/pocketbase/pocketbase/tools/types"
 )
 
 const chatSyncDefaultLimit = 200
@@ -522,11 +521,6 @@ func emitMessageCreatedEvents(app core.App, conversation *core.Record, message *
 		if err := createSyncEvent(app, memberId, conversation.Id, "message.created", message.Id, cursor, syncEventPayload{Conversation: conversation, Message: message, ReadState: state}); err != nil {
 			return err
 		}
-		if memberId != senderId {
-			if err := enqueueMessagePush(app, memberId, conversation.Id, cursor, message); err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil
@@ -647,36 +641,6 @@ func createSyncEvent(app core.App, userId string, conversationId string, eventTy
 	event.Set("payload", string(payloadJSON))
 
 	return app.Save(event)
-}
-
-func enqueueMessagePush(app core.App, userId string, conversationId string, cursor int, message *core.Record) error {
-	collection, err := app.FindCollectionByNameOrId("push_outbox")
-	if err != nil {
-		return err
-	}
-
-	payload := map[string]any{
-		"conversationId": conversationId,
-		"cursor":         cursor,
-		"messageId":      message.Id,
-		"type":           "sync_hint",
-	}
-	payloadJSON, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	outbox := core.NewRecord(collection)
-	outbox.Set("user", userId)
-	outbox.Set("conversation", conversationId)
-	outbox.Set("cursor", cursor)
-	outbox.Set("kind", "message")
-	outbox.Set("payload", string(payloadJSON))
-	outbox.Set("status", "pending")
-	outbox.Set("attempt_count", 0)
-	outbox.Set("next_attempt_at", types.NowDateTime())
-
-	return app.Save(outbox)
 }
 
 func countUnreadMessagesAfterSeq(app core.App, conversationId string, userId string, lastReadSeq int) (int, error) {
