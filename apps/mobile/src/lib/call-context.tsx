@@ -28,7 +28,15 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Animated, PanResponder, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import {
+  Animated,
+  PanResponder,
+  Platform,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getDeviceId } from './device-id';
@@ -480,6 +488,13 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
       (trackRef) =>
         isTrackReference(trackRef) && trackRef.participant.identity !== localParticipant.identity,
     ) ?? tracks.find((trackRef) => isTrackReference(trackRef));
+  const enableSystemPip = Boolean(
+    Platform.OS === 'ios' &&
+      previewTrack &&
+      isTrackReference(previewTrack) &&
+      !previewTrack.participant.isLocal &&
+      previewTrack.source === Track.Source.Camera,
+  );
 
   bounds.current = { maxX, maxY, minX, minY };
 
@@ -574,6 +589,16 @@ function ActiveCallMiniWindow({ callRoom }: { callRoom: CallRoomRecord }) {
     >
       {previewTrack && isTrackReference(previewTrack) ? (
         <VideoTrack
+          iosPIP={
+            enableSystemPip
+              ? {
+                  enabled: true,
+                  preferredSize: { width: 9, height: 16 },
+                  startAutomatically: true,
+                  stopAutomatically: true,
+                }
+              : undefined
+          }
           mirror={previewTrack.participant.isLocal && previewTrack.source === Track.Source.Camera}
           objectFit="cover"
           style={StyleSheet.absoluteFillObject}

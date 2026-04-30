@@ -220,6 +220,8 @@ function CallRoomView({
   const mainTrack = getMainTrack(sortedTracks, selectedTrackKey, localParticipant.identity);
   const mainTrackKey = mainTrack ? getTrackKey(mainTrack) : '';
   const filmstripTracks = sortedTracks.filter((trackRef) => getTrackKey(trackRef) !== mainTrackKey);
+  const systemPipTrack = getSystemPipTrack(sortedTracks, mainTrack);
+  const systemPipTrackKey = systemPipTrack ? getTrackKey(systemPipTrack) : '';
   const participantCount = sortedTracks.length;
   const statusLabel = getCallStatusLabel(connectionState, remoteParticipants.length, callRoom.kind);
   const title = callRoom.kind === 'video' ? 'Video call' : 'Voice call';
@@ -393,6 +395,7 @@ function CallRoomView({
             mirrorLocalCamera={isFrontCamera}
             profilesByUserId={profilesByUserId}
             selectedTrackKey={selectedTrackKey}
+            systemPipTrackKey={systemPipTrackKey}
             tracks={sortedTracks}
             windowHeight={windowHeight}
             windowWidth={windowWidth}
@@ -411,6 +414,7 @@ function CallRoomView({
             mirrorLocalCamera={isFrontCamera}
             profilesByUserId={profilesByUserId}
             selectedTrackKey={selectedTrackKey}
+            systemPipTrackKey={systemPipTrackKey}
             windowHeight={windowHeight}
             windowWidth={windowWidth}
             onSelect={(trackRef) => setSelectedTrackKey(getTrackKey(trackRef))}
@@ -531,6 +535,7 @@ function FocusStage({
   onSelect,
   profilesByUserId,
   selectedTrackKey,
+  systemPipTrackKey,
   windowHeight,
   windowWidth,
 }: {
@@ -542,6 +547,7 @@ function FocusStage({
   mirrorLocalCamera: boolean;
   profilesByUserId: Map<string, CallProfile>;
   selectedTrackKey: string | null;
+  systemPipTrackKey: string;
   windowHeight: number;
   windowWidth: number;
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
@@ -556,6 +562,7 @@ function FocusStage({
     <View className="flex-1">
       {mainTrack ? (
         <ParticipantTile
+          enableSystemPip={getTrackKey(mainTrack) === systemPipTrackKey}
           hideFooter
           isLarge
           mirrorLocalCamera={mirrorLocalCamera}
@@ -568,6 +575,7 @@ function FocusStage({
 
       {floatingTrack ? (
         <DraggablePip
+          enableSystemPip={getTrackKey(floatingTrack) === systemPipTrackKey}
           filmstripBottom={filmstripBottom}
           isSelected={selectedTrackKey === getTrackKey(floatingTrack)}
           footerProgress={chromeProgress}
@@ -599,6 +607,7 @@ function FocusStage({
               return (
                 <ParticipantTile
                   containerStyle={styles.filmstripTile}
+                  enableSystemPip={trackKey === systemPipTrackKey}
                   isSelected={selectedTrackKey === trackKey}
                   key={trackKey}
                   mirrorLocalCamera={mirrorLocalCamera}
@@ -616,6 +625,7 @@ function FocusStage({
 }
 
 function DraggablePip({
+  enableSystemPip,
   filmstripBottom,
   footerProgress,
   isSelected,
@@ -626,6 +636,7 @@ function DraggablePip({
   windowHeight,
   windowWidth,
 }: {
+  enableSystemPip?: boolean;
   filmstripBottom: number;
   footerProgress: Animated.Value;
   isSelected: boolean;
@@ -727,6 +738,7 @@ function DraggablePip({
     >
       <ParticipantTile
         containerStyle={styles.floatingPipTile}
+        enableSystemPip={enableSystemPip}
         footerProgress={footerProgress}
         isSelected={isSelected}
         mirrorLocalCamera={mirrorLocalCamera}
@@ -744,6 +756,7 @@ function GalleryStage({
   onSelect,
   profilesByUserId,
   selectedTrackKey,
+  systemPipTrackKey,
   tracks,
   windowHeight,
   windowWidth,
@@ -753,6 +766,7 @@ function GalleryStage({
   onSelect: (trackRef: TrackReferenceOrPlaceholder) => void;
   profilesByUserId: Map<string, CallProfile>;
   selectedTrackKey: string | null;
+  systemPipTrackKey: string;
   tracks: TrackReferenceOrPlaceholder[];
   windowHeight: number;
   windowWidth: number;
@@ -788,6 +802,7 @@ function GalleryStage({
             mirrorLocalCamera={mirrorLocalCamera}
             profilesByUserId={profilesByUserId}
             trackRef={trackRef}
+            enableSystemPip={trackKey === systemPipTrackKey}
             onPress={() => onSelect(trackRef)}
           />
         );
@@ -829,6 +844,7 @@ function VoiceStage({
 
 function ParticipantTile({
   containerStyle,
+  enableSystemPip,
   footerProgress,
   hideFooter,
   isLarge,
@@ -840,6 +856,7 @@ function ParticipantTile({
   trackRef,
 }: {
   containerStyle?: ViewStyle;
+  enableSystemPip?: boolean;
   footerProgress?: Animated.Value;
   hideFooter?: boolean;
   isLarge?: boolean;
@@ -898,6 +915,16 @@ function ParticipantTile({
             mirrorLocalCamera
           }
           objectFit="cover"
+          iosPIP={
+            enableSystemPip
+              ? {
+                  enabled: true,
+                  preferredSize: { width: 9, height: 16 },
+                  startAutomatically: true,
+                  stopAutomatically: true,
+                }
+              : undefined
+          }
           style={shouldHideBorder ? styles.videoOverscan : StyleSheet.absoluteFillObject}
           trackRef={trackRef}
         />
@@ -938,6 +965,32 @@ function ParticipantTile({
         </View>
       )}
     </Pressable>
+  );
+}
+
+function getSystemPipTrack(
+  tracks: TrackReferenceOrPlaceholder[],
+  preferredTrack: TrackReferenceOrPlaceholder | undefined,
+): TrackReferenceOrPlaceholder | undefined {
+  if (Platform.OS !== 'ios') {
+    return undefined;
+  }
+
+  if (isRemoteCameraTrack(preferredTrack)) {
+    return preferredTrack;
+  }
+
+  return tracks.find(isRemoteCameraTrack);
+}
+
+function isRemoteCameraTrack(
+  trackRef: TrackReferenceOrPlaceholder | undefined,
+): trackRef is TrackReferenceOrPlaceholder {
+  return Boolean(
+    trackRef &&
+      isTrackReference(trackRef) &&
+      !trackRef.participant.isLocal &&
+      trackRef.source === Track.Source.Camera,
   );
 }
 
