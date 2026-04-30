@@ -27,16 +27,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
-import {
-  getCachedCurrentProfile,
-  refreshCachedConversations,
-  refreshCachedCurrentProfile,
-  writeCachedProfiles,
-} from '../../lib/local-cache';
+import { getCachedCurrentProfile } from '../../lib/local-cache';
 import {
   getMissingProfileSetupFields,
   parseProfileSetupSkippedFields,
 } from '../../lib/profile-completion';
+import { commitCurrentProfileUpdate } from '../../lib/profile-cache';
 import { pb } from '../../lib/pocketbase';
 
 export default function ProfileSetupScreen() {
@@ -86,24 +82,6 @@ export default function ProfileSetupScreen() {
   );
 
   useEffect(() => {
-    let isMounted = true;
-
-    void refreshCachedCurrentProfile(pb)
-      .then((nextProfile) => {
-        if (isMounted) {
-          queryClient.setQueryData(['profile', 'current', authRecord.id], nextProfile);
-        }
-      })
-      .catch(() => {
-        // The cached profile is enough to avoid blocking the app while offline.
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [authRecord.id, queryClient]);
-
-  useEffect(() => {
     if (profile && !didSetInitialProfile.current) {
       didSetInitialProfile.current = true;
       setDisplayName(profile.display_name === profile.username ? '' : profile.display_name);
@@ -135,17 +113,14 @@ export default function ProfileSetupScreen() {
         }),
       });
     },
-    onSuccess: (nextProfile) => {
-      void writeCachedProfiles(pb, [nextProfile]).then(() => {
-        queryClient.setQueryData(['profile', 'current', authRecord.id], nextProfile);
-        queryClient.setQueriesData<ProfileRecord[]>({ queryKey: ['profiles'] }, (current) =>
-          current?.map((profile) => (profile.user === nextProfile.user ? nextProfile : profile)),
-        );
-        void refreshCachedConversations(pb).then((conversations) => {
-          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-        });
-        finishSetup(returnTo);
+    onSuccess: async (nextProfile) => {
+      await commitCurrentProfileUpdate({
+        authId: authRecord.id,
+        pb,
+        profile: nextProfile,
+        queryClient,
       });
+      finishSetup(returnTo);
     },
     onError: () => {
       Alert.alert('Could not update profile', 'Check your connection and try again.');

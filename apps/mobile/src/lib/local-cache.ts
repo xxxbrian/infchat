@@ -408,6 +408,16 @@ export async function writeCachedProfiles(
   }
 }
 
+export async function writeCachedCurrentProfile(
+  pb: PocketBase,
+  profile: ProfileRecord,
+): Promise<void> {
+  await writeCachedProfiles(pb, [profile]);
+  // Keep the legacy current-profile key in sync with profiles_cache. If this key
+  // stays stale, cache-first queries can briefly overwrite fresh mutation data.
+  await writeCachedValue(`${getAuthCachePrefix(pb)}:profile:current`, profile);
+}
+
 async function readCachedFriendships(pb: PocketBase): Promise<FriendshipRecord[] | null> {
   const db = await getDb();
   const rows = await db.getAllAsync<CacheRow>(
@@ -610,8 +620,7 @@ export function listCachedFriendships(pb: PocketBase): Promise<FriendshipRecord[
 
 export async function refreshCachedCurrentProfile(pb: PocketBase): Promise<ProfileRecord> {
   const profile = await getCurrentProfile(pb);
-  await writeCachedProfiles(pb, [profile]);
-  await writeCachedValue(`${getAuthCachePrefix(pb)}:profile:current`, profile);
+  await writeCachedCurrentProfile(pb, profile);
 
   return profile;
 }
