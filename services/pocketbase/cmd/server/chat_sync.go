@@ -387,8 +387,11 @@ func reserveMessageSeq(app core.App, conversationId string) (int, error) {
            ELSE (SELECT COALESCE(MAX(message_seq), 0) + 2 FROM messages WHERE conversation={:conversation})
          END
          WHERE id={:conversation}
-         RETURNING next_message_seq - 1`,
+		 RETURNING next_message_seq - 1`,
 	).Bind(dbx.Params{"conversation": conversationId}).Row(&messageSeq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, router.NewBadRequestError("Conversation was not found.", nil)
+	}
 
 	return messageSeq, err
 }
@@ -396,7 +399,18 @@ func reserveMessageSeq(app core.App, conversationId string) (int, error) {
 func nextSyncCursor(app core.App) (int, error) {
 	cursor, err := app.FindFirstRecordByFilter("sync_cursors", "scope={:scope}", dbx.Params{"scope": "global"})
 	if err != nil {
-		return 0, err
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+
+		collection, collectionErr := app.FindCollectionByNameOrId("sync_cursors")
+		if collectionErr != nil {
+			return 0, collectionErr
+		}
+
+		cursor = core.NewRecord(collection)
+		cursor.Set("scope", "global")
+		cursor.Set("next_cursor", 1)
 	}
 
 	nextCursor := cursor.GetInt("next_cursor")
