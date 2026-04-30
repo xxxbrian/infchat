@@ -4,6 +4,7 @@
     "slug": "infchat",
     "version": "0.0.1",
     "orientation": "portrait",
+    "backgroundColor": "#080b12",
     "icon": "./assets/icon.png",
     "scheme": "infchat",
     "userInterfaceStyle": "light",
@@ -13,6 +14,7 @@
       "backgroundColor": "#000000"
     },
     "ios": {
+      "backgroundColor": "#080b12",
       "bundleIdentifier": "app.infchat",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,

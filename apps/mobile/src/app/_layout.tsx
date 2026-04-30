@@ -103,7 +103,7 @@ export default function RootLayout() {
             }}
           >
             <CallSessionProvider>
-              <View className="flex-1">
+              <View className="flex-1 bg-background">
                 <Stack
                   screenOptions={{
                     contentStyle: { backgroundColor: '#080b12' },
@@ -126,16 +126,20 @@ export default function RootLayout() {
               </View>
             </CallSessionProvider>
           </AuthContext.Provider>
-        ) : route === 'login' ? (
-          <LoginScreen
-            onCreateAccount={() => setRoute('register')}
-            onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
-          />
         ) : (
-          <RegisterScreen
-            onSignIn={() => setRoute('login')}
-            onSubmit={(username, password) => registerWithUsername(pb, { username, password })}
-          />
+          <View className="flex-1 bg-background">
+            {route === 'login' ? (
+              <LoginScreen
+                onCreateAccount={() => setRoute('register')}
+                onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
+              />
+            ) : (
+              <RegisterScreen
+                onSignIn={() => setRoute('login')}
+                onSubmit={(username, password) => registerWithUsername(pb, { username, password })}
+              />
+            )}
+          </View>
         )}
         <StatusBar style="light" />
       </SafeAreaProvider>
