@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "expo start",
     "start": "expo start",
-    "android": "expo run:android",
+    "android": "expo prebuild --platform android && bun ./scripts/ensure-android-sdk-local-properties.ts && expo run:android",
     "ios": "expo run:ios",
     "release:ios:local": "bun ./scripts/release-ios-local.ts",
     "web": "expo start --web",
