@@ -46,13 +46,13 @@ export function setupNotificationPresentation() {
   });
 }
 
-export function setupNotificationResponses() {
+export function setupNotificationResponses(onMessageResponse?: () => void) {
   const notificationSubscription = Notifications.addNotificationResponseReceivedListener(
-    handleNotificationResponse,
+    (response) => handleNotificationResponse(response, onMessageResponse),
   );
   void Notifications.getLastNotificationResponseAsync().then((response) => {
     if (response) {
-      handleNotificationResponse(response);
+      handleNotificationResponse(response, onMessageResponse);
     }
   });
 
@@ -109,7 +109,10 @@ export function isPushRegistrationSupported() {
   return false;
 }
 
-function handleNotificationResponse(response: Notifications.NotificationResponse) {
+function handleNotificationResponse(
+  response: Notifications.NotificationResponse,
+  onMessageResponse?: () => void,
+) {
   const responseId = `${response.notification.request.identifier}:${response.actionIdentifier}`;
   if (lastHandledNotificationResponseId === responseId) {
     return;
@@ -118,6 +121,7 @@ function handleNotificationResponse(response: Notifications.NotificationResponse
 
   const data = response.notification.request.content.data;
   if (data?.type === 'message' && typeof data.conversationId === 'string') {
+    onMessageResponse?.();
     router.push({
       pathname: '/chat/[id]',
       params: { id: data.conversationId },

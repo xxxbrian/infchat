@@ -118,7 +118,7 @@ export default function RootLayout() {
                 },
               }}
             >
-              <ChatSyncProvider authRecord={authRecord}>
+              <ChatSyncProvider key={authRecord.id} authRecord={authRecord}>
                 <CallSessionProvider>
                   <View className="flex-1 bg-background">
                     <Stack
@@ -225,9 +225,13 @@ function ProfileSetupGate({ authRecord }: { authRecord: AuthRecord }) {
 }
 
 function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
+  const chatSyncService = useContext(ChatSyncContext);
+
   useEffect(() => {
     void registerPushDeviceForPlatform();
-    const cleanupNotificationResponses = setupNotificationResponses();
+    const cleanupNotificationResponses = setupNotificationResponses(() => {
+      chatSyncService?.enqueueSync('push');
+    });
     const cleanupPushRegistrationRecovery = setupPushRegistrationRecovery();
     const cleanupSystemCalls = setupSystemCalls();
 
@@ -236,7 +240,7 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
       cleanupPushRegistrationRecovery();
       cleanupSystemCalls();
     };
-  }, [authRecord.id]);
+  }, [authRecord.id, chatSyncService]);
 
   return null;
 }
@@ -260,6 +264,8 @@ function ChatSyncProvider({
 
   useEffect(() => {
     service.start();
+
+    return () => service.dispose();
   }, [service]);
 
   useEffect(() => {

@@ -43,6 +43,7 @@ export class ChatSyncService {
   private authId: string;
   private isOutboxRunning = false;
   private isSyncRunning = false;
+  private outboxRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingTriggers = new Set<ChatSyncTrigger>();
   private pb: PocketBase;
   private queryClient: QueryClient;
@@ -57,6 +58,13 @@ export class ChatSyncService {
   start() {
     this.enqueueSync('startup');
     this.pumpOutbox();
+  }
+
+  dispose() {
+    if (this.outboxRetryTimer) {
+      clearTimeout(this.outboxRetryTimer);
+      this.outboxRetryTimer = null;
+    }
   }
 
   enqueueSync(trigger: ChatSyncTrigger) {
@@ -204,6 +212,7 @@ export class ChatSyncService {
             );
           } else {
             await markOutboxRetry(this.authId, pendingMessage.client_message_id, errorMessage);
+            this.scheduleOutboxRetry();
           }
         }
         this.invalidateChatQueries(pendingMessage.conversation_id);
@@ -213,13 +222,36 @@ export class ChatSyncService {
     }
   }
 
+  private scheduleOutboxRetry() {
+    if (this.outboxRetryTimer) {
+      return;
+    }
+
+    this.outboxRetryTimer = setTimeout(() => {
+      this.outboxRetryTimer = null;
+      void this.pumpOutbox();
+    }, 5000);
+  }
+
   private invalidateChatQueries(conversationId?: string) {
     void this.queryClient.invalidateQueries({
       queryKey: ['chat', this.authId],
     });
     if (conversationId) {
       void this.queryClient.invalidateQueries({
+        queryKey: ['chat', this.authId, 'conversation', conversationId],
+      });
+      void this.queryClient.invalidateQueries({
         queryKey: ['chat', this.authId, 'messages', conversationId],
+      });
+      void this.queryClient.invalidateQueries({
+        queryKey: ['chat', this.authId, 'outbox', conversationId],
+      });
+      void this.queryClient.invalidateQueries({
+        queryKey: ['chat', this.authId, 'conversation-states'],
+      });
+      void this.queryClient.invalidateQueries({
+        queryKey: ['chat', this.authId, 'conversation-states', conversationId],
       });
     }
   }

@@ -1134,6 +1134,9 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		if e.Auth == nil {
 			return router.NewForbiddenError("Sign in to send messages.", nil)
 		}
+		if !e.HasSuperuserAuth() && e.Record.GetString("client_message_id") != "" {
+			return router.NewBadRequestError("Use the chat sync send endpoint for clientMessageId messages.", nil)
+		}
 
 		conversation, err := e.App.FindRecordById("conversations", e.Record.GetString("conversation"))
 		if err != nil {
