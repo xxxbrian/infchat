@@ -84,6 +84,7 @@ type ChatMessage = {
   deliveryStatus?: 'failed' | 'pending' | 'retrying' | 'sending';
   failedMessageId?: string;
   kind: MessageRecord['kind'];
+  localOnly?: boolean;
   readLabel?: string;
   sender?: string;
   senderId: string;
@@ -104,6 +105,8 @@ type FailedOutgoingMessage = {
   created: string;
   id: string;
 };
+
+type MessageActionTarget = ChatMessage;
 
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
@@ -143,6 +146,7 @@ export default function ChatDetailScreen() {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
+  const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget | null>(null);
   const [failedOutgoingMessages, setFailedOutgoingMessages] = useState<FailedOutgoingMessage[]>([]);
   const hasComposerText = composerText.trim().length > 0;
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
@@ -237,6 +241,7 @@ export default function ChatDetailScreen() {
         failedMessageId:
           message.state === 'failed_terminal' ? message.client_message_id : undefined,
         kind: 'text' as const,
+        localOnly: true,
         senderId: authRecord.id,
         text: message.body,
         time: formatMessageTime(message.client_created_at),
@@ -734,6 +739,53 @@ export default function ChatDetailScreen() {
     }
   };
 
+  const handleDeleteMessage = async (message: ChatMessage) => {
+    setMessageActionTarget(null);
+    if (message.localOnly) {
+      if (!message.failedMessageId) {
+        return;
+      }
+
+      await chatSyncService.cancelFailedOutboxMessage(conversationId, message.failedMessageId);
+      return;
+    }
+
+    try {
+      await chatSyncService.deleteMessages(conversationId, [message.id]);
+      if (isNearBottomRef.current) {
+        syncMessagesToBottom();
+      }
+    } catch (error) {
+      Alert.alert(
+        'Could not delete message',
+        getErrorMessage(error, 'Check your connection and try again.'),
+      );
+    }
+  };
+
+  const confirmDeleteMessage = (message: ChatMessage) => {
+    if (message.localOnly) {
+      Alert.alert('Delete message?', 'This will remove the failed message from this device.', [
+        { style: 'cancel', text: 'Cancel' },
+        {
+          onPress: () => void handleDeleteMessage(message),
+          style: 'destructive',
+          text: 'Delete',
+        },
+      ]);
+      return;
+    }
+
+    Alert.alert('Delete for everyone?', 'This message will disappear for everyone in the chat.', [
+      { style: 'cancel', text: 'Cancel' },
+      {
+        onPress: () => void handleDeleteMessage(message),
+        style: 'destructive',
+        text: 'Delete',
+      },
+    ]);
+  };
+
   const handleStartCall = (kind: CallKind) => {
     if (!conversationId || startCallMutation.isPending) {
       return;
@@ -918,6 +970,7 @@ export default function ChatDetailScreen() {
                 index={index}
                 key={message.id}
                 message={message}
+                onLongPressMessage={setMessageActionTarget}
                 onRetryFailedMessage={handleRetryFailedMessage}
                 totalMessages={messages.length}
               />
@@ -926,6 +979,12 @@ export default function ChatDetailScreen() {
             <EmptyConversation label="No messages yet" />
           )}
         </ScrollView>
+
+        <MessageActionSheet
+          message={messageActionTarget}
+          onClose={() => setMessageActionTarget(null)}
+          onDelete={confirmDeleteMessage}
+        />
 
         <Animated.View
           className="absolute right-4"
@@ -1350,12 +1409,14 @@ function MessageBubble({
   conversation,
   index,
   message,
+  onLongPressMessage,
   onRetryFailedMessage,
   totalMessages,
 }: {
   conversation: ConversationView;
   index: number;
   message: ChatMessage;
+  onLongPressMessage: (message: ChatMessage) => void;
   onRetryFailedMessage: (messageId: string) => void;
   totalMessages: number;
 }) {
@@ -1449,7 +1510,10 @@ function MessageBubble({
         className="my-3 self-center rounded-full border border-border/70 bg-muted/70 px-4 py-2"
         style={{ opacity, transform: [{ translateY }] }}
       >
-        <View className="flex-row items-center gap-2">
+        <Pressable
+          className="flex-row items-center gap-2"
+          onLongPress={() => onLongPressMessage(message)}
+        >
           <View
             className={`h-7 w-7 items-center justify-center rounded-full ${isUnanswered ? 'bg-red-500/20' : 'bg-emerald-400/20'}`}
           >
@@ -1461,7 +1525,7 @@ function MessageBubble({
           </View>
           <Text className="text-sm font-bold text-foreground">{message.text || 'Call'}</Text>
           <Text className="text-xs font-semibold text-muted-foreground">{message.time}</Text>
-        </View>
+        </Pressable>
       </Animated.View>
     );
   }
@@ -1514,7 +1578,10 @@ function MessageBubble({
         className={`mb-2 overflow-hidden rounded-[24px] bg-muted ${isMine ? 'self-end' : 'self-start'}`}
         style={{ opacity, transform: [{ translateY }] }}
       >
-        <Pressable onPress={() => setIsImageViewerVisible(true)}>
+        <Pressable
+          onLongPress={() => onLongPressMessage(message)}
+          onPress={() => setIsImageViewerVisible(true)}
+        >
           <Image
             resizeMode="cover"
             source={{ uri: cachedImageUrl ?? imageAttachment.url }}
@@ -1571,6 +1638,7 @@ function MessageBubble({
       >
         <Pressable
           className="flex-row items-center gap-3 px-3 py-2.5"
+          onLongPress={() => onLongPressMessage(message)}
           onPress={() => setIsFilePreviewVisible(true)}
         >
           <View
@@ -1656,7 +1724,7 @@ function MessageBubble({
             <Ionicons color="#fff" name="alert" size={16} />
           </Pressable>
         ) : null}
-        <View className="max-w-[82%]">
+        <Pressable className="max-w-[82%]" onLongPress={() => onLongPressMessage(message)}>
           <View
             className={`rounded-[24px] px-4 py-3 ${isFailed ? 'bg-foreground/80' : isMine ? 'bg-foreground' : 'bg-muted'}`}
             style={styles.bubble}
@@ -1687,9 +1755,56 @@ function MessageBubble({
               {deliveryLabel ?? message.readLabel}
             </Text>
           ) : null}
-        </View>
+        </Pressable>
       </View>
     </Animated.View>
+  );
+}
+
+function MessageActionSheet({
+  message,
+  onClose,
+  onDelete,
+}: {
+  message: MessageActionTarget | null;
+  onClose: () => void;
+  onDelete: (message: MessageActionTarget) => void;
+}) {
+  if (!message) {
+    return null;
+  }
+
+  const canDelete = !message.localOnly || message.deliveryStatus === 'failed';
+
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible>
+      <View className="flex-1 justify-end bg-black/55">
+        <Pressable className="flex-1" onPress={onClose} />
+        <View className="rounded-t-[30px] bg-background px-5 pb-8 pt-4">
+          <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
+          <Text className="mb-3 text-center text-sm font-semibold text-muted-foreground">
+            Message actions
+          </Text>
+          {canDelete ? (
+            <Pressable
+              className="h-[52px] flex-row items-center justify-center rounded-full bg-red-500"
+              onPress={() => onDelete(message)}
+            >
+              <Ionicons color="#fff" name="trash" size={18} />
+              <Text className="ml-2 text-base font-black text-white">
+                {message.localOnly ? 'Delete' : 'Delete for everyone'}
+              </Text>
+            </Pressable>
+          ) : null}
+          <Pressable
+            className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
+            onPress={onClose}
+          >
+            <Text className="text-base font-bold text-foreground">Cancel</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
