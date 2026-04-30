@@ -205,56 +205,6 @@ export default function ChatTab() {
     };
   }, [isOnline, queryClient, relatedUserIds]);
 
-  useEffect(() => {
-    if (!isOnline) {
-      return;
-    }
-
-    let isMounted = true;
-    let unsubscribers: Array<() => void> = [];
-
-    void Promise.all([
-      pb.collection('conversations').subscribe('*', () => {
-        chatSyncService.enqueueSync('realtime');
-      }),
-      pb.collection('messages').subscribe('*', () => {
-        chatSyncService.enqueueSync('realtime');
-      }),
-      pb.collection('conversation_user_states').subscribe('*', () => {
-        chatSyncService.enqueueSync('realtime');
-      }),
-      pb.collection('call_rooms').subscribe('*', () => {
-        queryClient.invalidateQueries({ queryKey: ['active-calls'] });
-        chatSyncService.enqueueSync('realtime');
-      }),
-      pb.collection('profiles').subscribe('*', () => {
-        if (relatedUserIds.length === 0) {
-          return;
-        }
-
-        void refreshCachedProfilesByUserIds(pb, relatedUserIds).then((profiles) => {
-          queryClient.setQueryData(['profiles', 'chat-members', relatedUserIds], profiles);
-        });
-      }),
-    ])
-      .then((nextUnsubscribers) => {
-        if (!isMounted) {
-          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
-          return;
-        }
-
-        unsubscribers = nextUnsubscribers;
-      })
-      .catch(() => {
-        // Query refetch on reconnect covers temporary realtime connection failures.
-      });
-
-    return () => {
-      isMounted = false;
-      unsubscribers.forEach((unsubscribe) => unsubscribe());
-    };
-  }, [authRecord.id, chatSyncService, isOnline, queryClient, relatedUserIds]);
-
   const handleRefresh = async () => {
     if (isPullRefreshing) {
       return;

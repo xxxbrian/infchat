@@ -262,6 +262,62 @@ function ChatSyncProvider({
     service.start();
   }, [service]);
 
+  useEffect(() => {
+    const unsubscribeNetInfo = NetInfo.addEventListener((state) => {
+      if (state.isConnected && state.isInternetReachable !== false) {
+        service.enqueueSync('reconnect');
+      }
+    });
+    const appStateSubscription = AppState.addEventListener('change', (status) => {
+      if (status === 'active') {
+        service.enqueueSync('foreground');
+      }
+    });
+
+    return () => {
+      unsubscribeNetInfo();
+      appStateSubscription.remove();
+    };
+  }, [service]);
+
+  useEffect(() => {
+    let isMounted = true;
+    let unsubscribers: Array<() => void> = [];
+
+    void Promise.all([
+      pb.collection('conversations').subscribe('*', () => {
+        service.enqueueSync('realtime');
+      }),
+      pb.collection('messages').subscribe('*', () => {
+        service.enqueueSync('realtime');
+      }),
+      pb.collection('conversation_user_states').subscribe('*', () => {
+        service.enqueueSync('realtime');
+      }),
+      pb.collection('call_rooms').subscribe('*', () => {
+        void queryClient.invalidateQueries({ queryKey: ['active-call'] });
+        void queryClient.invalidateQueries({ queryKey: ['active-calls'] });
+        service.enqueueSync('realtime');
+      }),
+    ])
+      .then((nextUnsubscribers) => {
+        if (!isMounted) {
+          nextUnsubscribers.forEach((unsubscribe) => unsubscribe());
+          return;
+        }
+
+        unsubscribers = nextUnsubscribers;
+      })
+      .catch(() => {
+        service.enqueueSync('reconnect');
+      });
+
+    return () => {
+      isMounted = false;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+    };
+  }, [queryClient, service]);
+
   return <ChatSyncContext.Provider value={service}>{children}</ChatSyncContext.Provider>;
 }
 
