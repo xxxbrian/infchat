@@ -136,18 +136,12 @@ export class ChatSyncService {
           bootstrap.cursor,
         );
         await writeSyncJournal(this.authId, trigger, 'success', fromCursor, bootstrap.cursor);
+        await this.syncFromCursor(bootstrap.cursor);
         this.invalidateChatQueries();
         return;
       }
 
-      let cursor = fromCursor;
-      let hasMore = true;
-      while (hasMore) {
-        const response = await syncChatEvents(this.pb, cursor);
-        await applyChatSyncEvents(this.authId, response.events, response.cursor);
-        cursor = response.cursor;
-        hasMore = response.hasMore;
-      }
+      const cursor = await this.syncFromCursor(fromCursor);
 
       await writeSyncJournal(this.authId, trigger, 'success', fromCursor, cursor);
       this.invalidateChatQueries();
@@ -161,6 +155,19 @@ export class ChatSyncService {
         getErrorMessage(error),
       );
     }
+  }
+
+  private async syncFromCursor(fromCursor: number) {
+    let cursor = fromCursor;
+    let hasMore = true;
+    while (hasMore) {
+      const response = await syncChatEvents(this.pb, cursor);
+      await applyChatSyncEvents(this.authId, response.events, response.cursor);
+      cursor = response.cursor;
+      hasMore = response.hasMore;
+    }
+
+    return cursor;
   }
 
   private async pumpOutbox() {

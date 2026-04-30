@@ -45,6 +45,11 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 		group.Bind(apis.RequireAuth("users"))
 
 		group.GET("/bootstrap", func(e *core.RequestEvent) error {
+			latestCursor, err := latestSyncCursorForUser(app, e.Auth.Id)
+			if err != nil {
+				return err
+			}
+
 			conversations, err := app.FindRecordsByFilter(
 				"conversations",
 				"members.id ?= {:userId}",
@@ -65,11 +70,6 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 				0,
 				dbx.Params{"userId": e.Auth.Id},
 			)
-			if err != nil {
-				return err
-			}
-
-			latestCursor, err := latestSyncCursorForUser(app, e.Auth.Id)
 			if err != nil {
 				return err
 			}
