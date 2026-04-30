@@ -45,6 +45,7 @@ func main() {
 	bindConversationHooks(app)
 	bindConversationReadHooks(app)
 	bindCallRoutes(app)
+	bindChatSyncRoutes(app)
 	bindFriendSuggestionRoutes(app)
 	bindPushRoutes(app)
 
@@ -1149,6 +1150,10 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 	})
 
 	app.OnRecordAfterCreateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
+		if e.Record.GetString("client_message_id") != "" {
+			return e.Next()
+		}
+
 		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("created")); err != nil {
 			return err
 		}

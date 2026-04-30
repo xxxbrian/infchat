@@ -16,16 +16,26 @@ export type ConversationRecord = {
   created_by?: string;
   members: string[];
   title?: string;
+  last_change_cursor?: number;
+  last_message_id?: string;
+  last_message_seq?: number;
   last_message_text?: string;
   last_message_at?: string;
+  next_message_seq?: number;
   created: string;
   updated: string;
 };
 
 export type MessageRecord = {
   id: string;
+  client_message_id?: string;
   conversation: string;
+  deleted_at?: string;
+  edited_at?: string;
+  edit_version?: number;
+  message_seq?: number;
   sender: string;
+  sender_device_id?: string;
   kind: MessageKind;
   body: string;
   call_room?: string;
@@ -34,6 +44,67 @@ export type MessageRecord = {
   collectionName: string;
   created: string;
   updated: string;
+};
+
+export type ConversationUserStateRecord = {
+  id: string;
+  conversation: string;
+  user: string;
+  last_read_seq: number;
+  unread_count: number;
+  last_delivered_cursor: number;
+  created: string;
+  updated: string;
+};
+
+export type ChatSyncEventType =
+  | 'message.created'
+  | 'message.updated'
+  | 'message.deleted'
+  | 'conversation.updated'
+  | 'read.updated';
+
+export type ChatSyncEventRecord = {
+  id: string;
+  conversation?: string;
+  cursor: number;
+  entity_id?: string;
+  payload?: unknown;
+  type: ChatSyncEventType;
+  user: string;
+  created: string;
+  updated: string;
+};
+
+export type ChatBootstrapResponse = {
+  conversations: ConversationRecord[];
+  cursor: number;
+  states: ConversationUserStateRecord[];
+};
+
+export type ChatSyncResponse = {
+  cursor: number;
+  events: ChatSyncEventRecord[];
+  hasMore: boolean;
+};
+
+export type SendTextMessageCommandInput = {
+  body: string;
+  clientMessageId: string;
+  conversationId: string;
+  deviceId: string;
+};
+
+export type SendMessageCommandResponse = {
+  conversation: ConversationRecord;
+  cursor: number;
+  message: MessageRecord;
+  replayed: boolean;
+};
+
+export type MarkConversationReadCommandResponse = {
+  cursor: number;
+  state: ConversationUserStateRecord;
 };
 
 export type ConversationReadRecord = {
@@ -103,6 +174,71 @@ export function listMessagesUpdatedAfter(
       updatedAfter,
     }),
     sort: 'created',
+  });
+}
+
+export function bootstrapChatSync(pb: PocketBase): Promise<ChatBootstrapResponse> {
+  return pb.send('/api/infchat/bootstrap', { method: 'GET' });
+}
+
+export function syncChatEvents(
+  pb: PocketBase,
+  cursor: number,
+  limit?: number,
+): Promise<ChatSyncResponse> {
+  const params = new URLSearchParams({ cursor: String(cursor) });
+  if (limit) {
+    params.set('limit', String(limit));
+  }
+
+  return pb.send(`/api/infchat/sync?${params.toString()}`, { method: 'GET' });
+}
+
+export function listConversationMessagesBeforeSeq(
+  pb: PocketBase,
+  conversationId: string,
+  beforeSeq?: number,
+  limit?: number,
+): Promise<{ messages: MessageRecord[] }> {
+  const params = new URLSearchParams();
+  if (beforeSeq) {
+    params.set('beforeSeq', String(beforeSeq));
+  }
+  if (limit) {
+    params.set('limit', String(limit));
+  }
+  const query = params.toString();
+
+  return pb.send(
+    `/api/infchat/conversations/${conversationId}/messages${query ? `?${query}` : ''}`,
+    { method: 'GET' },
+  );
+}
+
+export function sendTextMessageCommand(
+  pb: PocketBase,
+  input: SendTextMessageCommandInput,
+): Promise<SendMessageCommandResponse> {
+  return pb.send('/api/infchat/messages/send', {
+    body: {
+      body: input.body,
+      clientMessageId: input.clientMessageId,
+      conversationId: input.conversationId,
+      deviceId: input.deviceId,
+      kind: 'text',
+    },
+    method: 'POST',
+  });
+}
+
+export function markConversationReadBySeq(
+  pb: PocketBase,
+  conversationId: string,
+  lastReadSeq: number,
+): Promise<MarkConversationReadCommandResponse> {
+  return pb.send(`/api/infchat/conversations/${conversationId}/read`, {
+    body: { lastReadSeq },
+    method: 'POST',
   });
 }
 

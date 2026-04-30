@@ -52,6 +52,8 @@ import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useCallSession } from '../../lib/call-context';
+import { useChatSyncService } from '../../lib/chat-sync-context';
+import { listOutboxMessagesForConversation } from '../../lib/chat-sync-store';
 import { getDeviceId } from '../../lib/device-id';
 import {
   getCachedConversation,
@@ -130,6 +132,7 @@ export default function ChatDetailScreen() {
   const conversationId = id ?? '';
   const { authRecord } = useAuth();
   const { activeSession } = useCallSession();
+  const chatSyncService = useChatSyncService();
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
@@ -173,6 +176,11 @@ export default function ChatDetailScreen() {
     queryFn: () => listCachedMessages(pb, conversationId),
     enabled: Boolean(conversationId),
     networkMode: 'always',
+  });
+  const outboxMessagesQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'outbox', conversationId],
+    queryFn: () => listOutboxMessagesForConversation(authRecord.id, conversationId),
+    enabled: Boolean(conversationId),
   });
   const activeCallQuery = useQuery({
     queryKey: ['active-call', conversationId],
@@ -232,16 +240,32 @@ export default function ChatDetailScreen() {
         message.id === readMessageId ? 'Read' : undefined,
       ),
     );
+    const outboxMessages = (outboxMessagesQuery.data ?? []).map(
+      (message): ChatMessage => ({
+        id: `outbox-${message.client_message_id}`,
+        author: 'me' as const,
+        attachments: [],
+        created: message.client_created_at,
+        deliveryStatus: message.state === 'failed_terminal' ? ('failed' as const) : undefined,
+        failedMessageId:
+          message.state === 'failed_terminal' ? message.client_message_id : undefined,
+        kind: 'text' as const,
+        senderId: authRecord.id,
+        text: message.body,
+        time: formatMessageTime(message.client_created_at),
+      }),
+    );
     const failedMessages = failedOutgoingMessages.map((message) =>
       toFailedChatMessage(message, authRecord.id),
     );
 
-    return [...cachedMessages, ...failedMessages];
+    return [...cachedMessages, ...outboxMessages, ...failedMessages];
   }, [
     authRecord.id,
     failedOutgoingMessages,
     fileTokenQuery.data,
     messagesQuery.data,
+    outboxMessagesQuery.data,
     profilesByUserId,
     readStatesQuery.data,
   ]);
@@ -861,19 +885,21 @@ export default function ChatDetailScreen() {
 
   const handleSendMessage = () => {
     const body = composerText.trim();
-    if (!body || sendMessageMutation.isPending || sendAttachmentMutation.isPending) {
+    if (!body || sendAttachmentMutation.isPending) {
       return;
     }
 
-    if (!isOnline) {
-      addFailedOutgoingMessage(body);
-      setComposerText('');
-      didScrollToEnd.current = false;
-      syncMessagesToBottom();
-      return;
-    }
-
-    sendMessageMutation.mutate(body);
+    setComposerText('');
+    didScrollToEnd.current = false;
+    void chatSyncService
+      .enqueueTextMessage(conversationId, body)
+      .then(() => {
+        syncMessagesToBottom();
+      })
+      .catch(() => {
+        addFailedOutgoingMessage(body);
+        syncMessagesToBottom();
+      });
   };
 
   const handleRetryFailedMessage = async (messageId: string) => {

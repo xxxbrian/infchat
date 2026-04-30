@@ -23,7 +23,7 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { router, Stack, usePathname } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Animated, AppState, Pressable, Text, Vibration, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -32,6 +32,8 @@ import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
+import { ChatSyncContext } from '../lib/chat-sync-context';
+import { ChatSyncService } from '../lib/chat-sync-service';
 import {
   refreshCachedConversation,
   refreshCachedConversations,
@@ -122,30 +124,32 @@ export default function RootLayout() {
                 },
               }}
             >
-              <CallSessionProvider>
-                <View className="flex-1 bg-background">
-                  <Stack
-                    screenOptions={{
-                      contentStyle: { backgroundColor: '#080b12' },
-                      headerShown: false,
-                    }}
-                  >
-                    <Stack.Screen name="(tabs)" />
-                    <Stack.Screen name="call/[id]" />
-                    <Stack.Screen name="chat/[id]" />
-                    <Stack.Screen name="debug" />
-                    <Stack.Screen name="profile/[userId]" />
-                    <Stack.Screen name="profile/edit" />
-                    <Stack.Screen name="profile/setup" />
-                    <Stack.Screen name="preferences/notifications" />
-                    <Stack.Screen name="preferences/privacy" />
-                  </Stack>
-                  <ProfileSetupGate authRecord={authRecord} />
-                  <PushRegistration authRecord={authRecord} />
-                  <ForegroundMessageNotificationSync authRecord={authRecord} />
-                  <IncomingCallListener authRecord={authRecord} />
-                </View>
-              </CallSessionProvider>
+              <ChatSyncProvider authRecord={authRecord}>
+                <CallSessionProvider>
+                  <View className="flex-1 bg-background">
+                    <Stack
+                      screenOptions={{
+                        contentStyle: { backgroundColor: '#080b12' },
+                        headerShown: false,
+                      }}
+                    >
+                      <Stack.Screen name="(tabs)" />
+                      <Stack.Screen name="call/[id]" />
+                      <Stack.Screen name="chat/[id]" />
+                      <Stack.Screen name="debug" />
+                      <Stack.Screen name="profile/[userId]" />
+                      <Stack.Screen name="profile/edit" />
+                      <Stack.Screen name="profile/setup" />
+                      <Stack.Screen name="preferences/notifications" />
+                      <Stack.Screen name="preferences/privacy" />
+                    </Stack>
+                    <ProfileSetupGate authRecord={authRecord} />
+                    <PushRegistration authRecord={authRecord} />
+                    <ForegroundMessageNotificationSync authRecord={authRecord} />
+                    <IncomingCallListener authRecord={authRecord} />
+                  </View>
+                </CallSessionProvider>
+              </ChatSyncProvider>
             </AuthContext.Provider>
           ) : (
             <View className="flex-1 bg-background">
@@ -243,8 +247,33 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
   return null;
 }
 
+function ChatSyncProvider({
+  authRecord,
+  children,
+}: {
+  authRecord: AuthRecord;
+  children: ReactNode;
+}) {
+  const queryClient = useQueryClient();
+  const [service] = useState(
+    () =>
+      new ChatSyncService({
+        authId: authRecord.id,
+        pb,
+        queryClient,
+      }),
+  );
+
+  useEffect(() => {
+    service.start();
+  }, [service]);
+
+  return <ChatSyncContext.Provider value={service}>{children}</ChatSyncContext.Provider>;
+}
+
 function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRecord }) {
   const queryClient = useQueryClient();
+  const chatSyncService = useContext(ChatSyncContext);
 
   useEffect(() => {
     const subscription = Notifications.addNotificationReceivedListener((notification) => {
@@ -254,6 +283,7 @@ function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRec
       }
 
       const conversationId = data.conversationId;
+      chatSyncService?.enqueueSync('push');
 
       void refreshCachedConversation(pb, conversationId)
         .then((conversation) => {
@@ -282,7 +312,7 @@ function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRec
     });
 
     return () => subscription.remove();
-  }, [authRecord.id, queryClient]);
+  }, [authRecord.id, chatSyncService, queryClient]);
 
   return null;
 }
