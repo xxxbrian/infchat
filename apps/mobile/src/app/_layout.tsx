@@ -112,6 +112,7 @@ export default function RootLayout() {
                   <Stack.Screen name="debug" />
                   <Stack.Screen name="profile/[userId]" />
                   <Stack.Screen name="profile/edit" />
+                  <Stack.Screen name="settings/notifications" />
                 </Stack>
                 <NotificationRouteTracker />
                 <PushRegistration authRecord={authRecord} />

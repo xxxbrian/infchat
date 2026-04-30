@@ -30,6 +30,7 @@ type SettingsRowItem = {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   onPress?: () => void;
+  status?: string;
   value?: string;
   variant?: 'default' | 'danger';
 };
@@ -49,16 +50,20 @@ const SETTINGS_SECTIONS: SettingsRowItem[][] = [
     },
   ],
   [
-    { icon: 'bookmark', label: 'Saved Messages' },
-    { icon: 'call', label: 'Recent Calls' },
-    { icon: 'phone-portrait', label: 'Devices', value: '1' },
-    { icon: 'folder', label: 'Chat Files' },
+    { icon: 'bookmark', label: 'Saved Messages', status: 'Soon' },
+    { icon: 'call', label: 'Recent Calls', status: 'Soon' },
+    { icon: 'phone-portrait', label: 'Devices', status: 'Soon', value: '1' },
+    { icon: 'folder', label: 'Chat Files', status: 'Soon' },
   ],
   [
-    { icon: 'notifications', label: 'Notifications' },
-    { icon: 'lock-closed', label: 'Privacy and Security' },
-    { icon: 'server', label: 'Data and Storage' },
-    { icon: 'color-palette', label: 'Appearance' },
+    {
+      icon: 'notifications',
+      label: 'Notifications',
+      onPress: () => router.push({ pathname: '/settings/notifications' } as never),
+    },
+    { icon: 'lock-closed', label: 'Privacy and Security', status: 'Soon' },
+    { icon: 'server', label: 'Data and Storage', status: 'Soon' },
+    { icon: 'color-palette', label: 'Appearance', status: 'Soon' },
     {
       icon: 'bug',
       label: 'Debug',
@@ -344,11 +349,12 @@ function SettingsSection({ items }: { items: SettingsRowItem[] }) {
 
 function SettingsRow({ hasDivider, item }: { hasDivider: boolean; item: SettingsRowItem }) {
   const textColor = item.variant === 'danger' ? 'text-red-300' : 'text-foreground';
+  const isEnabled = Boolean(item.onPress);
 
   return (
     <Pressable
-      className="min-h-[62px] flex-row items-center pl-4 pr-3"
-      disabled={!item.onPress}
+      className={`min-h-[62px] flex-row items-center pl-4 pr-3 ${isEnabled ? '' : 'opacity-70'}`}
+      disabled={!isEnabled}
       onPress={item.onPress}
     >
       <View className="h-9 w-9 items-center justify-center rounded-full bg-background/55">
@@ -367,9 +373,12 @@ function SettingsRow({ hasDivider, item }: { hasDivider: boolean; item: Settings
         {item.value ? (
           <Text className="mr-2 text-[16px] font-semibold text-muted-foreground">{item.value}</Text>
         ) : null}
-        {item.onPress || item.variant !== 'danger' ? (
-          <Ionicons color="#64748b" name="chevron-forward" size={19} />
+        {item.status ? (
+          <Text className="mr-2 text-xs font-black uppercase tracking-[0.7px] text-muted-foreground">
+            {item.status}
+          </Text>
         ) : null}
+        {isEnabled ? <Ionicons color="#64748b" name="chevron-forward" size={19} /> : null}
       </View>
     </Pressable>
   );

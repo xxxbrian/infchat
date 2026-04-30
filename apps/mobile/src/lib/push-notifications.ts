@@ -227,17 +227,28 @@ export function setupNotificationResponses() {
   };
 }
 
-export async function registerIOSPushDevice(appVersion?: string) {
+export async function registerIOSPushDevice(
+  appVersion?: string,
+  options: { throwOnFailure?: boolean } = {},
+) {
   if (Platform.OS !== 'ios' || !pb.authStore.isValid) {
-    return;
+    return false;
   }
 
-  await retryPushRegistration(() => registerIOSPushDeviceOnce(appVersion)).catch(() => {});
+  try {
+    return await retryPushRegistration(() => registerIOSPushDeviceOnce(appVersion));
+  } catch (error) {
+    if (options.throwOnFailure) {
+      throw error;
+    }
+
+    return false;
+  }
 }
 
 async function registerIOSPushDeviceOnce(appVersion?: string) {
   if (!pb.authStore.isValid) {
-    return;
+    return false;
   }
 
   const permissions = await Notifications.requestPermissionsAsync({
@@ -251,12 +262,12 @@ async function registerIOSPushDeviceOnce(appVersion?: string) {
     permissions.granted ||
     permissions.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
   if (!granted) {
-    return;
+    return false;
   }
 
   const token = await Notifications.getDevicePushTokenAsync();
   if (token.type !== 'ios' || typeof token.data !== 'string') {
-    return;
+    return false;
   }
 
   await registerPushDevice(pb, {
@@ -266,6 +277,8 @@ async function registerIOSPushDeviceOnce(appVersion?: string) {
     environment: getPushEnvironment(),
     platform: 'ios',
   });
+
+  return true;
 }
 
 export function setupIOSPushRegistrationRecovery(appVersion?: string) {
@@ -462,7 +475,7 @@ async function registerVoipToken(token: string, appVersion?: string) {
 
   await retryPushRegistration(async () => {
     if (!pb.authStore.isValid) {
-      return;
+      return false;
     }
 
     await registerPushDevice(pb, {
@@ -472,14 +485,15 @@ async function registerVoipToken(token: string, appVersion?: string) {
       platform: 'ios',
       voipToken: latestVoipToken,
     });
+
+    return true;
   }).catch(() => {});
 }
 
-async function retryPushRegistration(task: () => Promise<void>) {
+async function retryPushRegistration(task: () => Promise<boolean>) {
   for (let attempt = 0; attempt <= PUSH_REGISTRATION_RETRY_DELAYS.length; attempt += 1) {
     try {
-      await task();
-      return;
+      return await task();
     } catch (error) {
       if (attempt === PUSH_REGISTRATION_RETRY_DELAYS.length) {
         throw error;
@@ -490,7 +504,7 @@ async function retryPushRegistration(task: () => Promise<void>) {
   }
 }
 
-function getPushEnvironment(): PushEnvironment {
+export function getPushEnvironment(): PushEnvironment {
   const publicEnv = process.env.EXPO_PUBLIC_APNS_ENV?.trim().toLowerCase();
 
   if (publicEnv === 'sandbox' || publicEnv === 'production') {
