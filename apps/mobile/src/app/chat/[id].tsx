@@ -694,6 +694,27 @@ export default function ChatDetailScreen() {
   };
 
   const handleRetryFailedMessage = async (messageId: string) => {
+    const failedOutboxMessage = outboxMessagesQuery.data?.find(
+      (message) => message.client_message_id === messageId && message.state === 'failed_terminal',
+    );
+    if (failedOutboxMessage) {
+      if (!isOnline) {
+        Alert.alert('Still offline', 'Reconnect, then tap the red alert to resend.');
+        return;
+      }
+
+      try {
+        await chatSyncService.retryOutboxMessage(
+          conversationId,
+          failedOutboxMessage.client_message_id,
+        );
+        didScrollToEnd.current = false;
+      } catch {
+        Alert.alert('Could not resend', 'Check your connection and tap the alert again.');
+      }
+      return;
+    }
+
     const failedMessage = failedOutgoingMessages.find((message) => message.id === messageId);
     if (!failedMessage) {
       return;
@@ -1679,7 +1700,7 @@ function getDeliveryLabel(status: ChatMessage['deliveryStatus']): string | undef
     case 'sending':
       return 'Sending...';
     case 'retrying':
-      return 'Waiting to retry';
+      return 'Retrying...';
     case 'failed':
       return 'Not sent';
     default:

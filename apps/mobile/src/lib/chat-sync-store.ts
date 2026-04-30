@@ -23,6 +23,7 @@ export type OutboxMessageState =
   | 'canceled';
 
 export type LocalOutboxMessage = {
+  attempt_count?: number | null;
   auth_id: string;
   body: string;
   client_created_at: string;
@@ -35,7 +36,7 @@ export type LocalOutboxMessage = {
   updated_at: string;
 };
 
-const CHAT_SYNC_SCHEMA_VERSION = 1;
+const CHAT_SYNC_SCHEMA_VERSION = 2;
 const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v3.db');
 let schemaPromise: Promise<void> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -104,6 +105,7 @@ async function getDb() {
 
     CREATE TABLE IF NOT EXISTS outbox_messages (
       auth_id TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
       client_message_id TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
       body TEXT NOT NULL,
@@ -366,6 +368,7 @@ export async function enqueueTextOutboxMessage(
   const db = await getDb();
   const now = new Date().toISOString();
   const message: LocalOutboxMessage = {
+    attempt_count: 0,
     auth_id: authId,
     body,
     client_created_at: now,
@@ -378,9 +381,10 @@ export async function enqueueTextOutboxMessage(
   await enqueueDbWrite(() =>
     db.runAsync(
       `INSERT INTO outbox_messages
-        (auth_id, client_message_id, conversation_id, body, state, client_created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        (auth_id, attempt_count, client_message_id, conversation_id, body, state, client_created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       message.auth_id,
+      message.attempt_count ?? 0,
       message.client_message_id,
       message.conversation_id,
       message.body,
@@ -442,18 +446,36 @@ export async function markOutboxRetry(
   authId: string,
   clientMessageId: string,
   error: string,
+  nextAttemptDelayMs: number,
 ): Promise<void> {
   const db = await getDb();
   const now = new Date().toISOString();
-  const nextAttemptAt = new Date(Date.now() + 5000).toISOString();
+  const nextAttemptAt = new Date(Date.now() + nextAttemptDelayMs).toISOString();
   await enqueueDbWrite(() =>
     db.runAsync(
       `UPDATE outbox_messages
-       SET state = 'retry_wait', last_error = ?, next_attempt_at = ?, updated_at = ?
+       SET state = 'retry_wait', attempt_count = attempt_count + 1, last_error = ?, next_attempt_at = ?, updated_at = ?
        WHERE auth_id = ? AND client_message_id = ?`,
       error,
       nextAttemptAt,
       now,
+      authId,
+      clientMessageId,
+    ),
+  );
+}
+
+export async function resetOutboxMessageForRetry(
+  authId: string,
+  clientMessageId: string,
+): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE outbox_messages
+       SET state = 'queued', attempt_count = 0, last_error = NULL, next_attempt_at = NULL, updated_at = ?
+       WHERE auth_id = ? AND client_message_id = ? AND state = 'failed_terminal'`,
+      new Date().toISOString(),
       authId,
       clientMessageId,
     ),

@@ -20,6 +20,7 @@ import {
   markOutboxRetry,
   markOutboxSending,
   markOutboxTerminalFailure,
+  resetOutboxMessageForRetry,
   writeSyncJournal,
 } from './chat-sync-store';
 import { getDeviceId } from './device-id';
@@ -32,6 +33,8 @@ export type ChatSyncTrigger =
   | 'realtime'
   | 'manual'
   | 'outbox';
+
+const OUTBOX_RETRY_DELAYS_MS = [2000, 5000] as const;
 
 type ChatSyncServiceOptions = {
   authId: string;
@@ -86,6 +89,12 @@ export class ChatSyncService {
     void this.pumpOutbox();
 
     return message;
+  }
+
+  async retryOutboxMessage(conversationId: string, clientMessageId: string) {
+    await resetOutboxMessageForRetry(this.authId, clientMessageId);
+    this.invalidateChatQueries(conversationId);
+    await this.pumpOutbox();
   }
 
   async applyConversationSnapshot(conversation: ConversationRecord) {
@@ -204,15 +213,22 @@ export class ChatSyncService {
           this.enqueueSync('outbox');
         } catch (error) {
           const errorMessage = getErrorMessage(error);
-          if (isPermanentCommandError(error)) {
+          const attemptCount = pendingMessage.attempt_count ?? 0;
+          const retryDelayMs = OUTBOX_RETRY_DELAYS_MS[attemptCount];
+          if (isPermanentCommandError(error) || retryDelayMs === undefined) {
             await markOutboxTerminalFailure(
               this.authId,
               pendingMessage.client_message_id,
               errorMessage,
             );
           } else {
-            await markOutboxRetry(this.authId, pendingMessage.client_message_id, errorMessage);
-            this.scheduleOutboxRetry();
+            await markOutboxRetry(
+              this.authId,
+              pendingMessage.client_message_id,
+              errorMessage,
+              retryDelayMs,
+            );
+            this.scheduleOutboxRetry(retryDelayMs);
           }
         }
         this.invalidateChatQueries(pendingMessage.conversation_id);
@@ -222,7 +238,7 @@ export class ChatSyncService {
     }
   }
 
-  private scheduleOutboxRetry() {
+  private scheduleOutboxRetry(delayMs: number) {
     if (this.outboxRetryTimer) {
       return;
     }
@@ -230,7 +246,7 @@ export class ChatSyncService {
     this.outboxRetryTimer = setTimeout(() => {
       this.outboxRetryTimer = null;
       void this.pumpOutbox();
-    }, 5000);
+    }, delayMs);
   }
 
   private invalidateChatQueries(conversationId?: string) {
