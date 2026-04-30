@@ -27,31 +27,23 @@ export type IOSSystemCallEndReason =
   | 'missed'
   | 'remote-ended';
 
-let currentNotificationRoute = '';
 let lastHandledNotificationResponseId = '';
 
 export function setupNotificationPresentation() {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const data = notification.request.content.data;
-      const isActiveChatMessage =
-        data?.type === 'message' &&
-        typeof data.conversationId === 'string' &&
-        currentNotificationRoute === `/chat/${data.conversationId}`;
+      const isMessageNotification = data?.type === 'message';
 
       return {
-        shouldPlaySound: !isActiveChatMessage,
+        shouldPlaySound: !isMessageNotification,
         shouldSetBadge: true,
-        shouldShowAlert: !isActiveChatMessage,
-        shouldShowBanner: !isActiveChatMessage,
-        shouldShowList: !isActiveChatMessage,
+        shouldShowAlert: !isMessageNotification,
+        shouldShowBanner: !isMessageNotification,
+        shouldShowList: !isMessageNotification,
       };
     },
   });
-}
-
-export function setCurrentNotificationRoute(pathname: string) {
-  currentNotificationRoute = pathname;
 }
 
 export function setupNotificationResponses() {

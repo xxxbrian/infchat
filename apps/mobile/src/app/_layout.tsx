@@ -21,6 +21,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { router, Stack, usePathname } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Animated, AppState, Pressable, Text, Vibration, View } from 'react-native';
@@ -31,13 +32,17 @@ import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
-import { refreshCachedCurrentProfile } from '../lib/local-cache';
+import {
+  refreshCachedConversation,
+  refreshCachedConversations,
+  refreshCachedCurrentProfile,
+  refreshCachedMessages,
+} from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
 import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
   endSystemCallForCallRoom,
   registerPushDeviceForPlatform,
-  setCurrentNotificationRoute,
   setupNotificationPresentation,
   setupNotificationResponses,
   setupPushRegistrationRecovery,
@@ -136,8 +141,8 @@ export default function RootLayout() {
                     <Stack.Screen name="preferences/privacy" />
                   </Stack>
                   <ProfileSetupGate authRecord={authRecord} />
-                  <NotificationRouteTracker />
                   <PushRegistration authRecord={authRecord} />
+                  <ForegroundMessageNotificationSync authRecord={authRecord} />
                   <IncomingCallListener authRecord={authRecord} />
                 </View>
               </CallSessionProvider>
@@ -238,12 +243,46 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
   return null;
 }
 
-function NotificationRouteTracker() {
-  const pathname = usePathname();
+function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRecord }) {
+  const queryClient = useQueryClient();
 
   useEffect(() => {
-    setCurrentNotificationRoute(pathname);
-  }, [pathname]);
+    const subscription = Notifications.addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data;
+      if (data?.type !== 'message' || typeof data.conversationId !== 'string') {
+        return;
+      }
+
+      const conversationId = data.conversationId;
+
+      void refreshCachedConversation(pb, conversationId)
+        .then((conversation) => {
+          queryClient.setQueryData(['conversation', conversationId], conversation);
+        })
+        .catch(() => {
+          // Realtime or the next route refetch will retry if this wake-up sync fails.
+        });
+      void refreshCachedMessages(pb, conversationId)
+        .then((messages) => {
+          queryClient.setQueryData(['messages', conversationId], messages);
+        })
+        .catch(() => {
+          // Keep the current local thread visible until another sync succeeds.
+        });
+      void refreshCachedConversations(pb)
+        .then((conversations) => {
+          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
+        })
+        .catch(() => {
+          // The inbox subscription and foreground refetch are still active fallbacks.
+        });
+      void queryClient.invalidateQueries({
+        queryKey: ['unread-counts', authRecord.id],
+      });
+    });
+
+    return () => subscription.remove();
+  }, [authRecord.id, queryClient]);
 
   return null;
 }

@@ -23,7 +23,6 @@ type CallPushPayload = {
 const callPushesByUUID = new Map<string, CallPushPayload>();
 const endingSystemCallUUIDs = new Set<string>();
 const terminalCallUUIDTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
-let currentNotificationRoute = '';
 let lastHandledNotificationResponseId = '';
 
 type SystemCallPayload = CallPushPayload & { callUUID: string };
@@ -192,24 +191,17 @@ export function setupNotificationPresentation() {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const data = notification.request.content.data;
-      const isActiveChatMessage =
-        data?.type === 'message' &&
-        typeof data.conversationId === 'string' &&
-        currentNotificationRoute === `/chat/${data.conversationId}`;
+      const isMessageNotification = data?.type === 'message';
 
       return {
-        shouldPlaySound: !isActiveChatMessage,
+        shouldPlaySound: !isMessageNotification,
         shouldSetBadge: true,
-        shouldShowAlert: !isActiveChatMessage,
-        shouldShowBanner: !isActiveChatMessage,
-        shouldShowList: !isActiveChatMessage,
+        shouldShowAlert: !isMessageNotification,
+        shouldShowBanner: !isMessageNotification,
+        shouldShowList: !isMessageNotification,
       };
     },
   });
-}
-
-export function setCurrentNotificationRoute(pathname: string) {
-  currentNotificationRoute = pathname;
 }
 
 export function setupNotificationResponses() {

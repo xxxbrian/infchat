@@ -29,6 +29,8 @@ type SyncStateRow = {
 
 const dbPromise = SQLite.openDatabaseAsync('infchat-cache.db');
 let schemaPromise: Promise<void> | null = null;
+const MESSAGE_SYNC_CURSOR_VERSION = 2;
+const MESSAGE_SYNC_OVERLAP_MS = 2 * 60 * 1000;
 
 async function getDb() {
   const db = await dbPromise;
@@ -149,14 +151,28 @@ async function getLastSyncedAt(scope: string): Promise<string | null> {
   return row?.last_synced_at ?? null;
 }
 
-async function markSynced(scope: string): Promise<void> {
+async function markSynced(scope: string, lastSyncedAt = new Date().toISOString()): Promise<void> {
   const db = await getDb();
 
   await db.runAsync(
     'INSERT OR REPLACE INTO sync_state (scope, last_synced_at) VALUES (?, ?)',
     scope,
-    new Date().toISOString(),
+    lastSyncedAt,
   );
+}
+
+async function advanceSynced(scope: string, candidateSyncedAt: string): Promise<void> {
+  const currentSyncedAt = await getLastSyncedAt(scope);
+  const currentTime = parseDateTime(currentSyncedAt);
+  const candidateTime = parseDateTime(candidateSyncedAt);
+
+  if (candidateTime === null) {
+    return;
+  }
+
+  if (currentTime === null || candidateTime >= currentTime) {
+    await markSynced(scope, new Date(candidateTime).toISOString());
+  }
 }
 
 function getAuthId(pb: PocketBase): string {
@@ -187,6 +203,64 @@ function sortMessages(messages: MessageRecord[]): MessageRecord[] {
 
     return firstTime - secondTime;
   });
+}
+
+function getMessagesSyncScope(pb: PocketBase, conversationId: string): string {
+  return `${getAuthCachePrefix(pb)}:messages:v${MESSAGE_SYNC_CURSOR_VERSION}:${conversationId}`;
+}
+
+function parseDateTime(value?: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const time = new Date(value).getTime();
+
+  return Number.isNaN(time) ? null : time;
+}
+
+function getLatestMessageActivityTime(messages: MessageRecord[]): number | null {
+  let latestTime: number | null = null;
+
+  for (const message of messages) {
+    const messageTime = parseDateTime(message.updated) ?? parseDateTime(message.created);
+    if (messageTime === null) {
+      continue;
+    }
+
+    latestTime = latestTime === null ? messageTime : Math.max(latestTime, messageTime);
+  }
+
+  return latestTime;
+}
+
+function getMessageServerCursor(messages: MessageRecord[]): string | null {
+  const latestTime = getLatestMessageActivityTime(messages);
+
+  return latestTime === null ? null : new Date(latestTime).toISOString();
+}
+
+function getOverlappedMessageCursor(cursor: string): string {
+  const cursorTime = parseDateTime(cursor);
+  if (cursorTime === null) {
+    return cursor;
+  }
+
+  return new Date(Math.max(0, cursorTime - MESSAGE_SYNC_OVERLAP_MS)).toISOString();
+}
+
+function isConversationPreviewAhead(
+  conversation: ConversationRecord | null,
+  messages: MessageRecord[],
+): boolean {
+  const previewTime = parseDateTime(conversation?.last_message_at);
+  if (previewTime === null) {
+    return false;
+  }
+
+  const latestMessageTime = getLatestMessageActivityTime(messages);
+
+  return latestMessageTime === null || previewTime > latestMessageTime;
 }
 
 async function readCachedConversations(pb: PocketBase): Promise<ConversationRecord[] | null> {
@@ -292,7 +366,7 @@ async function readCachedMessages(
     getAuthId(pb),
     conversationId,
   );
-  const scope = `${getAuthCachePrefix(pb)}:messages:${conversationId}`;
+  const scope = getMessagesSyncScope(pb, conversationId);
 
   if (rows.length === 0 && !(await hasSynced(scope))) {
     return null;
@@ -306,21 +380,24 @@ export async function writeCachedMessages(
   conversationId: string,
   messages: MessageRecord[],
 ): Promise<void> {
-  const db = await getDb();
-  const authId = getAuthId(pb);
-
-  await db.runAsync(
-    'DELETE FROM messages_cache WHERE auth_id = ? AND conversation_id = ?',
-    authId,
-    conversationId,
-  );
   for (const message of messages) {
-    await writeCachedMessage(pb, message);
+    await writeCachedMessageRow(pb, message);
   }
-  await markSynced(`${getAuthCachePrefix(pb)}:messages:${conversationId}`);
+
+  const cursor = getMessageServerCursor(messages);
+  await markSynced(getMessagesSyncScope(pb, conversationId), cursor ?? undefined);
 }
 
 export async function writeCachedMessage(pb: PocketBase, message: MessageRecord): Promise<void> {
+  await writeCachedMessageRow(pb, message);
+
+  const cursor = getMessageServerCursor([message]);
+  if (cursor) {
+    await advanceSynced(getMessagesSyncScope(pb, message.conversation), cursor);
+  }
+}
+
+async function writeCachedMessageRow(pb: PocketBase, message: MessageRecord): Promise<void> {
   const db = await getDb();
 
   await db.runAsync(
@@ -334,7 +411,6 @@ export async function writeCachedMessage(pb: PocketBase, message: MessageRecord)
     message.created,
     message.updated,
   );
-  await markSynced(`${getAuthCachePrefix(pb)}:messages:${message.conversation}`);
 }
 
 export async function removeCachedMessage(pb: PocketBase, message: MessageRecord): Promise<void> {
@@ -749,31 +825,47 @@ export async function refreshCachedMessages(
   pb: PocketBase,
   conversationId: string,
 ): Promise<MessageRecord[]> {
-  const scope = `${getAuthCachePrefix(pb)}:messages:${conversationId}`;
+  const scope = getMessagesSyncScope(pb, conversationId);
   const cachedMessages = await readCachedMessages(pb, conversationId);
   const lastSyncedAt = await getLastSyncedAt(scope);
 
-  if (cachedMessages && lastSyncedAt) {
-    const updatedMessages = await listMessagesUpdatedAfter(pb, conversationId, lastSyncedAt);
-
-    if (updatedMessages.length === 0) {
-      await markSynced(scope);
-      return cachedMessages;
-    }
+  if (cachedMessages && cachedMessages.length > 0 && lastSyncedAt) {
+    const updatedMessages = await listMessagesUpdatedAfter(
+      pb,
+      conversationId,
+      getOverlappedMessageCursor(lastSyncedAt),
+    );
 
     for (const message of updatedMessages) {
       await writeCachedMessage(pb, message);
     }
 
-    await markSynced(scope);
+    const nextMessages =
+      (await readCachedMessages(pb, conversationId)) ?? sortMessages(updatedMessages);
+    const cursor = getMessageServerCursor(nextMessages);
+    if (cursor) {
+      await advanceSynced(scope, cursor);
+    }
+    if (
+      isConversationPreviewAhead(await readCachedConversation(pb, conversationId), nextMessages)
+    ) {
+      return refreshCachedMessagesFromServer(pb, conversationId);
+    }
 
-    return (await readCachedMessages(pb, conversationId)) ?? sortMessages(updatedMessages);
+    return nextMessages;
   }
 
+  return refreshCachedMessagesFromServer(pb, conversationId);
+}
+
+async function refreshCachedMessagesFromServer(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<MessageRecord[]> {
   const messages = sortMessages(await listMessages(pb, conversationId));
 
   await writeCachedMessages(pb, conversationId, messages);
-  await writeCachedValue(scope, messages);
+  await writeCachedValue(getMessagesSyncScope(pb, conversationId), messages);
 
   return messages;
 }
