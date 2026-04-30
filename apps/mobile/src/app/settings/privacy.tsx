@@ -1,5 +1,9 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { getPrivacySettings, updatePrivacySettings } from '@infchat/pocketbase';
+import {
+  getPrivacySettings,
+  updatePrivacySettings,
+  type PrivacySettingsRecord,
+} from '@infchat/pocketbase';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
@@ -8,18 +12,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../lib/auth-context';
 import { pb } from '../../lib/pocketbase';
 
+type PrivacyField = 'mutual' | 'public';
+
 export default function PrivacySettingsScreen() {
   const { authRecord } = useAuth();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const privacySettingsQueryKey = ['privacy-settings', authRecord.id] as const;
   const settingsQuery = useQuery({
-    queryKey: ['privacy-settings', authRecord.id],
+    queryKey: privacySettingsQueryKey,
     queryFn: () => getPrivacySettings(pb),
     networkMode: 'always',
   });
   const settings = settingsQuery.data;
   const updateMutation = useMutation({
-    mutationFn: ({ field, value }: { field: 'mutual' | 'public'; value: boolean }) => {
+    mutationFn: ({ field, value }: { field: PrivacyField; value: boolean }) => {
       if (!settings) {
         throw new Error('Privacy settings are not loaded');
       }
@@ -29,13 +36,31 @@ export default function PrivacySettingsScreen() {
         showInPublicSuggestions: field === 'public' ? value : settings.show_in_public_suggestions,
       });
     },
+    onMutate: async ({ field, value }) => {
+      await queryClient.cancelQueries({ queryKey: privacySettingsQueryKey });
+      const previousSettings =
+        queryClient.getQueryData<PrivacySettingsRecord>(privacySettingsQueryKey);
+
+      if (previousSettings) {
+        queryClient.setQueryData<PrivacySettingsRecord>(privacySettingsQueryKey, {
+          ...previousSettings,
+          ...(field === 'mutual' ? { show_in_mutual_suggestions: value } : {}),
+          ...(field === 'public' ? { show_in_public_suggestions: value } : {}),
+        });
+      }
+
+      return { previousSettings };
+    },
     onSuccess: (nextSettings) => {
-      queryClient.setQueryData(['privacy-settings', authRecord.id], nextSettings);
+      queryClient.setQueryData(privacySettingsQueryKey, nextSettings);
       void queryClient.invalidateQueries({
         queryKey: ['friend-suggestions', authRecord.id],
       });
     },
-    onError: () => {
+    onError: (_error, _variables, context) => {
+      if (context?.previousSettings) {
+        queryClient.setQueryData(privacySettingsQueryKey, context.previousSettings);
+      }
       Alert.alert('Could not update privacy', 'Check your connection and try again.');
     },
   });
@@ -103,14 +128,17 @@ function PrivacySwitchRow({
         className={`min-h-[62px] flex-row items-center justify-between gap-4 ${isFirst ? 'border-b border-border/70' : ''}`}
       >
         <Text className="min-w-0 flex-1 text-[16px] font-semibold text-foreground">{label}</Text>
-        <Switch
-          disabled={disabled}
-          ios_backgroundColor="#334155"
-          onValueChange={onValueChange}
-          thumbColor="#f8fafc"
-          trackColor={{ false: '#334155', true: '#2563eb' }}
-          value={value}
-        />
+        <View className="h-[62px] justify-center">
+          <Switch
+            disabled={disabled}
+            ios_backgroundColor="#334155"
+            onValueChange={onValueChange}
+            style={styles.switch}
+            thumbColor="#f8fafc"
+            trackColor={{ false: '#334155', true: '#2563eb' }}
+            value={value}
+          />
+        </View>
       </View>
     </View>
   );
@@ -119,5 +147,8 @@ function PrivacySwitchRow({
 const styles = StyleSheet.create({
   group: {
     borderCurve: 'continuous',
+  },
+  switch: {
+    transform: [{ translateY: 1 }],
   },
 });
