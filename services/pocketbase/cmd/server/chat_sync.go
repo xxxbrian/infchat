@@ -21,6 +21,8 @@ import (
 const chatSyncDefaultLimit = 200
 const chatSyncMaxLimit = 500
 
+var errIdempotentMessageReplay = errors.New("idempotent message replay")
+
 type sendMessageCommandRequest struct {
 	Body            string `json:"body" form:"body"`
 	ClientMessageId string `json:"clientMessageId" form:"clientMessageId"`
@@ -217,6 +219,7 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 	}
 
 	var result map[string]any
+	var messageForPush *core.Record
 	err = app.RunInTransaction(func(txApp core.App) error {
 		conversation, err := findConversationForChatSync(txApp, data.ConversationId, userId)
 		if err != nil {
@@ -257,10 +260,8 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		}
 
 		if err := persistIdempotencyKey(txApp, userId, deviceId, clientMessageId, payloadHash, conversation.Id, message.Id, cursor); err != nil {
-			if replay, replayErr := replayIdempotentMessage(txApp, userId, deviceId, clientMessageId, payloadHash); replayErr == nil {
-				result = replay
-
-				return nil
+			if _, replayErr := replayIdempotentMessage(txApp, userId, deviceId, clientMessageId, payloadHash); replayErr == nil {
+				return errIdempotentMessageReplay
 			}
 
 			return err
@@ -276,11 +277,21 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 			"message":      message,
 			"replayed":     false,
 		}
+		messageForPush = message
 
 		return nil
 	})
+	if errors.Is(err, errIdempotentMessageReplay) {
+		return replayIdempotentMessage(app, userId, deviceId, clientMessageId, payloadHash)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if messageForPush != nil {
+		go sendMessagePushNotifications(app, messageForPush)
+	}
 
-	return result, err
+	return result, nil
 }
 
 func replayIdempotentMessage(app core.App, userId string, deviceId string, clientMessageId string, payloadHash string) (map[string]any, error) {

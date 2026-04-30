@@ -1204,6 +1204,7 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		if err := emitMessageCreatedEvents(e.App, conversation, e.Record, cursor, e.Record.GetString("sender")); err != nil {
 			return err
 		}
+		go sendMessagePushNotifications(e.App, e.Record)
 
 		return e.Next()
 	})
