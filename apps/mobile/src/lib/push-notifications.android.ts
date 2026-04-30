@@ -110,7 +110,7 @@ export function getPushEnvironment(): PushEnvironment {
 }
 
 export function getPushProviderLabel() {
-  return 'Notifications';
+  return 'Android notifications';
 }
 
 export function isPushRegistrationSupported() {

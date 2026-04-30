@@ -35,13 +35,13 @@ import { refreshCachedCurrentProfile } from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
 import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
-  endIOSSystemCallForCallRoom,
-  registerIOSPushDevice,
+  endSystemCallForCallRoom,
+  registerPushDeviceForPlatform,
   setCurrentNotificationRoute,
-  setupIOSSystemCalls,
-  setupIOSPushRegistrationRecovery,
   setupNotificationPresentation,
   setupNotificationResponses,
+  setupPushRegistrationRecovery,
+  setupSystemCalls,
 } from '../lib/push-notifications';
 
 setupNotificationPresentation();
@@ -132,8 +132,8 @@ export default function RootLayout() {
                     <Stack.Screen name="profile/[userId]" />
                     <Stack.Screen name="profile/edit" />
                     <Stack.Screen name="profile/setup" />
-                    <Stack.Screen name="settings/notifications" />
-                    <Stack.Screen name="settings/privacy" />
+                    <Stack.Screen name="preferences/notifications" />
+                    <Stack.Screen name="preferences/privacy" />
                   </Stack>
                   <ProfileSetupGate authRecord={authRecord} />
                   <NotificationRouteTracker />
@@ -223,10 +223,10 @@ function ProfileSetupGate({ authRecord }: { authRecord: AuthRecord }) {
 
 function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
   useEffect(() => {
-    void registerIOSPushDevice();
+    void registerPushDeviceForPlatform();
     const cleanupNotificationResponses = setupNotificationResponses();
-    const cleanupPushRegistrationRecovery = setupIOSPushRegistrationRecovery();
-    const cleanupSystemCalls = setupIOSSystemCalls();
+    const cleanupPushRegistrationRecovery = setupPushRegistrationRecovery();
+    const cleanupSystemCalls = setupSystemCalls();
 
     return () => {
       cleanupNotificationResponses();
@@ -336,7 +336,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
         if (callRoom.status !== 'ringing') {
           setIncomingCall((currentCall) => (currentCall?.id === callRoom.id ? null : currentCall));
           if (activeCallRoomId !== callRoom.id) {
-            endIOSSystemCallForCallRoom(
+            endSystemCallForCallRoom(
               callRoom.id,
               callRoom.status === 'active'
                 ? 'answered-elsewhere'

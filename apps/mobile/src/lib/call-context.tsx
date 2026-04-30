@@ -42,7 +42,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { getDeviceId } from './device-id';
 import { pb } from './pocketbase';
 import { useAuth } from './auth-context';
-import { endIOSSystemCallForCallRoom, setIOSSystemCallHandlers } from './push-notifications';
+import { endSystemCallForCallRoom, setSystemCallHandlers } from './push-notifications';
 
 const MINI_WINDOW_HEIGHT = 174;
 const MINI_WINDOW_MARGIN = 16;
@@ -130,7 +130,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         setActiveSession((currentSession) =>
           currentSession?.callRoom.id === callRoomId ? null : currentSession,
         );
-        endIOSSystemCallForCallRoom(callRoomId, 'local');
+        endSystemCallForCallRoom(callRoomId, 'local');
         dismissCallRoute();
       }, CALL_RECONNECT_GRACE_PERIOD);
     },
@@ -203,7 +203,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
-    endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
+    endSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
   }, [activeSession, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
@@ -237,7 +237,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     }
 
     setActiveSession(null);
-    endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
+    endSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
   }, [activeSession, authRecord.id, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
@@ -273,7 +273,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
         didRequestEndRef.current = true;
         clearLiveKitDisconnectTimeout();
-        endIOSSystemCallForCallRoom(callRoom.id, systemCallEndReasonForStatus(callRoom.status));
+        endSystemCallForCallRoom(callRoom.id, systemCallEndReasonForStatus(callRoom.status));
         setActiveSession(null);
         dismissCallRoute();
       })
@@ -296,7 +296,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   }, [activeCallRoomId, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
   useEffect(() => {
-    return setIOSSystemCallHandlers({
+    return setSystemCallHandlers({
       onAnswerCall: async ({ callRoomId }) => {
         if (!callRoomId) {
           return;
@@ -356,7 +356,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         if (isTerminalCallStatus(response.callRoom.status)) {
           didRequestEndRef.current = true;
           clearLiveKitDisconnectTimeout();
-          endIOSSystemCallForCallRoom(
+          endSystemCallForCallRoom(
             response.callRoom.id,
             systemCallEndReasonForStatus(response.callRoom.status),
           );

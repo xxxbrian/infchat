@@ -15,7 +15,12 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { getPushEnvironment, registerIOSPushDevice } from '../../lib/push-notifications';
+import {
+  getPushEnvironment,
+  getPushProviderLabel,
+  isPushRegistrationSupported,
+  registerPushDeviceForPlatform,
+} from '../../lib/push-notifications';
 
 type PermissionState = {
   canAskAgain?: boolean;
@@ -63,7 +68,7 @@ export default function NotificationSettingsScreen() {
         },
       });
       await loadPermission();
-      const didRegister = await registerIOSPushDevice(Constants.expoConfig?.version, {
+      const didRegister = await registerPushDeviceForPlatform(Constants.expoConfig?.version, {
         throwOnFailure: true,
       });
       setLastRegistrationStatus(didRegister ? 'Registration updated' : 'Registration unavailable');
@@ -77,7 +82,7 @@ export default function NotificationSettingsScreen() {
   const handleRetryRegistration = async () => {
     setIsRefreshing(true);
     try {
-      const didRegister = await registerIOSPushDevice(Constants.expoConfig?.version, {
+      const didRegister = await registerPushDeviceForPlatform(Constants.expoConfig?.version, {
         throwOnFailure: true,
       });
       await loadPermission();
@@ -96,7 +101,8 @@ export default function NotificationSettingsScreen() {
   const permissionLabel = permission?.granted
     ? 'Allowed'
     : formatPermissionStatus(permission?.status);
-  const canRequestPermission = Platform.OS === 'ios' && permission?.canAskAgain !== false;
+  const isRegistrationSupported = isPushRegistrationSupported();
+  const canRequestPermission = permission?.canAskAgain !== false;
 
   return (
     <View className="flex-1 bg-background">
@@ -120,7 +126,7 @@ export default function NotificationSettingsScreen() {
       >
         <View className="px-5 pt-5">
           <Text className="px-2 text-sm font-medium leading-5 text-muted-foreground">
-            Manage device notification permission and retry iOS push registration for this device.
+            Manage device notification permission and retry push registration for this device.
           </Text>
 
           <View className="mt-5 overflow-hidden rounded-[28px] bg-muted" style={styles.group}>
@@ -129,7 +135,13 @@ export default function NotificationSettingsScreen() {
               label="Can ask again"
               value={permission?.canAskAgain === false ? 'No' : 'Yes'}
             />
-            <InfoRow label="APNs environment" value={getPushEnvironment()} />
+            <InfoRow label="Provider" value={getPushProviderLabel()} />
+            {Platform.OS === 'ios' ? (
+              <InfoRow label="APNs environment" value={getPushEnvironment()} />
+            ) : null}
+            {Platform.OS === 'android' ? (
+              <InfoRow label="Call notifications" value="Not supported yet" />
+            ) : null}
             <InfoRow label="Last retry" value={lastRegistrationStatus} />
           </View>
 
@@ -143,7 +155,7 @@ export default function NotificationSettingsScreen() {
               />
             ) : null}
             <ActionButton
-              disabled={isRefreshing || Platform.OS !== 'ios'}
+              disabled={isRefreshing || !isRegistrationSupported}
               icon="refresh"
               label="Retry Push Registration"
               onPress={handleRetryRegistration}
