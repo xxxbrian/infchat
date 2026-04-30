@@ -395,11 +395,14 @@ export async function enqueueTextOutboxMessage(
 
 export async function listPendingOutboxMessages(authId: string): Promise<LocalOutboxMessage[]> {
   const db = await getDb();
+  const now = new Date().toISOString();
   const rows = await db.getAllAsync<LocalOutboxMessage>(
     `SELECT * FROM outbox_messages
      WHERE auth_id = ? AND state IN ('queued', 'retry_wait', 'sending_create')
+       AND (state != 'retry_wait' OR next_attempt_at IS NULL OR next_attempt_at <= ?)
      ORDER BY client_created_at ASC`,
     authId,
+    now,
   );
 
   return rows;
@@ -442,13 +445,34 @@ export async function markOutboxRetry(
 ): Promise<void> {
   const db = await getDb();
   const now = new Date().toISOString();
+  const nextAttemptAt = new Date(Date.now() + 5000).toISOString();
   await enqueueDbWrite(() =>
     db.runAsync(
       `UPDATE outbox_messages
        SET state = 'retry_wait', last_error = ?, next_attempt_at = ?, updated_at = ?
        WHERE auth_id = ? AND client_message_id = ?`,
       error,
+      nextAttemptAt,
       now,
+      authId,
+      clientMessageId,
+    ),
+  );
+}
+
+export async function markOutboxTerminalFailure(
+  authId: string,
+  clientMessageId: string,
+  error: string,
+): Promise<void> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE outbox_messages
+       SET state = 'failed_terminal', last_error = ?, next_attempt_at = NULL, updated_at = ?
+       WHERE auth_id = ? AND client_message_id = ?`,
+      error,
       now,
       authId,
       clientMessageId,

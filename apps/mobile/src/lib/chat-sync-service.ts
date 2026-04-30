@@ -19,6 +19,7 @@ import {
   listPendingOutboxMessages,
   markOutboxRetry,
   markOutboxSending,
+  markOutboxTerminalFailure,
   writeSyncJournal,
 } from './chat-sync-store';
 import { getDeviceId } from './device-id';
@@ -60,6 +61,9 @@ export class ChatSyncService {
 
   enqueueSync(trigger: ChatSyncTrigger) {
     this.pendingTriggers.add(trigger);
+    if (trigger === 'foreground' || trigger === 'reconnect' || trigger === 'push') {
+      void this.pumpOutbox();
+    }
     void this.startSyncLoop();
   }
 
@@ -184,11 +188,16 @@ export class ChatSyncService {
           });
           this.enqueueSync('outbox');
         } catch (error) {
-          await markOutboxRetry(
-            this.authId,
-            pendingMessage.client_message_id,
-            getErrorMessage(error),
-          );
+          const errorMessage = getErrorMessage(error);
+          if (isPermanentCommandError(error)) {
+            await markOutboxTerminalFailure(
+              this.authId,
+              pendingMessage.client_message_id,
+              errorMessage,
+            );
+          } else {
+            await markOutboxRetry(this.authId, pendingMessage.client_message_id, errorMessage);
+          }
         }
         this.invalidateChatQueries(pendingMessage.conversation_id);
       }
@@ -207,6 +216,35 @@ export class ChatSyncService {
       });
     }
   }
+}
+
+function isPermanentCommandError(error: unknown) {
+  const status = getErrorStatus(error);
+
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+function getErrorStatus(error: unknown) {
+  if (!error || typeof error !== 'object') {
+    return 0;
+  }
+
+  for (const key of ['status', 'statusCode', 'code']) {
+    const value = (error as Record<string, unknown>)[key];
+    if (typeof value === 'number') {
+      return value;
+    }
+  }
+
+  const response = (error as { response?: unknown }).response;
+  if (response && typeof response === 'object') {
+    const code = (response as { code?: unknown }).code;
+    if (typeof code === 'number') {
+      return code;
+    }
+  }
+
+  return 0;
 }
 
 function getErrorMessage(error: unknown) {

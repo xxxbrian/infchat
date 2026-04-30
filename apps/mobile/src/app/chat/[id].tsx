@@ -81,7 +81,7 @@ type ChatMessage = {
   attachments: MessageAttachment[];
   callRoomId?: string;
   created: string;
-  deliveryStatus?: 'failed';
+  deliveryStatus?: 'failed' | 'pending' | 'retrying' | 'sending';
   failedMessageId?: string;
   kind: MessageRecord['kind'];
   readLabel?: string;
@@ -233,7 +233,7 @@ export default function ChatDetailScreen() {
         author: 'me' as const,
         attachments: [],
         created: message.client_created_at,
-        deliveryStatus: message.state === 'failed_terminal' ? ('failed' as const) : undefined,
+        deliveryStatus: toOutboxDeliveryStatus(message.state),
         failedMessageId:
           message.state === 'failed_terminal' ? message.client_message_id : undefined,
         kind: 'text' as const,
@@ -1141,6 +1141,23 @@ function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: stri
   };
 }
 
+function toOutboxDeliveryStatus(
+  state: 'queued' | 'sending_create' | 'confirmed' | 'retry_wait' | 'failed_terminal' | 'canceled',
+): ChatMessage['deliveryStatus'] {
+  switch (state) {
+    case 'queued':
+      return 'pending';
+    case 'sending_create':
+      return 'sending';
+    case 'retry_wait':
+      return 'retrying';
+    case 'failed_terminal':
+      return 'failed';
+    default:
+      return undefined;
+  }
+}
+
 function getLastReadOwnMessageId(
   messages: MessageRecord[],
   states: ConversationUserStateRecord[],
@@ -1333,6 +1350,7 @@ function MessageBubble({
   const isMine = message.author === 'me';
   const hasText = message.text.trim().length > 0;
   const isFailed = message.deliveryStatus === 'failed';
+  const deliveryLabel = getDeliveryLabel(message.deliveryStatus);
   const fileName = fileAttachment ? message.text || formatAttachmentName(fileAttachment.name) : '';
   const localFileUri = fileAttachment ? getLocalMessageFileUri(message.id, fileName) : null;
   const [imageSize, setImageSize] = useState({ height: 210, width: 250 });
@@ -1643,15 +1661,30 @@ function MessageBubble({
               {message.time}
             </Text>
           </View>
-          {message.readLabel || isFailed ? (
+          {message.readLabel || deliveryLabel ? (
             <Text className="mt-1 self-end text-[11px] font-semibold text-muted-foreground">
-              {isFailed ? 'Not sent' : message.readLabel}
+              {deliveryLabel ?? message.readLabel}
             </Text>
           ) : null}
         </View>
       </View>
     </Animated.View>
   );
+}
+
+function getDeliveryLabel(status: ChatMessage['deliveryStatus']): string | undefined {
+  switch (status) {
+    case 'pending':
+      return 'Pending';
+    case 'sending':
+      return 'Sending...';
+    case 'retrying':
+      return 'Waiting to retry';
+    case 'failed':
+      return 'Not sent';
+    default:
+      return undefined;
+  }
 }
 
 function AvatarStack({
