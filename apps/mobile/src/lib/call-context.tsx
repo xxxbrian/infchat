@@ -41,6 +41,7 @@ const MINI_WINDOW_MARGIN = 16;
 const MINI_WINDOW_TAB_BAR_CLEARANCE = 92;
 const MINI_WINDOW_WIDTH = 132;
 const CALL_HEARTBEAT_INTERVAL = 15_000;
+const CALL_RECONNECT_GRACE_PERIOD = 30_000;
 
 type ActiveCallSession = {
   callRoom: CallRoomRecord;
@@ -68,6 +69,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
   const didRequestEndRef = useRef(false);
   const deviceIdRef = useRef<string | null>(null);
   const joiningCallRoomIdRef = useRef<string | null>(null);
+  const liveKitDisconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveCallSession | null>(null);
   const [errorMessage, setErrorMessage] = useState('');
   const [isJoining, setIsJoining] = useState(false);
@@ -87,6 +89,41 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       router.back();
     }
   }, []);
+
+  const clearLiveKitDisconnectTimeout = useCallback(() => {
+    if (!liveKitDisconnectTimeoutRef.current) {
+      return;
+    }
+
+    clearTimeout(liveKitDisconnectTimeoutRef.current);
+    liveKitDisconnectTimeoutRef.current = null;
+  }, []);
+
+  const scheduleLiveKitDisconnectTimeout = useCallback(
+    (callRoomId: string) => {
+      clearLiveKitDisconnectTimeout();
+      setErrorMessage('Reconnecting call...');
+
+      liveKitDisconnectTimeoutRef.current = setTimeout(() => {
+        liveKitDisconnectTimeoutRef.current = null;
+        if (didRequestEndRef.current) {
+          return;
+        }
+
+        didRequestEndRef.current = true;
+        blockedAutoJoinCallRoomIdRef.current = callRoomId;
+        void getDeviceId()
+          .then((deviceId) => leaveCall(pb, callRoomId, deviceId))
+          .catch(() => {});
+        setActiveSession((currentSession) =>
+          currentSession?.callRoom.id === callRoomId ? null : currentSession,
+        );
+        endIOSSystemCallForCallRoom(callRoomId, 'local');
+        dismissCallRoute();
+      }, CALL_RECONNECT_GRACE_PERIOD);
+    },
+    [clearLiveKitDisconnectTimeout, dismissCallRoute],
+  );
 
   const joinCallRoom = useCallback(
     async (callRoomId: string) => {
@@ -121,6 +158,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         const deviceId = await getDeviceId();
         deviceIdRef.current = deviceId;
         const nextSession = await joinCall(pb, normalizedCallRoomId, deviceId);
+        clearLiveKitDisconnectTimeout();
         didRequestEndRef.current = false;
         setActiveSession(nextSession);
         return true;
@@ -142,6 +180,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    clearLiveKitDisconnectTimeout();
     didRequestEndRef.current = true;
     blockedAutoJoinCallRoomIdRef.current = activeSession.callRoom.id;
 
@@ -154,13 +193,14 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     setActiveSession(null);
     endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
-  }, [activeSession, dismissCallRoute]);
+  }, [activeSession, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
   const leaveActiveCall = useCallback(async () => {
     if (!activeSession || didRequestEndRef.current) {
       return;
     }
 
+    clearLiveKitDisconnectTimeout();
     didRequestEndRef.current = true;
     blockedAutoJoinCallRoomIdRef.current = activeSession.callRoom.id;
 
@@ -187,7 +227,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
     setActiveSession(null);
     endIOSSystemCallForCallRoom(activeSession.callRoom.id, 'local');
     dismissCallRoute();
-  }, [activeSession, authRecord.id, dismissCallRoute]);
+  }, [activeSession, authRecord.id, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
   const minimizeCall = useCallback(() => {
     dismissCallRoute();
@@ -219,6 +259,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
         }
 
         didRequestEndRef.current = true;
+        clearLiveKitDisconnectTimeout();
         endIOSSystemCallForCallRoom(callRoom.id, systemCallEndReasonForStatus(callRoom.status));
         setActiveSession(null);
         dismissCallRoute();
@@ -232,7 +273,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       pb.collection('call_rooms').unsubscribe(activeCallRoomId);
       void AudioSession.stopAudioSession();
     };
-  }, [activeCallRoomId, dismissCallRoute]);
+  }, [activeCallRoomId, clearLiveKitDisconnectTimeout, dismissCallRoute]);
 
   useEffect(() => {
     return setIOSSystemCallHandlers({
@@ -294,6 +335,7 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
         if (isTerminalCallStatus(response.callRoom.status)) {
           didRequestEndRef.current = true;
+          clearLiveKitDisconnectTimeout();
           endIOSSystemCallForCallRoom(
             response.callRoom.id,
             systemCallEndReasonForStatus(response.callRoom.status),
@@ -320,7 +362,13 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [activeCallRoomId]);
+  }, [activeCallRoomId, clearLiveKitDisconnectTimeout, dismissCallRoute]);
+
+  useEffect(() => {
+    if (!activeCallRoomId) {
+      clearLiveKitDisconnectTimeout();
+    }
+  }, [activeCallRoomId, clearLiveKitDisconnectTimeout]);
 
   const contextValue = useMemo<CallSessionContextValue>(
     () => ({
@@ -348,15 +396,16 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
       <LiveKitRoom
         audio={Boolean(activeSession)}
         connect={Boolean(activeSession)}
+        onConnected={() => {
+          clearLiveKitDisconnectTimeout();
+          setErrorMessage('');
+        }}
         onDisconnected={() => {
           if (!activeSession || didRequestEndRef.current) {
             return;
           }
 
-          const disconnectedCallRoomId = activeSession.callRoom.id;
-          void getDeviceId().then((deviceId) => leaveCall(pb, disconnectedCallRoomId, deviceId));
-          setActiveSession(null);
-          dismissCallRoute();
+          scheduleLiveKitDisconnectTimeout(activeSession.callRoom.id);
         }}
         options={{
           adaptiveStream: { pixelDensity: 'screen' },
