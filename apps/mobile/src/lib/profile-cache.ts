@@ -2,7 +2,7 @@ import type { ProfileRecord } from '@infchat/pocketbase';
 import type { QueryClient } from '@tanstack/react-query';
 import type PocketBase from 'pocketbase';
 
-import { refreshCachedConversations, writeCachedCurrentProfile } from './local-cache';
+import { writeCachedCurrentProfile } from './local-cache';
 
 type CommitCurrentProfileUpdateInput = {
   authId: string;
@@ -29,7 +29,4 @@ export async function commitCurrentProfileUpdate({
       cachedProfile.user === profile.user ? profile : cachedProfile,
     ),
   );
-  void refreshCachedConversations(pb).then((conversations) => {
-    queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-  });
 }
