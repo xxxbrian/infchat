@@ -236,6 +236,7 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
 
   useEffect(() => {
     let isMounted = true;
+    let unsubscribe: (() => void) | undefined;
 
     pb.collection('call_rooms')
       .subscribe('*', (event) => {
@@ -259,13 +260,20 @@ function IncomingCallListener({ authRecord }: { authRecord: AuthRecord }) {
 
         showIncomingCall(callRoom);
       })
+      .then((nextUnsubscribe) => {
+        if (isMounted) {
+          unsubscribe = nextUnsubscribe;
+        } else {
+          nextUnsubscribe();
+        }
+      })
       .catch(() => {
         // Query refetch on reconnect covers temporary realtime connection failures.
       });
 
     return () => {
       isMounted = false;
-      pb.collection('call_rooms').unsubscribe('*');
+      unsubscribe?.();
     };
   }, [authRecord.id, activeCallRoomId, isJoining, isOnCallRoute, pathname]);
 
