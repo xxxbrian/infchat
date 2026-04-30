@@ -86,7 +86,11 @@ export function CallSessionProvider({ children }: { children: ReactNode }) {
 
   const dismissCallRoute = useCallback(() => {
     if (pathnameRef.current.startsWith('/call/')) {
-      router.back();
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/(tabs)');
+      }
     }
   }, []);
 

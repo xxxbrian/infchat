@@ -21,6 +21,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useAuth } from '../../lib/auth-context';
+import { useCallSession } from '../../lib/call-context';
 import { getCachedCurrentProfile, refreshCachedCurrentProfile } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
@@ -71,6 +72,7 @@ export default function SettingsTab() {
   const insets = useSafeAreaInsets();
   const { width: windowWidth } = useWindowDimensions();
   const { authRecord, logout } = useAuth();
+  const { activeSession, leaveActiveCall } = useCallSession();
   const queryClient = useQueryClient();
   const scrollY = useRef(new Animated.Value(0)).current;
   const profileExpansion = useRef(new Animated.Value(0)).current;
@@ -135,6 +137,16 @@ export default function SettingsTab() {
   });
   const initial = getAvatarInitial(displayName, username);
   const fallbackAvatarColor = getAvatarColor(profile?.user || authRecord.id || username);
+
+  const handleLogout = async () => {
+    try {
+      if (activeSession) {
+        await leaveActiveCall();
+      }
+    } finally {
+      logout();
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -309,7 +321,7 @@ export default function SettingsTab() {
               {
                 icon: 'log-out',
                 label: 'Log Out',
-                onPress: logout,
+                onPress: handleLogout,
                 variant: 'danger',
               },
             ]}
