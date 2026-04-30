@@ -7,7 +7,7 @@
     "backgroundColor": "#080b12",
     "icon": "./assets/icon.png",
     "scheme": "infchat",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

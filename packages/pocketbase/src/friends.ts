@@ -1,5 +1,7 @@
 import type PocketBase from 'pocketbase';
 
+import type { ProfileRecord } from './profiles';
+
 export type FriendshipStatus = 'pending' | 'accepted' | 'declined' | 'canceled';
 
 export type FriendshipRecord = {
@@ -11,6 +13,14 @@ export type FriendshipRecord = {
   accepted_at?: string;
   created: string;
   updated: string;
+};
+
+export type FriendSuggestionSource = 'mutual' | 'public';
+
+export type FriendSuggestion = {
+  mutualFriendCount: number;
+  profile: ProfileRecord;
+  source: FriendSuggestionSource;
 };
 
 export function listFriendships(pb: PocketBase): Promise<FriendshipRecord[]> {
@@ -41,4 +51,16 @@ export function cancelFriendRequest(pb: PocketBase, friendshipId: string) {
   return pb.collection('friendships').update<FriendshipRecord>(friendshipId, {
     status: 'canceled',
   });
+}
+
+export async function listFriendSuggestions(
+  pb: PocketBase,
+  limit = 20,
+): Promise<FriendSuggestion[]> {
+  const response = await pb.send<{ suggestions: FriendSuggestion[] }>(
+    `/api/infchat/friends/suggestions?limit=${limit}`,
+    { method: 'GET' },
+  );
+
+  return response.suggestions;
 }

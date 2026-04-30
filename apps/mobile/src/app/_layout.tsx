@@ -11,6 +11,7 @@ import {
   signOut,
   type CallRoomRecord,
 } from '@infchat/pocketbase';
+import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import {
   focusManager,
   onlineManager,
@@ -44,6 +45,19 @@ import {
 } from '../lib/push-notifications';
 
 setupNotificationPresentation();
+
+const navigationTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: '#080b12',
+    border: '#1f2937',
+    card: '#080b12',
+    notification: '#fb7185',
+    primary: '#60a5fa',
+    text: '#f8fafc',
+  },
+};
 
 export default function RootLayout() {
   const [queryClient] = useState(
@@ -90,59 +104,64 @@ export default function RootLayout() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SafeAreaProvider>
-        {authRecord ? (
-          <AuthContext.Provider
-            value={{
-              authRecord,
-              logout: () => {
-                signOut(pb);
-                queryClient.clear();
-                setRoute('login');
-              },
-            }}
-          >
-            <CallSessionProvider>
-              <View className="flex-1 bg-background">
-                <Stack
-                  screenOptions={{
-                    contentStyle: { backgroundColor: '#080b12' },
-                    headerShown: false,
-                  }}
-                >
-                  <Stack.Screen name="(tabs)" />
-                  <Stack.Screen name="call/[id]" />
-                  <Stack.Screen name="chat/[id]" />
-                  <Stack.Screen name="debug" />
-                  <Stack.Screen name="profile/[userId]" />
-                  <Stack.Screen name="profile/edit" />
-                  <Stack.Screen name="profile/setup" />
-                  <Stack.Screen name="settings/notifications" />
-                </Stack>
-                <ProfileSetupGate authRecord={authRecord} />
-                <NotificationRouteTracker />
-                <PushRegistration authRecord={authRecord} />
-                <IncomingCallListener authRecord={authRecord} />
-              </View>
-            </CallSessionProvider>
-          </AuthContext.Provider>
-        ) : (
-          <View className="flex-1 bg-background">
-            {route === 'login' ? (
-              <LoginScreen
-                onCreateAccount={() => setRoute('register')}
-                onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
-              />
-            ) : (
-              <RegisterScreen
-                onSignIn={() => setRoute('login')}
-                onSubmit={(username, password) => registerWithUsername(pb, { username, password })}
-              />
-            )}
-          </View>
-        )}
-        <StatusBar style="light" />
-      </SafeAreaProvider>
+      <ThemeProvider value={navigationTheme}>
+        <SafeAreaProvider>
+          {authRecord ? (
+            <AuthContext.Provider
+              value={{
+                authRecord,
+                logout: () => {
+                  signOut(pb);
+                  queryClient.clear();
+                  setRoute('login');
+                },
+              }}
+            >
+              <CallSessionProvider>
+                <View className="flex-1 bg-background">
+                  <Stack
+                    screenOptions={{
+                      contentStyle: { backgroundColor: '#080b12' },
+                      headerShown: false,
+                    }}
+                  >
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="call/[id]" />
+                    <Stack.Screen name="chat/[id]" />
+                    <Stack.Screen name="debug" />
+                    <Stack.Screen name="profile/[userId]" />
+                    <Stack.Screen name="profile/edit" />
+                    <Stack.Screen name="profile/setup" />
+                    <Stack.Screen name="settings/notifications" />
+                    <Stack.Screen name="settings/privacy" />
+                  </Stack>
+                  <ProfileSetupGate authRecord={authRecord} />
+                  <NotificationRouteTracker />
+                  <PushRegistration authRecord={authRecord} />
+                  <IncomingCallListener authRecord={authRecord} />
+                </View>
+              </CallSessionProvider>
+            </AuthContext.Provider>
+          ) : (
+            <View className="flex-1 bg-background">
+              {route === 'login' ? (
+                <LoginScreen
+                  onCreateAccount={() => setRoute('register')}
+                  onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
+                />
+              ) : (
+                <RegisterScreen
+                  onSignIn={() => setRoute('login')}
+                  onSubmit={(username, password) =>
+                    registerWithUsername(pb, { username, password })
+                  }
+                />
+              )}
+            </View>
+          )}
+          <StatusBar style="light" />
+        </SafeAreaProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

@@ -5,8 +5,10 @@ import {
   cancelFriendRequest,
   declineFriendRequest,
   getProfileAvatarUrl,
+  listFriendSuggestions,
   sendFriendRequest,
   startPrivateConversation,
+  type FriendSuggestion,
   type FriendshipRecord,
   type ProfileRecord,
 } from '@infchat/pocketbase';
@@ -89,6 +91,7 @@ export default function FriendsTab() {
   const currentUserId = authRecord.id;
   const normalizedQuery = normalizeUsername(query);
   const shouldSearchProfiles = activeFilter === 'Find' && normalizedQuery.length >= 3;
+  const shouldShowSuggestions = activeFilter === 'Find' && normalizedQuery.length === 0;
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const friendshipsQuery = useQuery({
@@ -129,6 +132,13 @@ export default function FriendsTab() {
     queryFn: () => searchCachedProfilesByUsername(pb, normalizedQuery),
     enabled: shouldSearchProfiles,
     networkMode: 'always',
+  });
+  const suggestionsQuery = useQuery({
+    queryKey: ['friend-suggestions', currentUserId],
+    queryFn: () => listFriendSuggestions(pb),
+    enabled: shouldShowSuggestions,
+    networkMode: 'always',
+    staleTime: 1000 * 60,
   });
 
   const activeFriendshipByUserId = useMemo(() => {
@@ -176,26 +186,39 @@ export default function FriendsTab() {
     [peopleByUserId],
   );
   const findPeople = useMemo(() => {
-    if (!shouldSearchProfiles) {
-      return [];
-    }
-
-    return (searchProfilesQuery.data ?? [])
-      .map((profile) =>
-        toPerson(
-          profile,
-          activeFriendshipByUserId.get(profile.user),
+    if (shouldShowSuggestions) {
+      return (suggestionsQuery.data ?? []).map((suggestion) =>
+        toSuggestedPerson(
+          suggestion,
+          activeFriendshipByUserId.get(suggestion.profile.user),
           currentUserId,
           fileTokenQuery.data,
         ),
-      )
-      .filter((person) => person.status !== 'friend');
+      );
+    }
+
+    if (shouldSearchProfiles) {
+      return (searchProfilesQuery.data ?? [])
+        .map((profile) =>
+          toPerson(
+            profile,
+            activeFriendshipByUserId.get(profile.user),
+            currentUserId,
+            fileTokenQuery.data,
+          ),
+        )
+        .filter((person) => person.status !== 'friend');
+    }
+
+    return [];
   }, [
     activeFriendshipByUserId,
     currentUserId,
     fileTokenQuery.data,
     searchProfilesQuery.data,
+    shouldShowSuggestions,
     shouldSearchProfiles,
+    suggestionsQuery.data,
   ]);
 
   const searchablePeople = useMemo(() => {
@@ -225,6 +248,9 @@ export default function FriendsTab() {
   const refreshFriendships = () => {
     void refreshCachedFriendships(pb).then((nextFriendships) => {
       queryClient.setQueryData(['friendships', currentUserId], nextFriendships);
+      void queryClient.invalidateQueries({
+        queryKey: ['friend-suggestions', currentUserId],
+      });
     });
   };
 
@@ -686,7 +712,9 @@ export default function FriendsTab() {
         {activeFilter === 'Requests' ? (
           <SectionTitle label={query ? 'Matching requests' : 'Friend requests'} />
         ) : null}
-        {activeFilter === 'Find' ? <FindNotice queryLength={normalizedQuery.length} /> : null}
+        {activeFilter === 'Find' ? (
+          <FindNotice hasSuggestions={findPeople.length > 0} queryLength={normalizedQuery.length} />
+        ) : null}
 
         {hasError ? (
           <EmptyState icon="cloud-offline" title="Could not load friends" />
@@ -757,6 +785,30 @@ function toPerson(
   };
 }
 
+function toSuggestedPerson(
+  suggestion: FriendSuggestion,
+  friendship: FriendshipRecord | undefined,
+  currentUserId: string,
+  fileToken?: string,
+): Person {
+  return {
+    ...toPerson(suggestion.profile, friendship, currentUserId, fileToken),
+    note: getSuggestionNote(suggestion),
+  };
+}
+
+function getSuggestionNote(suggestion: FriendSuggestion): string {
+  if (suggestion.mutualFriendCount > 1) {
+    return `${suggestion.mutualFriendCount} mutual friends`;
+  }
+
+  if (suggestion.mutualFriendCount === 1) {
+    return '1 mutual friend';
+  }
+
+  return 'suggested';
+}
+
 function getFriendStatus(
   friendship: FriendshipRecord | undefined,
   currentUserId: string,
@@ -793,6 +845,10 @@ function getFriendNote(status: FriendStatus): string {
 }
 
 function getEmptyTitle(activeFilter: FriendFilter, queryLength: number): string {
+  if (activeFilter === 'Find' && queryLength === 0) {
+    return 'Search username';
+  }
+
   if (activeFilter === 'Find' && queryLength < 3) {
     return 'Type 3 letters';
   }
@@ -826,7 +882,17 @@ function RoundIcon({
   );
 }
 
-function FindNotice({ queryLength }: { queryLength: number }) {
+function FindNotice({
+  hasSuggestions,
+  queryLength,
+}: {
+  hasSuggestions: boolean;
+  queryLength: number;
+}) {
+  if (queryLength === 0 && hasSuggestions) {
+    return <SectionTitle label="Suggested for you" />;
+  }
+
   return (
     <View className="mb-3 rounded-[20px] bg-muted px-4 py-3">
       <Text className="text-sm font-semibold text-foreground">

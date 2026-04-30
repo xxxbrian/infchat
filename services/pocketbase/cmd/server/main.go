@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,10 +40,12 @@ func main() {
 
 	bindAuthHooks(app)
 	bindProfileHooks(app)
+	bindPrivacyHooks(app)
 	bindFriendshipHooks(app)
 	bindConversationHooks(app)
 	bindConversationReadHooks(app)
 	bindCallRoutes(app)
+	bindFriendSuggestionRoutes(app)
 	bindPushRoutes(app)
 
 	if err := app.Start(); err != nil {
@@ -64,6 +68,235 @@ type liveKitParticipantMetadata struct {
 	DisplayName string `json:"displayName,omitempty"`
 	UserId      string `json:"userId"`
 	Username    string `json:"username,omitempty"`
+}
+
+type friendSuggestionPayload struct {
+	MutualFriendCount int            `json:"mutualFriendCount"`
+	Profile           map[string]any `json:"profile"`
+	Source            string         `json:"source"`
+}
+
+func bindFriendSuggestionRoutes(app *pocketbase.PocketBase) {
+	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
+		group := se.Router.Group("/api/infchat/friends")
+		group.Bind(apis.RequireAuth("users"))
+
+		group.GET("/suggestions", func(e *core.RequestEvent) error {
+			limit := requestLimit(e, 20, 50)
+			suggestions, err := findFriendSuggestions(e.App, e.Auth.Id, limit)
+			if err != nil {
+				return err
+			}
+
+			return e.JSON(http.StatusOK, map[string]any{"suggestions": suggestions})
+		})
+
+		return se.Next()
+	})
+}
+
+func requestLimit(e *core.RequestEvent, fallback int, max int) int {
+	limit, err := strconv.Atoi(e.Request.URL.Query().Get("limit"))
+	if err != nil || limit <= 0 {
+		return fallback
+	}
+	if limit > max {
+		return max
+	}
+
+	return limit
+}
+
+func findFriendSuggestions(app core.App, userId string, limit int) ([]friendSuggestionPayload, error) {
+	activeFriendships, err := app.FindRecordsByFilter(
+		"friendships",
+		"(requester={:userId} || recipient={:userId}) && (status='accepted' || status='pending')",
+		"-updated",
+		500,
+		0,
+		dbx.Params{"userId": userId},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	excludedUserIds := map[string]struct{}{userId: {}}
+	friendIds := make([]string, 0, len(activeFriendships))
+	for _, friendship := range activeFriendships {
+		otherUserId := otherFriendshipUserId(friendship, userId)
+		if otherUserId == "" {
+			continue
+		}
+
+		excludedUserIds[otherUserId] = struct{}{}
+		if friendship.GetString("status") == "accepted" {
+			friendIds = append(friendIds, otherUserId)
+		}
+	}
+
+	mutualCounts := map[string]int{}
+	for _, friendId := range friendIds {
+		friendships, err := app.FindRecordsByFilter(
+			"friendships",
+			"(requester={:friendId} || recipient={:friendId}) && status='accepted'",
+			"-updated",
+			500,
+			0,
+			dbx.Params{"friendId": friendId},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, friendship := range friendships {
+			candidateUserId := otherFriendshipUserId(friendship, friendId)
+			if candidateUserId == "" {
+				continue
+			}
+			if _, excluded := excludedUserIds[candidateUserId]; excluded {
+				continue
+			}
+
+			mutualCounts[candidateUserId]++
+		}
+	}
+
+	candidateUserIds := make([]string, 0, len(mutualCounts))
+	for candidateUserId := range mutualCounts {
+		candidateUserIds = append(candidateUserIds, candidateUserId)
+	}
+	sort.Slice(candidateUserIds, func(i int, j int) bool {
+		firstCount := mutualCounts[candidateUserIds[i]]
+		secondCount := mutualCounts[candidateUserIds[j]]
+		if firstCount == secondCount {
+			return candidateUserIds[i] < candidateUserIds[j]
+		}
+
+		return firstCount > secondCount
+	})
+
+	suggestions := make([]friendSuggestionPayload, 0, limit)
+	suggestedUserIds := map[string]struct{}{}
+	for _, candidateUserId := range candidateUserIds {
+		if len(suggestions) >= limit {
+			return suggestions, nil
+		}
+		if !privacySettingBool(app, candidateUserId, "show_in_mutual_suggestions", true) {
+			continue
+		}
+
+		suggestion, err := friendSuggestionForUser(app, candidateUserId, mutualCounts[candidateUserId], "mutual")
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+
+			return nil, err
+		}
+
+		suggestions = append(suggestions, suggestion)
+		suggestedUserIds[candidateUserId] = struct{}{}
+	}
+
+	if len(suggestions) >= limit {
+		return suggestions, nil
+	}
+
+	publicSettings, err := app.FindRecordsByFilter(
+		"privacy_settings",
+		"show_in_public_suggestions=true",
+		"-updated",
+		100,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	rand.Shuffle(len(publicSettings), func(i int, j int) {
+		publicSettings[i], publicSettings[j] = publicSettings[j], publicSettings[i]
+	})
+
+	for _, settings := range publicSettings {
+		if len(suggestions) >= limit {
+			break
+		}
+
+		candidateUserId := settings.GetString("user")
+		if candidateUserId == "" {
+			continue
+		}
+		if _, excluded := excludedUserIds[candidateUserId]; excluded {
+			continue
+		}
+		if _, suggested := suggestedUserIds[candidateUserId]; suggested {
+			continue
+		}
+
+		suggestion, err := friendSuggestionForUser(app, candidateUserId, 0, "public")
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+
+			return nil, err
+		}
+
+		suggestions = append(suggestions, suggestion)
+		suggestedUserIds[candidateUserId] = struct{}{}
+	}
+
+	return suggestions, nil
+}
+
+func otherFriendshipUserId(friendship *core.Record, userId string) string {
+	requester := friendship.GetString("requester")
+	recipient := friendship.GetString("recipient")
+	if requester == userId {
+		return recipient
+	}
+	if recipient == userId {
+		return requester
+	}
+
+	return ""
+}
+
+func privacySettingBool(app core.App, userId string, field string, fallback bool) bool {
+	settings, err := app.FindFirstRecordByFilter("privacy_settings", "user={:user}", dbx.Params{"user": userId})
+	if err != nil {
+		return fallback
+	}
+
+	return settings.GetBool(field)
+}
+
+func friendSuggestionForUser(app core.App, userId string, mutualFriendCount int, source string) (friendSuggestionPayload, error) {
+	profile, err := app.FindFirstRecordByFilter("profiles", "user={:user}", dbx.Params{"user": userId})
+	if err != nil {
+		return friendSuggestionPayload{}, err
+	}
+
+	return friendSuggestionPayload{
+		MutualFriendCount: mutualFriendCount,
+		Profile:           profilePayload(profile),
+		Source:            source,
+	}, nil
+}
+
+func profilePayload(profile *core.Record) map[string]any {
+	return map[string]any{
+		"id":                   profile.Id,
+		"user":                 profile.GetString("user"),
+		"username":             profile.GetString("username"),
+		"display_name":         profile.GetString("display_name"),
+		"avatar":               profile.GetString("avatar"),
+		"bio":                  profile.GetString("bio"),
+		"setup_skipped_fields": profile.GetString("setup_skipped_fields"),
+		"collectionId":         profile.Collection().Id,
+		"collectionName":       profile.Collection().Name,
+		"created":              profile.GetString("created"),
+		"updated":              profile.GetString("updated"),
+	}
 }
 
 func bindCallRoutes(app *pocketbase.PocketBase) {
@@ -1148,6 +1381,30 @@ func bindProfileHooks(app *pocketbase.PocketBase) {
 	})
 }
 
+func bindPrivacyHooks(app *pocketbase.PocketBase) {
+	app.OnRecordAfterCreateSuccess("users").BindFunc(func(e *core.RecordEvent) error {
+		if err := ensurePrivacySettings(e.App, e.Record.Id); err != nil {
+			return err
+		}
+
+		return e.Next()
+	})
+
+	app.OnRecordUpdateRequest("privacy_settings").BindFunc(func(e *core.RecordRequestEvent) error {
+		if e.HasSuperuserAuth() {
+			return e.Next()
+		}
+
+		if e.Auth == nil || e.Record.GetString("user") != e.Auth.Id {
+			return router.NewForbiddenError("You can only update your own privacy settings.", nil)
+		}
+
+		e.Record.Set("user", e.Record.Original().GetString("user"))
+
+		return e.Next()
+	})
+}
+
 func bindFriendshipHooks(app *pocketbase.PocketBase) {
 	app.OnRecordCreateRequest("friendships").BindFunc(func(e *core.RecordRequestEvent) error {
 		if e.HasSuperuserAuth() {
@@ -1329,6 +1586,32 @@ func ensureProfile(app core.App, user *core.Record) error {
 	}
 
 	return app.Save(profile)
+}
+
+func ensurePrivacySettings(app core.App, userId string) error {
+	if userId == "" {
+		return nil
+	}
+
+	_, err := app.FindFirstRecordByFilter("privacy_settings", "user={:user}", dbx.Params{"user": userId})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	privacySettings, err := app.FindCollectionByNameOrId("privacy_settings")
+	if err != nil {
+		return err
+	}
+
+	settings := core.NewRecord(privacySettings)
+	settings.Set("user", userId)
+	settings.Set("show_in_public_suggestions", false)
+	settings.Set("show_in_mutual_suggestions", true)
+
+	return app.Save(settings)
 }
 
 func friendshipPairKey(firstUserId string, secondUserId string) string {

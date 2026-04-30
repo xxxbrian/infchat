@@ -167,7 +167,7 @@ export default function ProfileSetupScreen() {
                 Make your profile yours
               </Text>
               <Text className="mt-3 text-[17px] font-semibold leading-6 text-muted-foreground">
-                Add the details friends see in chats and calls. You can skip anything now.
+                Add the details friends see in chats and calls.
               </Text>
             </View>
             <Pressable
