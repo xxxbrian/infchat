@@ -34,6 +34,7 @@ import {
   registerIOSPushDevice,
   setCurrentNotificationRoute,
   setupIOSSystemCalls,
+  setupIOSPushRegistrationRecovery,
   setupNotificationPresentation,
   setupNotificationResponses,
 } from '../lib/push-notifications';
@@ -139,10 +140,12 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
   useEffect(() => {
     void registerIOSPushDevice();
     const cleanupNotificationResponses = setupNotificationResponses();
+    const cleanupPushRegistrationRecovery = setupIOSPushRegistrationRecovery();
     const cleanupSystemCalls = setupIOSSystemCalls();
 
     return () => {
       cleanupNotificationResponses();
+      cleanupPushRegistrationRecovery();
       cleanupSystemCalls();
     };
   }, [authRecord.id]);

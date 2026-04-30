@@ -2,7 +2,7 @@ import { endCall, registerPushDevice, type PushEnvironment } from '@infchat/pock
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import RNCallKeep, { CONSTANTS as CALLKEEP_CONSTANTS } from 'react-native-callkeep';
 import VoipPushNotification from 'react-native-voip-push-notification';
 
@@ -37,6 +37,7 @@ type PendingCallKeepAction = 'answer' | 'end';
 
 const PENDING_CALLKEEP_ACTION_TIMEOUT = 30_000;
 const TERMINAL_CALL_UUID_TIMEOUT = 10 * 60_000;
+const PUSH_REGISTRATION_RETRY_DELAYS = [1_000, 5_000, 15_000];
 
 export type IOSSystemCallEndReason =
   | 'answered-elsewhere'
@@ -46,6 +47,7 @@ export type IOSSystemCallEndReason =
   | 'remote-ended';
 
 let systemCallHandlers: SystemCallHandlers = {};
+let latestVoipToken = '';
 const pendingCallKeepActionsByUUID = new Map<
   string,
   { actions: PendingCallKeepAction[]; timeout: ReturnType<typeof setTimeout> }
@@ -230,6 +232,14 @@ export async function registerIOSPushDevice(appVersion?: string) {
     return;
   }
 
+  await retryPushRegistration(() => registerIOSPushDeviceOnce(appVersion)).catch(() => {});
+}
+
+async function registerIOSPushDeviceOnce(appVersion?: string) {
+  if (!pb.authStore.isValid) {
+    return;
+  }
+
   const permissions = await Notifications.requestPermissionsAsync({
     ios: {
       allowAlert: true,
@@ -251,11 +261,35 @@ export async function registerIOSPushDevice(appVersion?: string) {
 
   await registerPushDevice(pb, {
     apnsToken: token.data,
-    appVersion,
+    appVersion: appVersion ?? Constants.expoConfig?.version,
     deviceId: await getDeviceId(),
     environment: getPushEnvironment(),
     platform: 'ios',
   });
+}
+
+export function setupIOSPushRegistrationRecovery(appVersion?: string) {
+  if (Platform.OS !== 'ios') {
+    return () => {};
+  }
+
+  const recoverRegistration = () => {
+    void registerIOSPushDevice(appVersion);
+    if (latestVoipToken) {
+      void registerVoipToken(latestVoipToken, appVersion);
+    }
+    VoipPushNotification.registerVoipToken();
+  };
+
+  const appStateSubscription = AppState.addEventListener('change', (status) => {
+    if (status === 'active') {
+      recoverRegistration();
+    }
+  });
+
+  return () => {
+    appStateSubscription.remove();
+  };
 }
 
 export function setupIOSSystemCalls() {
@@ -421,17 +455,39 @@ function handleNotificationResponse(response: Notifications.NotificationResponse
 }
 
 async function registerVoipToken(token: string, appVersion?: string) {
-  if (!pb.authStore.isValid) {
+  latestVoipToken = token.trim();
+  if (!latestVoipToken || !pb.authStore.isValid) {
     return;
   }
 
-  await registerPushDevice(pb, {
-    appVersion,
-    deviceId: await getDeviceId(),
-    environment: getPushEnvironment(),
-    platform: 'ios',
-    voipToken: token,
-  });
+  await retryPushRegistration(async () => {
+    if (!pb.authStore.isValid) {
+      return;
+    }
+
+    await registerPushDevice(pb, {
+      appVersion: appVersion ?? Constants.expoConfig?.version,
+      deviceId: await getDeviceId(),
+      environment: getPushEnvironment(),
+      platform: 'ios',
+      voipToken: latestVoipToken,
+    });
+  }).catch(() => {});
+}
+
+async function retryPushRegistration(task: () => Promise<void>) {
+  for (let attempt = 0; attempt <= PUSH_REGISTRATION_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      await task();
+      return;
+    } catch (error) {
+      if (attempt === PUSH_REGISTRATION_RETRY_DELAYS.length) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, PUSH_REGISTRATION_RETRY_DELAYS[attempt]));
+    }
+  }
 }
 
 function getPushEnvironment(): PushEnvironment {
