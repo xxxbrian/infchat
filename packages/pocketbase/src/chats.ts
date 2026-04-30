@@ -107,15 +107,6 @@ export type MarkConversationReadCommandResponse = {
   state: ConversationUserStateRecord;
 };
 
-export type ConversationReadRecord = {
-  id: string;
-  conversation: string;
-  user: string;
-  last_read_at: string;
-  created: string;
-  updated: string;
-};
-
 export function listConversations(pb: PocketBase): Promise<ConversationRecord[]> {
   return pb.collection('conversations').getFullList<ConversationRecord>({
     sort: '-last_message_at,-updated',
@@ -242,22 +233,6 @@ export function markConversationReadBySeq(
   });
 }
 
-export function listConversationReads(
-  pb: PocketBase,
-  conversationId: string,
-): Promise<ConversationReadRecord[]> {
-  return pb.collection('conversation_reads').getFullList<ConversationReadRecord>({
-    filter: pb.filter('conversation={:conversationId}', { conversationId }),
-    sort: 'user',
-  });
-}
-
-export function listVisibleConversationReads(pb: PocketBase): Promise<ConversationReadRecord[]> {
-  return pb.collection('conversation_reads').getFullList<ConversationReadRecord>({
-    sort: 'conversation,user',
-  });
-}
-
 export async function countUnreadMessages(
   pb: PocketBase,
   conversationId: string,
@@ -283,36 +258,6 @@ export async function countUnreadMessages(
   });
 
   return page.totalItems;
-}
-
-export async function markConversationRead(
-  pb: PocketBase,
-  conversationId: string,
-  lastReadAt = new Date().toISOString(),
-): Promise<ConversationReadRecord> {
-  const currentUserId = pb.authStore.record?.id;
-
-  if (!currentUserId) {
-    throw new Error('Sign in to mark chats as read.');
-  }
-
-  try {
-    const read = await pb.collection('conversation_reads').getFirstListItem<ConversationReadRecord>(
-      pb.filter('conversation={:conversationId} && user={:currentUserId}', {
-        conversationId,
-        currentUserId,
-      }),
-    );
-
-    return pb.collection('conversation_reads').update<ConversationReadRecord>(read.id, {
-      last_read_at: lastReadAt,
-    });
-  } catch {
-    return pb.collection('conversation_reads').create<ConversationReadRecord>({
-      conversation: conversationId,
-      last_read_at: lastReadAt,
-    });
-  }
 }
 
 export function sendTextMessage(pb: PocketBase, conversationId: string, body: string) {

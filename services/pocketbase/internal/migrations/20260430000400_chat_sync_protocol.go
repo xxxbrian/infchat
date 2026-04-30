@@ -418,6 +418,11 @@ func backfillChatSyncProtocol(app core.App) error {
 			return err
 		}
 
+		conversationReads, err := app.FindCollectionByNameOrId("conversation_reads")
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
 		for _, memberId := range conversation.GetStringSlice("members") {
 			if _, err := app.FindFirstRecordByFilter(
 				"conversation_user_states",
@@ -430,22 +435,24 @@ func backfillChatSyncProtocol(app core.App) error {
 			}
 
 			lastReadSeq := 0
-			read, err := app.FindFirstRecordByFilter(
-				"conversation_reads",
-				"conversation={:conversation} && user={:user}",
-				dbx.Params{"conversation": conversation.Id, "user": memberId},
-			)
-			if err == nil {
-				lastReadAt := read.GetDateTime("last_read_at")
-				for _, message := range messages {
-					if !message.GetDateTime("created").Time().After(lastReadAt.Time()) {
-						if seq := messageSeqById[message.Id]; seq > lastReadSeq {
-							lastReadSeq = seq
+			if conversationReads != nil {
+				read, err := app.FindFirstRecordByFilter(
+					"conversation_reads",
+					"conversation={:conversation} && user={:user}",
+					dbx.Params{"conversation": conversation.Id, "user": memberId},
+				)
+				if err == nil {
+					lastReadAt := read.GetDateTime("last_read_at")
+					for _, message := range messages {
+						if !message.GetDateTime("created").Time().After(lastReadAt.Time()) {
+							if seq := messageSeqById[message.Id]; seq > lastReadSeq {
+								lastReadSeq = seq
+							}
 						}
 					}
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					return err
 				}
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return err
 			}
 
 			unreadCount := 0

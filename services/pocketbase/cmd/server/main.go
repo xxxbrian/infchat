@@ -43,7 +43,6 @@ func main() {
 	bindPrivacyHooks(app)
 	bindFriendshipHooks(app)
 	bindConversationHooks(app)
-	bindConversationReadHooks(app)
 	bindCallRoutes(app)
 	bindChatSyncRoutes(app)
 	bindFriendSuggestionRoutes(app)
@@ -1269,24 +1268,6 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		}
 
 		return e.Next()
-	})
-}
-
-func bindConversationReadHooks(app *pocketbase.PocketBase) {
-	app.OnRecordCreateRequest("conversation_reads").BindFunc(func(e *core.RecordRequestEvent) error {
-		if e.HasSuperuserAuth() {
-			return e.Next()
-		}
-
-		return router.NewBadRequestError("Use the chat sync read endpoint to mark conversations read.", nil)
-	})
-
-	app.OnRecordUpdateRequest("conversation_reads").BindFunc(func(e *core.RecordRequestEvent) error {
-		if e.HasSuperuserAuth() {
-			return e.Next()
-		}
-
-		return router.NewBadRequestError("Use the chat sync read endpoint to mark conversations read.", nil)
 	})
 }
 
