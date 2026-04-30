@@ -31,6 +31,7 @@ import { CallSessionProvider, useCallSession } from '../lib/call-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { ChatSyncContext } from '../lib/chat-sync-context';
 import { ChatSyncService } from '../lib/chat-sync-service';
+import { installDebugLogCapture } from '../lib/debug-log';
 import { refreshCachedCurrentProfile } from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
 import { getMissingProfileSetupFields } from '../lib/profile-completion';
@@ -46,6 +47,7 @@ import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 
 setupNotificationPresentation();
+installDebugLogCapture();
 
 const navigationTheme = {
   ...DarkTheme,

@@ -6,6 +6,8 @@ import {
 } from '@infchat/pocketbase';
 import * as SQLite from 'expo-sqlite';
 
+import { logDebugEvent } from './debug-log';
+
 type JsonRow = {
   value: string;
 };
@@ -145,9 +147,20 @@ async function getDb() {
         'schema_version',
       );
       if (row?.value === String(CHAT_SYNC_SCHEMA_VERSION)) {
+        void logDebugEvent('info', 'chat-sync-store', 'Chat sync schema ready', {
+          schemaVersion: CHAT_SYNC_SCHEMA_VERSION,
+        });
         return;
       }
 
+      void logDebugEvent(
+        'warn',
+        'chat-sync-store',
+        'Resetting chat sync replica for schema upgrade',
+        {
+          schemaVersion: CHAT_SYNC_SCHEMA_VERSION,
+        },
+      );
       await enqueueDbWrite(() =>
         db.withExclusiveTransactionAsync(async (txn) => {
           await txn.runAsync('DELETE FROM local_conversations');
@@ -180,6 +193,10 @@ async function ensureColumn(
     return;
   }
 
+  void logDebugEvent('warn', 'chat-sync-store', 'Repairing missing SQLite column', {
+    columnName,
+    tableName,
+  });
   await db.execAsync(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }
 
@@ -429,6 +446,11 @@ export async function enqueueTextOutboxMessage(
     ),
   );
 
+  void logDebugEvent('info', 'outbox', 'Queued text message', {
+    clientMessageId: message.client_message_id,
+    conversationId,
+  });
+
   return message;
 }
 
@@ -475,6 +497,10 @@ export async function markOutboxSending(authId: string, clientMessageId: string)
       clientMessageId,
     ),
   );
+
+  void logDebugEvent('info', 'outbox', 'Marked message sending', {
+    clientMessageId,
+  });
 }
 
 export async function markOutboxRetry(
@@ -498,6 +524,12 @@ export async function markOutboxRetry(
       clientMessageId,
     ),
   );
+
+  void logDebugEvent('warn', 'outbox', 'Scheduled message retry', {
+    clientMessageId,
+    error,
+    nextAttemptDelayMs,
+  });
 }
 
 export async function resetOutboxMessageForRetry(
@@ -515,6 +547,10 @@ export async function resetOutboxMessageForRetry(
       clientMessageId,
     ),
   );
+
+  void logDebugEvent('info', 'outbox', 'Reset failed message for manual retry', {
+    clientMessageId,
+  });
 }
 
 export async function cancelOutboxMessage(authId: string, clientMessageId: string): Promise<void> {
@@ -529,6 +565,10 @@ export async function cancelOutboxMessage(authId: string, clientMessageId: strin
       clientMessageId,
     ),
   );
+
+  void logDebugEvent('info', 'outbox', 'Canceled failed local message', {
+    clientMessageId,
+  });
 }
 
 export async function markOutboxTerminalFailure(
@@ -549,6 +589,11 @@ export async function markOutboxTerminalFailure(
       clientMessageId,
     ),
   );
+
+  void logDebugEvent('error', 'outbox', 'Marked message terminal failure', {
+    clientMessageId,
+    error,
+  });
 }
 
 export async function writeSyncJournal(
@@ -575,6 +620,15 @@ export async function writeSyncJournal(
       new Date().toISOString(),
     ),
   );
+
+  if (result === 'error') {
+    void logDebugEvent('error', 'chat-sync', 'Sync journal error', {
+      error,
+      fromCursor,
+      toCursor,
+      trigger,
+    });
+  }
 }
 
 async function writeConversationRow(
@@ -648,6 +702,11 @@ async function confirmOutboxMessage(db: SqliteWriter, authId: string, message: M
     authId,
     message.client_message_id,
   );
+
+  void logDebugEvent('info', 'outbox', 'Confirmed message from server', {
+    clientMessageId: message.client_message_id,
+    serverMessageId: message.id,
+  });
 }
 
 async function writeChatSyncCursor(db: SqliteWriter, authId: string, cursor: number) {

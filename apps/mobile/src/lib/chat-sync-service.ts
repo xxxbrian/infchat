@@ -26,6 +26,7 @@ import {
   resetOutboxMessageForRetry,
   writeSyncJournal,
 } from './chat-sync-store';
+import { logDebugEvent } from './debug-log';
 import { getDeviceId } from './device-id';
 
 export type ChatSyncTrigger =
@@ -62,11 +63,17 @@ export class ChatSyncService {
   }
 
   start() {
+    void logDebugEvent('info', 'chat-sync', 'Starting chat sync service', {
+      authId: this.authId,
+    });
     this.enqueueSync('startup');
     this.pumpOutbox();
   }
 
   dispose() {
+    void logDebugEvent('info', 'chat-sync', 'Disposing chat sync service', {
+      authId: this.authId,
+    });
     if (this.outboxRetryTimer) {
       clearTimeout(this.outboxRetryTimer);
       this.outboxRetryTimer = null;
@@ -74,6 +81,9 @@ export class ChatSyncService {
   }
 
   enqueueSync(trigger: ChatSyncTrigger) {
+    void logDebugEvent('debug', 'chat-sync', 'Enqueued sync trigger', {
+      trigger,
+    });
     this.pendingTriggers.add(trigger);
     if (trigger === 'foreground' || trigger === 'reconnect' || trigger === 'push') {
       void this.pumpOutbox();
@@ -88,6 +98,10 @@ export class ChatSyncService {
 
   async enqueueTextMessage(conversationId: string, body: string) {
     const message = await enqueueTextOutboxMessage(this.authId, conversationId, body);
+    void logDebugEvent('info', 'chat-sync', 'Enqueued local text message', {
+      clientMessageId: message.client_message_id,
+      conversationId,
+    });
     this.invalidateChatQueries(conversationId);
     void this.pumpOutbox();
 
@@ -95,12 +109,20 @@ export class ChatSyncService {
   }
 
   async retryOutboxMessage(conversationId: string, clientMessageId: string) {
+    void logDebugEvent('info', 'chat-sync', 'Manual outbox retry requested', {
+      clientMessageId,
+      conversationId,
+    });
     await resetOutboxMessageForRetry(this.authId, clientMessageId);
     this.invalidateChatQueries(conversationId);
     await this.pumpOutbox();
   }
 
   async cancelFailedOutboxMessage(conversationId: string, clientMessageId: string) {
+    void logDebugEvent('info', 'chat-sync', 'Cancel failed outbox message requested', {
+      clientMessageId,
+      conversationId,
+    });
     await cancelOutboxMessage(this.authId, clientMessageId);
     this.invalidateChatQueries(conversationId);
   }
@@ -110,6 +132,10 @@ export class ChatSyncService {
       return;
     }
 
+    void logDebugEvent('info', 'chat-sync', 'Deleting messages', {
+      conversationId,
+      messageIds,
+    });
     const response = await deleteConversationMessages(this.pb, conversationId, messageIds);
     const deletedMessageIds = response.messages.map((message) => message.id);
     await applyLocalChatRecords(this.authId, {
@@ -126,6 +152,10 @@ export class ChatSyncService {
   }
 
   async syncConversationHistory(conversationId: string, beforeSeq?: number) {
+    void logDebugEvent('info', 'chat-sync', 'Loading conversation history', {
+      beforeSeq,
+      conversationId,
+    });
     const response = await listConversationMessagesBeforeSeq(
       this.pb,
       conversationId,
@@ -137,6 +167,10 @@ export class ChatSyncService {
   }
 
   async markConversationRead(conversationId: string, lastReadSeq: number) {
+    void logDebugEvent('debug', 'chat-sync', 'Marking conversation read', {
+      conversationId,
+      lastReadSeq,
+    });
     const response = await markConversationReadBySeq(this.pb, conversationId, lastReadSeq);
     await applyLocalChatRecords(this.authId, { state: response.state });
     this.invalidateChatQueries(conversationId);
@@ -166,9 +200,19 @@ export class ChatSyncService {
 
   private async syncOnce(trigger: string) {
     const fromCursor = await getChatSyncCursor(this.authId);
+    void logDebugEvent('info', 'chat-sync', 'Sync started', {
+      fromCursor,
+      trigger,
+    });
     try {
       if (fromCursor === 0) {
         const bootstrap = await bootstrapChatSync(this.pb);
+        void logDebugEvent('info', 'chat-sync', 'Bootstrap received', {
+          conversations: bootstrap.conversations.length,
+          cursor: bootstrap.cursor,
+          states: bootstrap.states.length,
+          trigger,
+        });
         await applyChatBootstrap(
           this.authId,
           bootstrap.conversations,
@@ -178,6 +222,10 @@ export class ChatSyncService {
         await writeSyncJournal(this.authId, trigger, 'success', fromCursor, bootstrap.cursor);
         await this.syncFromCursor(bootstrap.cursor);
         this.invalidateChatQueries();
+        void logDebugEvent('info', 'chat-sync', 'Bootstrap sync completed', {
+          cursor: bootstrap.cursor,
+          trigger,
+        });
         return;
       }
 
@@ -185,7 +233,18 @@ export class ChatSyncService {
 
       await writeSyncJournal(this.authId, trigger, 'success', fromCursor, cursor);
       this.invalidateChatQueries();
+      void logDebugEvent('info', 'chat-sync', 'Sync completed', {
+        cursor,
+        fromCursor,
+        trigger,
+      });
     } catch (error) {
+      void logDebugEvent('error', 'chat-sync', 'Sync failed', {
+        error: getErrorMessage(error),
+        fromCursor,
+        status: getErrorStatus(error),
+        trigger,
+      });
       await writeSyncJournal(
         this.authId,
         trigger,
@@ -202,6 +261,12 @@ export class ChatSyncService {
     let hasMore = true;
     while (hasMore) {
       const response = await syncChatEvents(this.pb, cursor);
+      void logDebugEvent('debug', 'chat-sync', 'Sync page received', {
+        cursor: response.cursor,
+        events: response.events.length,
+        fromCursor: cursor,
+        hasMore: response.hasMore,
+      });
       await applyChatSyncEvents(this.authId, response.events, response.cursor);
       cursor = response.cursor;
       hasMore = response.hasMore;
@@ -219,10 +284,18 @@ export class ChatSyncService {
     try {
       const deviceId = await getDeviceId();
       const pendingMessages = await listPendingOutboxMessages(this.authId);
+      void logDebugEvent('debug', 'outbox', 'Outbox pump started', {
+        pendingCount: pendingMessages.length,
+      });
       for (const pendingMessage of pendingMessages) {
         await markOutboxSending(this.authId, pendingMessage.client_message_id);
         this.invalidateChatQueries(pendingMessage.conversation_id);
         try {
+          void logDebugEvent('info', 'outbox', 'Sending outbox message', {
+            attemptCount: pendingMessage.attempt_count ?? 0,
+            clientMessageId: pendingMessage.client_message_id,
+            conversationId: pendingMessage.conversation_id,
+          });
           const response = await sendTextMessageCommand(this.pb, {
             body: pendingMessage.body,
             clientMessageId: pendingMessage.client_message_id,
@@ -233,18 +306,37 @@ export class ChatSyncService {
             conversation: response.conversation,
             message: response.message,
           });
+          void logDebugEvent('info', 'outbox', 'Outbox message sent', {
+            clientMessageId: pendingMessage.client_message_id,
+            serverMessageId: response.message.id,
+          });
           this.enqueueSync('outbox');
         } catch (error) {
           const errorMessage = getErrorMessage(error);
           const attemptCount = pendingMessage.attempt_count ?? 0;
           const retryDelayMs = OUTBOX_RETRY_DELAYS_MS[attemptCount];
           if (isPermanentCommandError(error) || retryDelayMs === undefined) {
+            void logDebugEvent('error', 'outbox', 'Outbox message failed terminally', {
+              attemptCount,
+              clientMessageId: pendingMessage.client_message_id,
+              conversationId: pendingMessage.conversation_id,
+              error: errorMessage,
+              status: getErrorStatus(error),
+            });
             await markOutboxTerminalFailure(
               this.authId,
               pendingMessage.client_message_id,
               errorMessage,
             );
           } else {
+            void logDebugEvent('warn', 'outbox', 'Outbox message will retry', {
+              attemptCount,
+              clientMessageId: pendingMessage.client_message_id,
+              conversationId: pendingMessage.conversation_id,
+              error: errorMessage,
+              retryDelayMs,
+              status: getErrorStatus(error),
+            });
             await markOutboxRetry(
               this.authId,
               pendingMessage.client_message_id,
@@ -266,6 +358,9 @@ export class ChatSyncService {
       return;
     }
 
+    void logDebugEvent('debug', 'outbox', 'Scheduled outbox pump retry', {
+      delayMs,
+    });
     this.outboxRetryTimer = setTimeout(() => {
       this.outboxRetryTimer = null;
       void this.pumpOutbox();
