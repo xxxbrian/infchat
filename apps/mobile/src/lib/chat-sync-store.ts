@@ -284,6 +284,21 @@ export async function applyLocalChatRecords(
   );
 }
 
+export async function removeLocalMessages(authId: string, messageIds: string[]): Promise<void> {
+  if (messageIds.length === 0) {
+    return;
+  }
+
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync(async (txn) => {
+      for (const messageId of messageIds) {
+        await removeMessageRow(txn, authId, messageId);
+      }
+    }),
+  );
+}
+
 export async function listLocalConversations(authId: string): Promise<ConversationRecord[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<JsonRow>(
@@ -475,6 +490,20 @@ export async function resetOutboxMessageForRetry(
       `UPDATE outbox_messages
        SET state = 'queued', attempt_count = 0, last_error = NULL, next_attempt_at = NULL, updated_at = ?
        WHERE auth_id = ? AND client_message_id = ? AND state = 'failed_terminal'`,
+      new Date().toISOString(),
+      authId,
+      clientMessageId,
+    ),
+  );
+}
+
+export async function cancelOutboxMessage(authId: string, clientMessageId: string): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE outbox_messages
+       SET state = 'canceled', updated_at = ?
+       WHERE auth_id = ? AND client_message_id = ? AND state IN ('queued', 'retry_wait', 'failed_terminal')`,
       new Date().toISOString(),
       authId,
       clientMessageId,

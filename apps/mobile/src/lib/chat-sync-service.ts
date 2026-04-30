@@ -1,6 +1,7 @@
 import {
   bootstrapChatSync,
   type ConversationRecord,
+  deleteConversationMessages,
   listConversationMessagesBeforeSeq,
   markConversationReadBySeq,
   sendTextMessageCommand,
@@ -14,12 +15,14 @@ import {
   applyChatSyncEvents,
   applyConversationHistory,
   applyLocalChatRecords,
+  cancelOutboxMessage,
   enqueueTextOutboxMessage,
   getChatSyncCursor,
   listPendingOutboxMessages,
   markOutboxRetry,
   markOutboxSending,
   markOutboxTerminalFailure,
+  removeLocalMessages,
   resetOutboxMessageForRetry,
   writeSyncJournal,
 } from './chat-sync-store';
@@ -95,6 +98,26 @@ export class ChatSyncService {
     await resetOutboxMessageForRetry(this.authId, clientMessageId);
     this.invalidateChatQueries(conversationId);
     await this.pumpOutbox();
+  }
+
+  async cancelFailedOutboxMessage(conversationId: string, clientMessageId: string) {
+    await cancelOutboxMessage(this.authId, clientMessageId);
+    this.invalidateChatQueries(conversationId);
+  }
+
+  async deleteMessages(conversationId: string, messageIds: string[]) {
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    const response = await deleteConversationMessages(this.pb, conversationId, messageIds);
+    const deletedMessageIds = response.messages.map((message) => message.id);
+    await applyLocalChatRecords(this.authId, {
+      conversation: response.conversation,
+    });
+    await removeLocalMessages(this.authId, deletedMessageIds);
+    this.invalidateChatQueries(conversationId);
+    this.enqueueSync('manual');
   }
 
   async applyConversationSnapshot(conversation: ConversationRecord) {

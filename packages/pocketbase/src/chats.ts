@@ -31,6 +31,7 @@ export type MessageRecord = {
   client_message_id?: string;
   conversation: string;
   deleted_at?: string;
+  deleted_by?: string;
   edited_at?: string;
   edit_version?: number;
   message_seq?: number;
@@ -105,6 +106,12 @@ export type SendMessageCommandResponse = {
 export type MarkConversationReadCommandResponse = {
   cursor: number;
   state: ConversationUserStateRecord;
+};
+
+export type DeleteMessagesCommandResponse = {
+  conversation: ConversationRecord;
+  cursor: number;
+  messages: MessageRecord[];
 };
 
 export function listConversations(pb: PocketBase): Promise<ConversationRecord[]> {
@@ -229,6 +236,17 @@ export function markConversationReadBySeq(
 ): Promise<MarkConversationReadCommandResponse> {
   return pb.send(`/api/infchat/conversations/${conversationId}/read`, {
     body: { lastReadSeq },
+    method: 'POST',
+  });
+}
+
+export function deleteConversationMessages(
+  pb: PocketBase,
+  conversationId: string,
+  messageIds: string[],
+): Promise<DeleteMessagesCommandResponse> {
+  return pb.send(`/api/infchat/conversations/${conversationId}/messages/delete`, {
+    body: { messageIds },
     method: 'POST',
   });
 }
