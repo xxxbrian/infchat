@@ -207,7 +207,7 @@ func ensureSyncEventsCollection(app core.App, users *core.Collection, conversati
 		&core.AutodateField{Name: "created", OnCreate: true},
 		&core.AutodateField{Name: "updated", OnCreate: true, OnUpdate: true},
 	)
-	collection.AddIndex("idx_sync_events_cursor", true, "cursor", "")
+	collection.AddIndex("idx_sync_events_cursor", false, "cursor", "")
 	collection.AddIndex("idx_sync_events_user_cursor", false, "user, cursor", "")
 	collection.AddIndex("idx_sync_events_conversation_cursor", false, "conversation, cursor", "")
 

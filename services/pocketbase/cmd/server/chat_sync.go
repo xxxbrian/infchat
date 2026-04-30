@@ -397,29 +397,46 @@ func reserveMessageSeq(app core.App, conversationId string) (int, error) {
 }
 
 func nextSyncCursor(app core.App) (int, error) {
-	cursor, err := app.FindFirstRecordByFilter("sync_cursors", "scope={:scope}", dbx.Params{"scope": "global"})
-	if err != nil {
+	for attempt := 0; attempt < 2; attempt++ {
+		var cursor int
+		err := app.DB().NewQuery(
+			`UPDATE sync_cursors
+			 SET next_cursor = CASE WHEN next_cursor > 0 THEN next_cursor + 1 ELSE 2 END
+			 WHERE scope = 'global'
+			 RETURNING CASE WHEN next_cursor > 1 THEN next_cursor - 1 ELSE 1 END`,
+		).Row(&cursor)
+		if err == nil {
+			return cursor, nil
+		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
+		if err := ensureGlobalSyncCursorRecord(app); err != nil {
+			return 0, err
+		}
+	}
 
-		collection, collectionErr := app.FindCollectionByNameOrId("sync_cursors")
-		if collectionErr != nil {
-			return 0, collectionErr
+	return 0, errors.New("failed to initialize chat sync cursor")
+}
+
+func ensureGlobalSyncCursorRecord(app core.App) error {
+	collection, err := app.FindCollectionByNameOrId("sync_cursors")
+	if err != nil {
+		return err
+	}
+
+	cursor := core.NewRecord(collection)
+	cursor.Set("scope", "global")
+	cursor.Set("next_cursor", 1)
+	if err := app.Save(cursor); err != nil {
+		if _, existingErr := app.FindFirstRecordByFilter("sync_cursors", "scope={:scope}", dbx.Params{"scope": "global"}); existingErr == nil {
+			return nil
 		}
 
-		cursor = core.NewRecord(collection)
-		cursor.Set("scope", "global")
-		cursor.Set("next_cursor", 1)
+		return err
 	}
 
-	nextCursor := cursor.GetInt("next_cursor")
-	if nextCursor <= 0 {
-		nextCursor = 1
-	}
-	cursor.Set("next_cursor", nextCursor+1)
-
-	return nextCursor, app.Save(cursor)
+	return nil
 }
 
 func persistIdempotencyKey(app core.App, userId string, deviceId string, clientMessageId string, payloadHash string, conversationId string, messageId string, cursor int) error {
