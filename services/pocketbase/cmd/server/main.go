@@ -1239,15 +1239,7 @@ func bindConversationReadHooks(app *pocketbase.PocketBase) {
 			return e.Next()
 		}
 
-		if e.Auth == nil {
-			return router.NewForbiddenError("Sign in to mark chats as read.", nil)
-		}
-
-		if err := prepareConversationReadRecord(e.App, e.Record, e.Auth.Id); err != nil {
-			return err
-		}
-
-		return e.Next()
+		return router.NewBadRequestError("Use the chat sync read endpoint to mark conversations read.", nil)
 	})
 
 	app.OnRecordUpdateRequest("conversation_reads").BindFunc(func(e *core.RecordRequestEvent) error {
@@ -1255,46 +1247,8 @@ func bindConversationReadHooks(app *pocketbase.PocketBase) {
 			return e.Next()
 		}
 
-		if e.Auth == nil {
-			return router.NewForbiddenError("Sign in to mark chats as read.", nil)
-		}
-
-		original := e.Record.Original()
-		e.Record.Set("conversation", original.GetString("conversation"))
-		e.Record.Set("user", original.GetString("user"))
-
-		if original.GetString("user") != e.Auth.Id {
-			return router.NewForbiddenError("Only your read state can be updated.", nil)
-		}
-
-		if err := prepareConversationReadRecord(e.App, e.Record, e.Auth.Id); err != nil {
-			return err
-		}
-
-		return e.Next()
+		return router.NewBadRequestError("Use the chat sync read endpoint to mark conversations read.", nil)
 	})
-}
-
-func prepareConversationReadRecord(app core.App, record *core.Record, userId string) error {
-	conversation, err := app.FindRecordById("conversations", record.GetString("conversation"))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return router.NewBadRequestError("Conversation was not found.", nil)
-		}
-
-		return err
-	}
-
-	if !containsString(conversation.GetStringSlice("members"), userId) {
-		return router.NewForbiddenError("You are not a member of this conversation.", nil)
-	}
-
-	record.Set("user", userId)
-	if record.GetString("last_read_at") == "" {
-		record.Set("last_read_at", types.NowDateTime())
-	}
-
-	return nil
 }
 
 func updateConversationPreviewFromMessage(app core.App, message *core.Record, timestamp string) error {
