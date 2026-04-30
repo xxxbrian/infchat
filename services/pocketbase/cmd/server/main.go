@@ -369,20 +369,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				}
 			}
 
-			collection, err := e.App.FindCollectionByNameOrId("call_rooms")
+			callRoom, err := createStartedCallRoom(e.App, conversation, e.Auth.Id, kind, data.DeviceId)
 			if err != nil {
-				return err
-			}
-
-			callRoom := core.NewRecord(collection)
-			callRoom.Set("conversation", conversation.Id)
-			callRoom.Set("created_by", e.Auth.Id)
-			callRoom.Set("kind", kind)
-			callRoom.Set("room_name", newCallRoomName(conversation.Id))
-			callRoom.Set("status", "ringing")
-			callRoom.Set("ended_at", "")
-
-			if err := e.App.Save(callRoom); err != nil {
 				existingCallRoom, findErr := e.App.FindFirstRecordByFilter(
 					"call_rooms",
 					"conversation={:conversationId} && ("+callRoomActiveFilter+")",
@@ -403,14 +391,6 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				}
 
 				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
-			}
-
-			if err := createCallMessage(e.App, callRoom); err != nil {
-				return err
-			}
-
-			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
-				return err
 			}
 
 			go sendIncomingCallPushNotifications(e.App, callRoom)
@@ -702,6 +682,35 @@ func callRoomPayload(callRoom *core.Record) map[string]any {
 		"created":      callRoom.GetString("created"),
 		"updated":      callRoom.GetString("updated"),
 	}
+}
+
+func createStartedCallRoom(app core.App, conversation *core.Record, userId string, kind string, deviceId string) (*core.Record, error) {
+	var callRoom *core.Record
+	err := app.RunInTransaction(func(txApp core.App) error {
+		collection, err := txApp.FindCollectionByNameOrId("call_rooms")
+		if err != nil {
+			return err
+		}
+
+		callRoom = core.NewRecord(collection)
+		callRoom.Set("conversation", conversation.Id)
+		callRoom.Set("created_by", userId)
+		callRoom.Set("kind", kind)
+		callRoom.Set("room_name", newCallRoomName(conversation.Id))
+		callRoom.Set("status", "ringing")
+		callRoom.Set("ended_at", "")
+
+		if err := txApp.Save(callRoom); err != nil {
+			return err
+		}
+		if err := createCallMessage(txApp, callRoom); err != nil {
+			return err
+		}
+
+		return markCallParticipantActive(txApp, callRoom, userId, deviceId)
+	})
+
+	return callRoom, err
 }
 
 func createCallMessage(app core.App, callRoom *core.Record) error {
@@ -1149,16 +1158,6 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		}
 		body := strings.TrimSpace(e.Record.GetString("body"))
 		e.Record.Set("body", body)
-		if e.Record.GetInt("message_seq") <= 0 {
-			messageSeq, err := reserveMessageSeq(e.App, conversation.Id)
-			if err != nil {
-				return err
-			}
-			e.Record.Set("message_seq", messageSeq)
-		}
-		if e.Record.GetInt("edit_version") <= 0 {
-			e.Record.Set("edit_version", 0)
-		}
 
 		switch kind {
 		case "text":
@@ -1173,6 +1172,17 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 			}
 		default:
 			return router.NewBadRequestError("Invalid message kind.", nil)
+		}
+
+		if e.Record.GetInt("message_seq") <= 0 {
+			messageSeq, err := reserveMessageSeq(e.App, conversation.Id)
+			if err != nil {
+				return err
+			}
+			e.Record.Set("message_seq", messageSeq)
+		}
+		if e.Record.GetInt("edit_version") <= 0 {
+			e.Record.Set("edit_version", 0)
 		}
 
 		return e.Next()

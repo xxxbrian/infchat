@@ -257,6 +257,12 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		}
 
 		if err := persistIdempotencyKey(txApp, userId, deviceId, clientMessageId, payloadHash, conversation.Id, message.Id, cursor); err != nil {
+			if replay, replayErr := replayIdempotentMessage(txApp, userId, deviceId, clientMessageId, payloadHash); replayErr == nil {
+				result = replay
+
+				return nil
+			}
+
 			return err
 		}
 
@@ -275,6 +281,36 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 	})
 
 	return result, err
+}
+
+func replayIdempotentMessage(app core.App, userId string, deviceId string, clientMessageId string, payloadHash string) (map[string]any, error) {
+	existing, err := app.FindFirstRecordByFilter(
+		"idempotency_keys",
+		"user={:userId} && device_id={:deviceId} && client_message_id={:clientMessageId}",
+		dbx.Params{"clientMessageId": clientMessageId, "deviceId": deviceId, "userId": userId},
+	)
+	if err != nil {
+		return nil, err
+	}
+	if existing.GetString("payload_hash") != payloadHash {
+		return nil, router.NewBadRequestError("clientMessageId was already used for a different message.", nil)
+	}
+
+	message, err := app.FindRecordById("messages", existing.GetString("message"))
+	if err != nil {
+		return nil, err
+	}
+	conversation, err := app.FindRecordById("conversations", existing.GetString("conversation"))
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"conversation": conversation,
+		"cursor":       existing.GetInt("result_cursor"),
+		"message":      message,
+		"replayed":     true,
+	}, nil
 }
 
 func markConversationReadCommand(app core.App, userId string, conversationId string, lastReadSeq int) (map[string]any, error) {
