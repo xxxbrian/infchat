@@ -184,6 +184,31 @@ export default function ChatTab() {
   const hasError = conversationsQuery.isError && conversations.length === 0;
 
   useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+
+    void chatSyncService
+      .syncNow('manual')
+      .then(() => {
+        if (isMounted) {
+          void queryClient.invalidateQueries({
+            queryKey: ['chat', authRecord.id],
+          });
+        }
+      })
+      .catch(() => {
+        // Foreground/reconnect hints will retry if the initial list sync fails.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authRecord.id, chatSyncService, isOnline, queryClient]);
+
+  useEffect(() => {
     if (!isOnline || relatedUserIds.length === 0) {
       return;
     }

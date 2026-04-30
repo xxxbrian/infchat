@@ -14,6 +14,10 @@ type CursorRow = {
   cursor: number;
 };
 
+type TableInfoRow = {
+  name: string;
+};
+
 export type OutboxMessageState =
   | 'queued'
   | 'sending_create'
@@ -134,6 +138,8 @@ async function getDb() {
   `,
     )
     .then(async () => {
+      await ensureColumn(db, 'outbox_messages', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
+
       const row = await db.getFirstAsync<JsonRow>(
         'SELECT value FROM chat_meta WHERE key = ?',
         'schema_version',
@@ -161,6 +167,20 @@ async function getDb() {
   await schemaPromise;
 
   return db;
+}
+
+async function ensureColumn(
+  db: SQLite.SQLiteDatabase,
+  tableName: string,
+  columnName: string,
+  definition: string,
+) {
+  const columns = await db.getAllAsync<TableInfoRow>(`PRAGMA table_info(${tableName})`);
+  if (columns.some((column) => column.name === columnName)) {
+    return;
+  }
+
+  await db.execAsync(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
 }
 
 export async function getChatSyncCursor(authId: string): Promise<number> {
