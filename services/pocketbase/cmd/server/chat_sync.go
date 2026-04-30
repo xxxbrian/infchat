@@ -228,9 +228,9 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 			return err
 		}
 
-		messageSeq := conversation.GetInt("next_message_seq")
-		if messageSeq <= 0 {
-			messageSeq = nextMessageSeqForConversation(txApp, conversation.Id)
+		messageSeq, err := reserveMessageSeq(txApp, conversation.Id)
+		if err != nil {
+			return err
 		}
 
 		message := core.NewRecord(messageCollection)
@@ -247,16 +247,11 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 			return err
 		}
 
-		conversation.Set("next_message_seq", messageSeq+1)
-		conversation.Set("last_message_id", message.Id)
-		conversation.Set("last_message_seq", messageSeq)
-		conversation.Set("last_message_text", getMessagePreview(message))
-		conversation.Set("last_message_at", message.GetString("created"))
-		if err := txApp.Save(conversation); err != nil {
+		cursor, err := nextSyncCursor(txApp)
+		if err != nil {
 			return err
 		}
-
-		cursor, err := nextSyncCursor(txApp)
+		conversation, err = updateConversationPreviewFromMessageWithCursor(txApp, message, message.GetString("created"), cursor)
 		if err != nil {
 			return err
 		}
@@ -323,12 +318,11 @@ func markConversationReadCommand(app core.App, userId string, conversationId str
 			return err
 		}
 
-		if err := createSyncEvent(txApp, userId, conversation.Id, "read.updated", state.Id, cursor, syncEventPayload{ReadState: state}); err != nil {
-			return err
-		}
-
 		state.Set("last_delivered_cursor", cursor)
 		if err := txApp.Save(state); err != nil {
+			return err
+		}
+		if err := emitReadUpdatedEvents(txApp, conversation, state, cursor); err != nil {
 			return err
 		}
 
@@ -382,6 +376,21 @@ func nextMessageSeqForConversation(app core.App, conversationId string) int {
 	}
 
 	return messages[0].GetInt("message_seq") + 1
+}
+
+func reserveMessageSeq(app core.App, conversationId string) (int, error) {
+	var messageSeq int
+	err := app.DB().NewQuery(
+		`UPDATE conversations
+         SET next_message_seq = CASE
+           WHEN next_message_seq > 0 THEN next_message_seq + 1
+           ELSE (SELECT COALESCE(MAX(message_seq), 0) + 2 FROM messages WHERE conversation={:conversation})
+         END
+         WHERE id={:conversation}
+         RETURNING next_message_seq - 1`,
+	).Bind(dbx.Params{"conversation": conversationId}).Row(&messageSeq)
+
+	return messageSeq, err
 }
 
 func nextSyncCursor(app core.App) (int, error) {
@@ -442,9 +451,46 @@ func emitMessageCreatedEvents(app core.App, conversation *core.Record, message *
 		}
 	}
 
-	conversation.Set("last_change_cursor", cursor)
+	return nil
+}
 
-	return app.Save(conversation)
+func emitMessageUpdatedEvents(app core.App, conversation *core.Record, message *core.Record, cursor int) error {
+	for _, memberId := range conversation.GetStringSlice("members") {
+		state, err := findOrCreateConversationUserState(app, conversation, memberId)
+		if err != nil {
+			return err
+		}
+
+		state.Set("last_delivered_cursor", cursor)
+		if err := app.Save(state); err != nil {
+			return err
+		}
+
+		if err := createSyncEvent(app, memberId, conversation.Id, "message.updated", message.Id, cursor, syncEventPayload{Conversation: conversation, Message: message, ReadState: state}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func emitReadUpdatedEvents(app core.App, conversation *core.Record, readState *core.Record, cursor int) error {
+	for _, memberId := range conversation.GetStringSlice("members") {
+		memberState, err := findOrCreateConversationUserState(app, conversation, memberId)
+		if err != nil {
+			return err
+		}
+		memberState.Set("last_delivered_cursor", cursor)
+		if err := app.Save(memberState); err != nil {
+			return err
+		}
+
+		if err := createSyncEvent(app, memberId, conversation.Id, "read.updated", readState.Id, cursor, syncEventPayload{ReadState: readState}); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func findOrCreateConversationUserState(app core.App, conversation *core.Record, userId string) (*core.Record, error) {

@@ -224,6 +224,48 @@ export async function applyChatSyncEvents(
   });
 }
 
+export async function applyConversationHistory(
+  authId: string,
+  messages: MessageRecord[],
+): Promise<void> {
+  if (messages.length === 0) {
+    return;
+  }
+
+  const db = await getDb();
+
+  await db.withTransactionAsync(async () => {
+    for (const message of messages) {
+      await writeMessageRow(authId, message);
+      await confirmOutboxMessage(authId, message);
+    }
+  });
+}
+
+export async function applyLocalChatRecords(
+  authId: string,
+  records: {
+    conversation?: ConversationRecord;
+    message?: MessageRecord;
+    state?: ConversationUserStateRecord;
+  },
+): Promise<void> {
+  const db = await getDb();
+
+  await db.withTransactionAsync(async () => {
+    if (records.conversation) {
+      await writeConversationRow(authId, records.conversation);
+    }
+    if (records.message) {
+      await writeMessageRow(authId, records.message);
+      await confirmOutboxMessage(authId, records.message);
+    }
+    if (records.state) {
+      await writeConversationStateRow(authId, records.state);
+    }
+  });
+}
+
 export async function listLocalConversations(authId: string): Promise<ConversationRecord[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<JsonRow>(
@@ -234,6 +276,54 @@ export async function listLocalConversations(authId: string): Promise<Conversati
   );
 
   return rows.map((row) => JSON.parse(row.value) as ConversationRecord);
+}
+
+export async function getLocalConversation(
+  authId: string,
+  conversationId: string,
+): Promise<ConversationRecord> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<JsonRow>(
+    'SELECT value FROM local_conversations WHERE auth_id = ? AND id = ?',
+    authId,
+    conversationId,
+  );
+
+  if (!row) {
+    throw new Error('Conversation was not found in the local chat replica.');
+  }
+
+  return JSON.parse(row.value) as ConversationRecord;
+}
+
+export async function listLocalConversationStates(
+  authId: string,
+): Promise<ConversationUserStateRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM local_conversation_states
+     WHERE auth_id = ?
+     ORDER BY conversation_id ASC`,
+    authId,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as ConversationUserStateRecord);
+}
+
+export async function listLocalConversationStatesForConversation(
+  authId: string,
+  conversationId: string,
+): Promise<ConversationUserStateRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM local_conversation_states
+     WHERE auth_id = ? AND conversation_id = ?
+     ORDER BY user_id ASC`,
+    authId,
+    conversationId,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as ConversationUserStateRecord);
 }
 
 export async function listLocalMessages(
@@ -289,7 +379,7 @@ export async function listPendingOutboxMessages(authId: string): Promise<LocalOu
   const db = await getDb();
   const rows = await db.getAllAsync<LocalOutboxMessage>(
     `SELECT * FROM outbox_messages
-     WHERE auth_id = ? AND state IN ('queued', 'retry_wait')
+     WHERE auth_id = ? AND state IN ('queued', 'retry_wait', 'sending_create')
      ORDER BY client_created_at ASC`,
     authId,
   );

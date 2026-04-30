@@ -709,13 +709,20 @@ func createCallMessage(app core.App, callRoom *core.Record) error {
 	if err != nil {
 		return err
 	}
+	conversationId := callRoom.GetString("conversation")
+	messageSeq, err := reserveMessageSeq(app, conversationId)
+	if err != nil {
+		return err
+	}
 
 	message := core.NewRecord(collection)
-	message.Set("conversation", callRoom.GetString("conversation"))
+	message.Set("conversation", conversationId)
 	message.Set("sender", callRoom.GetString("created_by"))
 	message.Set("kind", "call")
 	message.Set("body", activeCallMessageBody(callRoom.GetString("kind")))
 	message.Set("call_room", callRoom.Id)
+	message.Set("message_seq", messageSeq)
+	message.Set("edit_version", 0)
 
 	return app.Save(message)
 }
@@ -1130,6 +1137,16 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		}
 		body := strings.TrimSpace(e.Record.GetString("body"))
 		e.Record.Set("body", body)
+		if e.Record.GetInt("message_seq") <= 0 {
+			messageSeq, err := reserveMessageSeq(e.App, conversation.Id)
+			if err != nil {
+				return err
+			}
+			e.Record.Set("message_seq", messageSeq)
+		}
+		if e.Record.GetInt("edit_version") <= 0 {
+			e.Record.Set("edit_version", 0)
+		}
 
 		switch kind {
 		case "text":
@@ -1154,21 +1171,35 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 			return e.Next()
 		}
 
-		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("created")); err != nil {
+		cursor, err := nextSyncCursor(e.App)
+		if err != nil {
 			return err
 		}
-
-		go sendMessagePushNotifications(e.App, e.Record)
+		conversation, err := updateConversationPreviewFromMessageWithCursor(e.App, e.Record, e.Record.GetString("created"), cursor)
+		if err != nil {
+			return err
+		}
+		if err := emitMessageCreatedEvents(e.App, conversation, e.Record, cursor, e.Record.GetString("sender")); err != nil {
+			return err
+		}
 
 		return e.Next()
 	})
 
 	app.OnRecordAfterUpdateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
-		if e.Record.GetString("kind") != "call" {
+		if !shouldEmitMessageUpdate(e.Record) {
 			return e.Next()
 		}
 
-		if err := updateConversationPreviewFromMessage(e.App, e.Record, e.Record.GetString("updated")); err != nil {
+		cursor, err := nextSyncCursor(e.App)
+		if err != nil {
+			return err
+		}
+		conversation, err := updateConversationPreviewFromMessageWithCursor(e.App, e.Record, e.Record.GetString("updated"), cursor)
+		if err != nil {
+			return err
+		}
+		if err := emitMessageUpdatedEvents(e.App, conversation, e.Record, cursor); err != nil {
 			return err
 		}
 
@@ -1241,15 +1272,41 @@ func prepareConversationReadRecord(app core.App, record *core.Record, userId str
 }
 
 func updateConversationPreviewFromMessage(app core.App, message *core.Record, timestamp string) error {
+	_, err := updateConversationPreviewFromMessageWithCursor(app, message, timestamp, 0)
+
+	return err
+}
+
+func updateConversationPreviewFromMessageWithCursor(app core.App, message *core.Record, timestamp string, cursor int) (*core.Record, error) {
 	conversation, err := app.FindRecordById("conversations", message.GetString("conversation"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	conversation.Set("last_message_text", getMessagePreview(message))
-	conversation.Set("last_message_at", timestamp)
+	messageSeq := message.GetInt("message_seq")
+	if messageSeq > 0 && messageSeq >= conversation.GetInt("last_message_seq") {
+		conversation.Set("last_message_id", message.Id)
+		conversation.Set("last_message_seq", messageSeq)
+		conversation.Set("last_message_text", getMessagePreview(message))
+		conversation.Set("last_message_at", timestamp)
+	}
+	if nextSeq := conversation.GetInt("next_message_seq"); messageSeq > 0 && nextSeq <= messageSeq {
+		conversation.Set("next_message_seq", messageSeq+1)
+	}
+	if cursor > 0 {
+		conversation.Set("last_change_cursor", cursor)
+	}
 
-	return app.Save(conversation)
+	return conversation, app.Save(conversation)
+}
+
+func shouldEmitMessageUpdate(message *core.Record) bool {
+	switch message.GetString("kind") {
+	case "call", "image", "file", "voice":
+		return true
+	default:
+		return false
+	}
 }
 
 func getMessagePreview(record *core.Record) string {

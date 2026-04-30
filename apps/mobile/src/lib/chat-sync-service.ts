@@ -1,10 +1,18 @@
-import { bootstrapChatSync, sendTextMessageCommand, syncChatEvents } from '@infchat/pocketbase';
+import {
+  bootstrapChatSync,
+  listConversationMessagesBeforeSeq,
+  markConversationReadBySeq,
+  sendTextMessageCommand,
+  syncChatEvents,
+} from '@infchat/pocketbase';
 import type { QueryClient } from '@tanstack/react-query';
 import type PocketBase from 'pocketbase';
 
 import {
   applyChatBootstrap,
   applyChatSyncEvents,
+  applyConversationHistory,
+  applyLocalChatRecords,
   enqueueTextOutboxMessage,
   getChatSyncCursor,
   listPendingOutboxMessages,
@@ -36,6 +44,7 @@ export class ChatSyncService {
   private pendingTriggers = new Set<ChatSyncTrigger>();
   private pb: PocketBase;
   private queryClient: QueryClient;
+  private syncLoopPromise: Promise<void> | null = null;
 
   constructor(options: ChatSyncServiceOptions) {
     this.authId = options.authId;
@@ -50,11 +59,12 @@ export class ChatSyncService {
 
   enqueueSync(trigger: ChatSyncTrigger) {
     this.pendingTriggers.add(trigger);
-    if (this.isSyncRunning) {
-      return;
-    }
+    void this.startSyncLoop();
+  }
 
-    void this.runSyncLoop();
+  async syncNow(trigger: ChatSyncTrigger = 'manual') {
+    this.pendingTriggers.add(trigger);
+    await this.startSyncLoop();
   }
 
   async enqueueTextMessage(conversationId: string, body: string) {
@@ -63,6 +73,24 @@ export class ChatSyncService {
     void this.pumpOutbox();
 
     return message;
+  }
+
+  async syncConversationHistory(conversationId: string, beforeSeq?: number) {
+    const response = await listConversationMessagesBeforeSeq(
+      this.pb,
+      conversationId,
+      beforeSeq,
+      100,
+    );
+    await applyConversationHistory(this.authId, response.messages);
+    this.invalidateChatQueries(conversationId);
+  }
+
+  async markConversationRead(conversationId: string, lastReadSeq: number) {
+    const response = await markConversationReadBySeq(this.pb, conversationId, lastReadSeq);
+    await applyLocalChatRecords(this.authId, { state: response.state });
+    this.invalidateChatQueries(conversationId);
+    this.enqueueSync('manual');
   }
 
   private async runSyncLoop() {
@@ -76,6 +104,14 @@ export class ChatSyncService {
     } finally {
       this.isSyncRunning = false;
     }
+  }
+
+  private startSyncLoop() {
+    this.syncLoopPromise ??= this.runSyncLoop().finally(() => {
+      this.syncLoopPromise = null;
+    });
+
+    return this.syncLoopPromise;
   }
 
   private async syncOnce(trigger: string) {
@@ -136,26 +172,10 @@ export class ChatSyncService {
             conversationId: pendingMessage.conversation_id,
             deviceId,
           });
-          await applyChatSyncEvents(
-            this.authId,
-            [
-              {
-                id: `local:${response.cursor}:${response.message.id}`,
-                conversation: response.message.conversation,
-                created: response.message.created,
-                cursor: response.cursor,
-                entity_id: response.message.id,
-                payload: {
-                  conversation: response.conversation,
-                  message: response.message,
-                },
-                type: 'message.created',
-                updated: response.message.updated,
-                user: this.authId,
-              },
-            ],
-            response.cursor,
-          );
+          await applyLocalChatRecords(this.authId, {
+            conversation: response.conversation,
+            message: response.message,
+          });
           this.enqueueSync('outbox');
         } catch (error) {
           await markOutboxRetry(

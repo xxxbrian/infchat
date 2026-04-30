@@ -1,14 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useNetInfo } from '@react-native-community/netinfo';
 import {
-  countUnreadMessages,
-  getProfileAvatarUrl,
-  listActiveCalls,
   type CallRoomRecord,
   type ConversationRecord,
-  type ConversationReadRecord,
+  getProfileAvatarUrl,
+  listActiveCalls,
   type ProfileRecord,
 } from '@infchat/pocketbase';
+import { useNetInfo } from '@react-native-community/netinfo';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -27,14 +25,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
-import {
-  listCachedConversations,
-  listCachedVisibleConversationReads,
-  listCachedProfilesByUserIds,
-  refreshCachedConversations,
-  refreshCachedVisibleConversationReads,
-  refreshCachedProfilesByUserIds,
-} from '../../lib/local-cache';
+import { useChatSyncService } from '../../lib/chat-sync-context';
+import { listLocalConversationStates, listLocalConversations } from '../../lib/chat-sync-store';
+import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -66,6 +59,7 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 export default function ChatTab() {
   const { authRecord } = useAuth();
+  const chatSyncService = useChatSyncService();
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
@@ -80,9 +74,8 @@ export default function ChatTab() {
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const conversationsQuery = useQuery({
-    queryKey: ['conversations', authRecord.id],
-    queryFn: () => listCachedConversations(pb),
-    networkMode: 'always',
+    queryKey: ['chat', authRecord.id, 'conversations'],
+    queryFn: () => listLocalConversations(authRecord.id),
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -94,46 +87,22 @@ export default function ChatTab() {
     queryFn: () => listActiveCalls(pb),
   });
   const readStatesQuery = useQuery({
-    queryKey: ['conversation-reads', authRecord.id],
-    queryFn: () => listCachedVisibleConversationReads(pb),
-    networkMode: 'always',
+    queryKey: ['chat', authRecord.id, 'conversation-states'],
+    queryFn: () => listLocalConversationStates(authRecord.id),
   });
   const conversations = conversationsQuery.data ?? [];
   const readStates = readStatesQuery.data ?? [];
-  const ownReadStateByConversation = useMemo(() => {
-    const reads = new Map<string, ConversationReadRecord>();
+  const unreadCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
 
-    for (const read of readStates) {
-      if (read.user === authRecord.id) {
-        reads.set(read.conversation, read);
+    for (const state of readStates) {
+      if (state.user === authRecord.id) {
+        counts[state.conversation] = state.unread_count ?? 0;
       }
     }
 
-    return reads;
+    return counts;
   }, [authRecord.id, readStates]);
-  const unreadCountsQuery = useQuery({
-    queryKey: [
-      'unread-counts',
-      authRecord.id,
-      conversations.map((conversation) => conversation.id),
-      readStates.map((read) => `${read.conversation}:${read.user}:${read.last_read_at}`),
-    ],
-    queryFn: async () => {
-      const entries = await Promise.all(
-        conversations.map(async (conversation) => {
-          const read = ownReadStateByConversation.get(conversation.id);
-          const count = await countUnreadMessages(pb, conversation.id, read?.last_read_at);
-
-          return [conversation.id, count] as const;
-        }),
-      );
-
-      return Object.fromEntries(entries) as Record<string, number>;
-    },
-    enabled: isOnline && conversations.length > 0,
-    staleTime: 1000 * 20,
-  });
-  const unreadCounts = unreadCountsQuery.data ?? {};
   const activeCallByConversation = useMemo(() => {
     const calls = new Map<string, CallRoomRecord>();
 
@@ -215,50 +184,6 @@ export default function ChatTab() {
   const hasError = conversationsQuery.isError && conversations.length === 0;
 
   useEffect(() => {
-    if (!isOnline) {
-      return;
-    }
-
-    let isMounted = true;
-
-    void refreshCachedConversations(pb)
-      .then((nextConversations) => {
-        if (isMounted) {
-          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
-        }
-      })
-      .catch(() => {
-        // Keep showing the local inbox while the connection recovers.
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [authRecord.id, isOnline, queryClient]);
-
-  useEffect(() => {
-    if (!isOnline) {
-      return;
-    }
-
-    let isMounted = true;
-
-    void refreshCachedVisibleConversationReads(pb)
-      .then((reads) => {
-        if (isMounted) {
-          queryClient.setQueryData(['conversation-reads', authRecord.id], reads);
-        }
-      })
-      .catch(() => {
-        // Cached read states still drive the inbox until refresh succeeds.
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [authRecord.id, isOnline, queryClient]);
-
-  useEffect(() => {
     if (!isOnline || relatedUserIds.length === 0) {
       return;
     }
@@ -290,31 +215,17 @@ export default function ChatTab() {
 
     void Promise.all([
       pb.collection('conversations').subscribe('*', () => {
-        void refreshCachedConversations(pb).then((nextConversations) => {
-          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('messages').subscribe('*', () => {
-        void refreshCachedConversations(pb).then((nextConversations) => {
-          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
-        });
-        queryClient.invalidateQueries({
-          queryKey: ['unread-counts', authRecord.id],
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
-      pb.collection('conversation_reads').subscribe('*', () => {
-        void refreshCachedVisibleConversationReads(pb).then((reads) => {
-          queryClient.setQueryData(['conversation-reads', authRecord.id], reads);
-        });
-        queryClient.invalidateQueries({
-          queryKey: ['unread-counts', authRecord.id],
-        });
+      pb.collection('conversation_user_states').subscribe('*', () => {
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('call_rooms').subscribe('*', () => {
         queryClient.invalidateQueries({ queryKey: ['active-calls'] });
-        void refreshCachedConversations(pb).then((nextConversations) => {
-          queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('profiles').subscribe('*', () => {
         if (relatedUserIds.length === 0) {
@@ -342,7 +253,7 @@ export default function ChatTab() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [authRecord.id, isOnline, queryClient, relatedUserIds]);
+  }, [authRecord.id, chatSyncService, isOnline, queryClient, relatedUserIds]);
 
   const handleRefresh = async () => {
     if (isPullRefreshing) {
@@ -351,18 +262,17 @@ export default function ChatTab() {
 
     setIsPullRefreshing(true);
     try {
-      const [nextConversations, nextProfiles] = await Promise.all([
-        refreshCachedConversations(pb),
+      const [, nextProfiles] = await Promise.all([
+        chatSyncService.syncNow('manual'),
         relatedUserIds.length > 0
           ? refreshCachedProfilesByUserIds(pb, relatedUserIds)
           : Promise.resolve([]),
         queryClient.invalidateQueries({ queryKey: ['active-calls'] }),
-        queryClient.invalidateQueries({
-          queryKey: ['unread-counts', authRecord.id],
-        }),
       ]);
 
-      queryClient.setQueryData(['conversations', authRecord.id], nextConversations);
+      await queryClient.invalidateQueries({
+        queryKey: ['chat', authRecord.id],
+      });
       if (relatedUserIds.length > 0) {
         queryClient.setQueryData(['profiles', 'chat-members', relatedUserIds], nextProfiles);
       }

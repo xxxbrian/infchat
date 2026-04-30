@@ -3,14 +3,14 @@ import '../lib/event-source';
 import '../lib/livekit';
 
 import Ionicons from '@expo/vector-icons/Ionicons';
-import NetInfo from '@react-native-community/netinfo';
 import {
+  type CallRoomRecord,
   endCall,
   registerWithUsername,
   signInWithUsername,
   signOut,
-  type CallRoomRecord,
 } from '@infchat/pocketbase';
+import NetInfo from '@react-native-community/netinfo';
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import {
   focusManager,
@@ -20,26 +20,18 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { router, Stack, usePathname } from 'expo-router';
-import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import { Animated, AppState, Pressable, Text, Vibration, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
-
-import { LoginScreen } from '../screens/LoginScreen';
-import { RegisterScreen } from '../screens/RegisterScreen';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
-import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
+import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { ChatSyncContext } from '../lib/chat-sync-context';
 import { ChatSyncService } from '../lib/chat-sync-service';
-import {
-  refreshCachedConversation,
-  refreshCachedConversations,
-  refreshCachedCurrentProfile,
-  refreshCachedMessages,
-} from '../lib/local-cache';
+import { refreshCachedCurrentProfile } from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
 import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
@@ -50,6 +42,8 @@ import {
   setupPushRegistrationRecovery,
   setupSystemCalls,
 } from '../lib/push-notifications';
+import { LoginScreen } from '../screens/LoginScreen';
+import { RegisterScreen } from '../screens/RegisterScreen';
 
 setupNotificationPresentation();
 
@@ -272,7 +266,6 @@ function ChatSyncProvider({
 }
 
 function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRecord }) {
-  const queryClient = useQueryClient();
   const chatSyncService = useContext(ChatSyncContext);
 
   useEffect(() => {
@@ -282,37 +275,11 @@ function ForegroundMessageNotificationSync({ authRecord }: { authRecord: AuthRec
         return;
       }
 
-      const conversationId = data.conversationId;
       chatSyncService?.enqueueSync('push');
-
-      void refreshCachedConversation(pb, conversationId)
-        .then((conversation) => {
-          queryClient.setQueryData(['conversation', conversationId], conversation);
-        })
-        .catch(() => {
-          // Realtime or the next route refetch will retry if this wake-up sync fails.
-        });
-      void refreshCachedMessages(pb, conversationId)
-        .then((messages) => {
-          queryClient.setQueryData(['messages', conversationId], messages);
-        })
-        .catch(() => {
-          // Keep the current local thread visible until another sync succeeds.
-        });
-      void refreshCachedConversations(pb)
-        .then((conversations) => {
-          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-        })
-        .catch(() => {
-          // The inbox subscription and foreground refetch are still active fallbacks.
-        });
-      void queryClient.invalidateQueries({
-        queryKey: ['unread-counts', authRecord.id],
-      });
     });
 
     return () => subscription.remove();
-  }, [authRecord.id, chatSyncService, queryClient]);
+  }, [authRecord.id, chatSyncService]);
 
   return null;
 }

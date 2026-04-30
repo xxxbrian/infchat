@@ -1,22 +1,21 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useNetInfo } from '@react-native-community/netinfo';
 import {
+  type CallKind,
+  type CallRoomRecord,
+  type ConversationRecord,
+  type ConversationUserStateRecord,
+  getActiveCallForConversation,
   getMessageAttachmentUrl,
   getProfileAvatarUrl,
-  sendTextMessage,
-  getActiveCallForConversation,
-  sendFileMessage,
-  sendImageMessage,
-  startCall,
-  type CallRoomRecord,
-  type CallKind,
-  type ConversationReadRecord,
-  type ConversationRecord,
   type MessageRecord,
   type MessageUploadFile,
   type ProfileRecord,
+  sendFileMessage,
+  sendImageMessage,
+  startCall,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
+import { useNetInfo } from '@react-native-community/netinfo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -32,11 +31,11 @@ import {
   Keyboard,
   KeyboardAvoidingView,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   RefreshControl,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
   ScrollView,
   StyleSheet,
   Text,
@@ -50,26 +49,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
-import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useCallSession } from '../../lib/call-context';
+import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useChatSyncService } from '../../lib/chat-sync-context';
-import { listOutboxMessagesForConversation } from '../../lib/chat-sync-store';
-import { getDeviceId } from '../../lib/device-id';
 import {
-  getCachedConversation,
-  listCachedConversationReads,
-  listCachedMessages,
-  listCachedProfilesByUserIds,
-  markCachedConversationRead,
-  mergeCachedMessage,
-  refreshCachedConversation,
-  refreshCachedConversationReads,
-  refreshCachedConversations,
-  refreshCachedMessages,
-  refreshCachedProfilesByUserIds,
-  removeCachedMessage,
-  writeCachedConversation,
-} from '../../lib/local-cache';
+  getLocalConversation,
+  listLocalConversationStatesForConversation,
+  listLocalMessages,
+  listOutboxMessagesForConversation,
+} from '../../lib/chat-sync-store';
+import { getDeviceId } from '../../lib/device-id';
+import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 
@@ -161,10 +151,9 @@ export default function ChatDetailScreen() {
   const lastAutoScrolledMessageIdRef = useRef('');
 
   const conversationQuery = useQuery({
-    queryKey: ['conversation', conversationId],
-    queryFn: () => getCachedConversation(pb, conversationId),
+    queryKey: ['chat', authRecord.id, 'conversation', conversationId],
+    queryFn: () => getLocalConversation(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
-    networkMode: 'always',
   });
   const fileTokenQuery = useQuery({
     queryKey: ['file-token', authRecord.id],
@@ -172,10 +161,9 @@ export default function ChatDetailScreen() {
     staleTime: 1000 * 60 * 5,
   });
   const messagesQuery = useQuery({
-    queryKey: ['messages', conversationId],
-    queryFn: () => listCachedMessages(pb, conversationId),
+    queryKey: ['chat', authRecord.id, 'messages', conversationId],
+    queryFn: () => listLocalMessages(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
-    networkMode: 'always',
   });
   const outboxMessagesQuery = useQuery({
     queryKey: ['chat', authRecord.id, 'outbox', conversationId],
@@ -188,10 +176,9 @@ export default function ChatDetailScreen() {
     enabled: Boolean(conversationId),
   });
   const readStatesQuery = useQuery({
-    queryKey: ['conversation-reads', conversationId],
-    queryFn: () => listCachedConversationReads(pb, conversationId),
+    queryKey: ['chat', authRecord.id, 'conversation-states', conversationId],
+    queryFn: () => listLocalConversationStatesForConversation(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
-    networkMode: 'always',
   });
   const memberIds = useMemo(
     () =>
@@ -287,26 +274,6 @@ export default function ChatDetailScreen() {
   const removeFailedOutgoingMessage = (messageId: string) => {
     setFailedOutgoingMessages((current) => current.filter((message) => message.id !== messageId));
   };
-  const sendMessageMutation = useMutation({
-    mutationFn: (body: string) => sendTextMessage(pb, conversationId, body),
-    onSuccess: (message) => {
-      setComposerText('');
-      didScrollToEnd.current = false;
-      void mergeCachedMessage(pb, message).then((messages) => {
-        queryClient.setQueryData(['messages', conversationId], messages);
-      });
-      void refreshCachedConversation(pb, conversationId).then((conversation) => {
-        queryClient.setQueryData(['conversation', conversationId], conversation);
-      });
-      void refreshCachedConversations(pb).then((conversations) => {
-        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-      });
-    },
-    onError: (_error, body) => {
-      addFailedOutgoingMessage(body);
-      setComposerText('');
-    },
-  });
   const sendAttachmentMutation = useMutation({
     mutationFn: ({
       file,
@@ -320,15 +287,8 @@ export default function ChatDetailScreen() {
         : sendFileMessage(pb, conversationId, file),
     onSuccess: (message) => {
       didScrollToEnd.current = false;
-      void mergeCachedMessage(pb, message).then((messages) => {
-        queryClient.setQueryData(['messages', conversationId], messages);
-      });
-      void refreshCachedConversation(pb, conversationId).then((conversation) => {
-        queryClient.setQueryData(['conversation', conversationId], conversation);
-      });
-      void refreshCachedConversations(pb).then((conversations) => {
-        queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-      });
+      void chatSyncService.syncNow('manual');
+      queryClient.invalidateQueries({ queryKey: ['chat', authRecord.id] });
     },
     onError: () => {
       Alert.alert('Could not send attachment', 'Check your connection and try again.');
@@ -361,31 +321,13 @@ export default function ChatDetailScreen() {
       return;
     }
 
-    let isMounted = true;
-
-    void refreshCachedConversation(pb, conversationId)
-      .then((conversation) => {
-        if (isMounted) {
-          queryClient.setQueryData(['conversation', conversationId], conversation);
-        }
-      })
-      .catch(() => {
-        // Cached data remains visible while the network recovers.
-      });
-    void refreshCachedMessages(pb, conversationId)
-      .then((messages) => {
-        if (isMounted) {
-          queryClient.setQueryData(['messages', conversationId], messages);
-        }
-      })
-      .catch(() => {
-        // Cached data remains visible while the network recovers.
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [conversationId, isOnline, queryClient]);
+    void chatSyncService.syncNow('manual').catch(() => {
+      // The next hint or reconnect will retry the sync loop.
+    });
+    void chatSyncService.syncConversationHistory(conversationId).catch(() => {
+      // The global sync queue remains the primary recovery path.
+    });
+  }, [chatSyncService, conversationId, isOnline]);
 
   useEffect(() => {
     if (!isOnline || memberIds.length === 0) {
@@ -413,53 +355,16 @@ export default function ChatDetailScreen() {
   }, [conversationId, isOnline, memberIds, queryClient]);
 
   useEffect(() => {
-    if (!conversationId || !isOnline) {
-      return;
-    }
-
-    let isMounted = true;
-
-    void refreshCachedConversationReads(pb, conversationId)
-      .then((reads) => {
-        if (isMounted) {
-          queryClient.setQueryData(['conversation-reads', conversationId], reads);
-          queryClient.invalidateQueries({
-            queryKey: ['conversation-reads', authRecord.id],
-          });
-          queryClient.invalidateQueries({
-            queryKey: ['unread-counts', authRecord.id],
-          });
-        }
-      })
-      .catch(() => {
-        // Cached read receipts remain visible until realtime/refetch succeeds.
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [authRecord.id, conversationId, isOnline, queryClient]);
-
-  useEffect(() => {
     const lastMessage = messagesQuery.data?.at(-1);
-    if (!conversationId || !isOnline || !lastMessage) {
+    const lastReadSeq = lastMessage?.message_seq ?? 0;
+    if (!conversationId || !isOnline || lastReadSeq <= 0) {
       return;
     }
 
-    void markCachedConversationRead(pb, conversationId, lastMessage.created)
-      .then((reads) => {
-        queryClient.setQueryData(['conversation-reads', conversationId], reads);
-        queryClient.invalidateQueries({
-          queryKey: ['conversation-reads', authRecord.id],
-        });
-        queryClient.invalidateQueries({
-          queryKey: ['unread-counts', authRecord.id],
-        });
-      })
-      .catch(() => {
-        // The server receipt is authoritative; do not queue read updates offline.
-      });
-  }, [authRecord.id, conversationId, isOnline, messagesQuery.data, queryClient]);
+    void chatSyncService.markConversationRead(conversationId, lastReadSeq).catch(() => {
+      // The server receipt is authoritative; do not queue read updates offline.
+    });
+  }, [chatSyncService, conversationId, isOnline, messagesQuery.data]);
 
   useEffect(() => {
     if (!conversationId || !isOnline) {
@@ -476,18 +381,7 @@ export default function ChatDetailScreen() {
           return;
         }
 
-        void writeCachedConversation(pb, conversation).then(() => {
-          queryClient.setQueryData(['conversation', conversationId], conversation);
-          queryClient.setQueriesData<ConversationRecord[]>(
-            { queryKey: ['conversations'] },
-            (current) =>
-              current
-                ? [conversation, ...current.filter((item) => item.id !== conversation.id)].sort(
-                    compareConversations,
-                  )
-                : current,
-          );
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('messages').subscribe('*', (event) => {
         const message = event.record as unknown as MessageRecord | undefined;
@@ -495,41 +389,14 @@ export default function ChatDetailScreen() {
           return;
         }
 
-        const action = (event as { action?: string }).action;
-        const cacheUpdate =
-          action === 'delete' ? removeCachedMessage(pb, message) : mergeCachedMessage(pb, message);
-
-        void Promise.resolve(cacheUpdate).then((messages) => {
-          queryClient.setQueryData<MessageRecord[]>(['messages', conversationId], (current) => {
-            if (Array.isArray(messages)) {
-              return messages;
-            }
-
-            return (current ?? []).filter((item) => item.id !== message.id);
-          });
-          void refreshCachedConversation(pb, conversationId).then((conversation) => {
-            queryClient.setQueryData(['conversation', conversationId], conversation);
-          });
-          void refreshCachedConversations(pb).then((conversations) => {
-            queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-          });
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
-      pb.collection('conversation_reads').subscribe('*', (event) => {
-        const read = event.record as unknown as ConversationReadRecord | undefined;
-        if (read?.conversation !== conversationId) {
+      pb.collection('conversation_user_states').subscribe('*', (event) => {
+        if (event.record?.conversation !== conversationId) {
           return;
         }
 
-        void refreshCachedConversationReads(pb, conversationId).then((reads) => {
-          queryClient.setQueryData(['conversation-reads', conversationId], reads);
-          queryClient.invalidateQueries({
-            queryKey: ['conversation-reads', authRecord.id],
-          });
-          queryClient.invalidateQueries({
-            queryKey: ['unread-counts', authRecord.id],
-          });
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('call_rooms').subscribe('*', (event) => {
         if (event.record?.conversation !== conversationId) {
@@ -539,9 +406,7 @@ export default function ChatDetailScreen() {
         queryClient.invalidateQueries({
           queryKey: ['active-call', conversationId],
         });
-        void refreshCachedConversations(pb).then((conversations) => {
-          queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
-        });
+        chatSyncService.enqueueSync('realtime');
       }),
       pb.collection('profiles').subscribe('*', () => {
         if (memberIds.length === 0) {
@@ -572,7 +437,7 @@ export default function ChatDetailScreen() {
       isMounted = false;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [authRecord.id, conversationId, isOnline, memberIds, queryClient]);
+  }, [chatSyncService, conversationId, isOnline, memberIds, queryClient]);
 
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => {
@@ -791,16 +656,15 @@ export default function ChatDetailScreen() {
 
     setIsPullRefreshing(true);
     try {
-      const [nextConversation, nextMessages, nextProfiles, nextReads] = await Promise.all([
-        refreshCachedConversation(pb, conversationId),
-        refreshCachedMessages(pb, conversationId),
+      const [, , nextProfiles] = await Promise.all([
+        chatSyncService.syncNow('manual'),
+        chatSyncService.syncConversationHistory(conversationId),
         memberIds.length > 0 ? refreshCachedProfilesByUserIds(pb, memberIds) : Promise.resolve([]),
-        refreshCachedConversationReads(pb, conversationId),
       ]);
 
-      queryClient.setQueryData(['conversation', conversationId], nextConversation);
-      queryClient.setQueryData(['messages', conversationId], nextMessages);
-      queryClient.setQueryData(['conversation-reads', conversationId], nextReads);
+      await queryClient.invalidateQueries({
+        queryKey: ['chat', authRecord.id],
+      });
       if (memberIds.length > 0) {
         queryClient.setQueryData(
           ['profiles', 'conversation-members', conversationId, memberIds],
@@ -914,15 +778,9 @@ export default function ChatDetailScreen() {
     }
 
     try {
-      const message = await sendTextMessage(pb, conversationId, failedMessage.body);
+      await chatSyncService.enqueueTextMessage(conversationId, failedMessage.body);
       removeFailedOutgoingMessage(messageId);
       didScrollToEnd.current = false;
-      const nextMessages = await mergeCachedMessage(pb, message);
-      queryClient.setQueryData(['messages', conversationId], nextMessages);
-      const conversation = await refreshCachedConversation(pb, conversationId);
-      queryClient.setQueryData(['conversation', conversationId], conversation);
-      const conversations = await refreshCachedConversations(pb);
-      queryClient.setQueriesData({ queryKey: ['conversations'] }, conversations);
     } catch {
       Alert.alert('Could not resend', 'Check your connection and tap the alert again.');
     }
@@ -1358,37 +1216,28 @@ function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: stri
 
 function getLastReadOwnMessageId(
   messages: MessageRecord[],
-  reads: ConversationReadRecord[],
+  states: ConversationUserStateRecord[],
   currentUserId: string,
 ): string | null {
-  const otherReadTimes = reads
-    .filter((read) => read.user !== currentUserId)
-    .map((read) => new Date(read.last_read_at).getTime())
-    .filter((time) => !Number.isNaN(time));
+  const otherLastReadSeqs = states
+    .filter((state) => state.user !== currentUserId)
+    .map((state) => state.last_read_seq ?? 0)
+    .filter((lastReadSeq) => lastReadSeq > 0);
 
-  if (otherReadTimes.length === 0) {
+  if (otherLastReadSeqs.length === 0) {
     return null;
   }
 
-  const latestReadTime = Math.max(...otherReadTimes);
+  const latestReadSeq = Math.max(...otherLastReadSeqs);
   const readOwnMessages = messages.filter((message) => {
     if (message.sender !== currentUserId) {
       return false;
     }
 
-    const createdTime = new Date(message.created).getTime();
-
-    return !Number.isNaN(createdTime) && createdTime <= latestReadTime;
+    return (message.message_seq ?? 0) > 0 && (message.message_seq ?? 0) <= latestReadSeq;
   });
 
   return readOwnMessages.at(-1)?.id ?? null;
-}
-
-function compareConversations(first: ConversationRecord, second: ConversationRecord): number {
-  const firstTime = new Date(first.last_message_at || first.updated).getTime();
-  const secondTime = new Date(second.last_message_at || second.updated).getTime();
-
-  return secondTime - firstTime;
 }
 
 function formatMessageTime(value: string): string {
