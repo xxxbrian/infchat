@@ -340,12 +340,12 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
+				activated, err := joinCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId)
+				if err != nil {
 					return err
 				}
-
-				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
-					return err
+				if activated {
+					go sendCallUpdatePushNotifications(e.App, existingCallRoom, "active", e.Auth.Id, data.DeviceId)
 				}
 
 				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
@@ -383,11 +383,12 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 					return e.BadRequestError("You are already in another call.", err)
 				}
 
-				if err := activateRingingCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
+				activated, err := joinCallRoom(e.App, existingCallRoom, e.Auth.Id, data.DeviceId)
+				if err != nil {
 					return err
 				}
-				if err := markCallParticipantActive(e.App, existingCallRoom, e.Auth.Id, data.DeviceId); err != nil {
-					return err
+				if activated {
+					go sendCallUpdatePushNotifications(e.App, existingCallRoom, "active", e.Auth.Id, data.DeviceId)
 				}
 
 				return respondWithCallToken(e, existingCallRoom, data.DeviceId)
@@ -420,12 +421,12 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return e.BadRequestError("You are already in another call.", err)
 			}
 
-			if err := activateRingingCallRoom(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
+			activated, err := joinCallRoom(e.App, callRoom, e.Auth.Id, data.DeviceId)
+			if err != nil {
 				return err
 			}
-
-			if err := markCallParticipantActive(e.App, callRoom, e.Auth.Id, data.DeviceId); err != nil {
-				return err
+			if activated {
+				go sendCallUpdatePushNotifications(e.App, callRoom, "active", e.Auth.Id, data.DeviceId)
 			}
 
 			return respondWithCallToken(e, callRoom, data.DeviceId)
@@ -561,21 +562,6 @@ func findOpenCallForUser(app core.App, userId string, excludedConversationId str
 	)
 }
 
-func activateRingingCallRoom(app core.App, callRoom *core.Record, joiningUserId string, joiningDeviceId string) error {
-	if callRoom.GetString("status") != "ringing" || callRoom.GetString("created_by") == joiningUserId {
-		return nil
-	}
-
-	callRoom.Set("status", "active")
-	if err := app.Save(callRoom); err != nil {
-		return err
-	}
-
-	go sendCallUpdatePushNotifications(app, callRoom, "active", joiningUserId, joiningDeviceId)
-
-	return nil
-}
-
 func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) error {
 	otherCallRoom, err := app.FindFirstRecordByFilter(
 		"call_rooms",
@@ -590,6 +576,35 @@ func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) e
 	}
 
 	return fmt.Errorf("user is already in call %s", otherCallRoom.Id)
+}
+
+func joinCallRoom(app core.App, callRoom *core.Record, userId string, deviceId string) (bool, error) {
+	activated := false
+	err := app.RunInTransaction(func(txApp core.App) error {
+		currentCallRoom, err := txApp.FindRecordById("call_rooms", callRoom.Id)
+		if err != nil {
+			return err
+		}
+
+		if currentCallRoom.GetString("status") == "ringing" && currentCallRoom.GetString("created_by") != userId {
+			currentCallRoom.Set("status", "active")
+			if err := txApp.Save(currentCallRoom); err != nil {
+				return err
+			}
+			activated = true
+		}
+
+		if err := markCallParticipantActive(txApp, currentCallRoom, userId, deviceId); err != nil {
+			return err
+		}
+
+		callRoom.Set("status", currentCallRoom.GetString("status"))
+		callRoom.Set("ended_at", currentCallRoom.GetString("ended_at"))
+
+		return nil
+	})
+
+	return activated, err
 }
 
 func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId string) error {
@@ -939,22 +954,46 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 		return errors.New("call status must be terminal")
 	}
 
-	if isTerminalCallStatus(callRoom.GetString("status")) {
+	finished := false
+	err := app.RunInTransaction(func(txApp core.App) error {
+		currentCallRoom, err := txApp.FindRecordById("call_rooms", callRoom.Id)
+		if err != nil {
+			return err
+		}
+		if isTerminalCallStatus(currentCallRoom.GetString("status")) {
+			callRoom.Set("status", currentCallRoom.GetString("status"))
+			callRoom.Set("ended_at", currentCallRoom.GetString("ended_at"))
+
+			return nil
+		}
+
+		currentCallRoom.Set("status", status)
+		currentCallRoom.Set("ended_at", types.NowDateTime())
+		if err := txApp.Save(currentCallRoom); err != nil {
+			return err
+		}
+		if err := markActiveCallParticipantsLeft(txApp, currentCallRoom.Id); err != nil {
+			return err
+		}
+		if err := updateCallMessageForEndedCall(txApp, currentCallRoom, status); err != nil {
+			return err
+		}
+
+		callRoom.Set("status", currentCallRoom.GetString("status"))
+		callRoom.Set("ended_at", currentCallRoom.GetString("ended_at"))
+		finished = true
+
 		return nil
-	}
-
-	callRoom.Set("status", status)
-	callRoom.Set("ended_at", types.NowDateTime())
-	if err := app.Save(callRoom); err != nil {
-		return err
-	}
-	if err := markActiveCallParticipantsLeft(app, callRoom.Id); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
-	go sendCallUpdatePushNotifications(app, callRoom, status, "", "")
+	if finished {
+		go sendCallUpdatePushNotifications(app, callRoom, status, "", "")
+	}
 
-	return updateCallMessageForEndedCall(app, callRoom, status)
+	return nil
 }
 
 func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status string) error {
