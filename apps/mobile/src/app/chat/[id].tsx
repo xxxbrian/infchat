@@ -272,10 +272,18 @@ export default function ChatDetailScreen() {
   ]);
   const activeCall = activeCallQuery.data;
   const renderItems = useMemo(() => toChatRenderItems(messages), [messages]);
-  const stickyHeaderIndices = useMemo(
-    () => renderItems.flatMap((item, index) => (item.type === 'date' ? [index] : [])),
+  const dateItems = useMemo(
+    () =>
+      renderItems.filter(
+        (item): item is Extract<ChatRenderItem, { type: 'date' }> => item.type === 'date',
+      ),
     [renderItems],
   );
+  const [stickyDate, setStickyDate] = useState<{
+    id: string;
+    label: string;
+  } | null>(null);
+  const stickyDateIdRef = useRef<string | null>(null);
   const activeSessionCallRoomId = activeSession?.callRoom.id;
   const shouldShowActiveCallBanner = Boolean(
     activeCall && activeSessionCallRoomId !== activeCall.id,
@@ -461,6 +469,8 @@ export default function ChatDetailScreen() {
     didScrollToEnd.current = false;
     dateSeparatorOffsetsRef.current = {};
     scrollYRef.current = 0;
+    stickyDateIdRef.current = null;
+    setStickyDate(null);
   }, [conversationId]);
 
   useEffect(() => {
@@ -600,6 +610,24 @@ export default function ChatDetailScreen() {
     scrollViewRef.current?.scrollTo({ animated: true, y });
   };
 
+  const updateStickyDate = (y: number) => {
+    let nextStickyDate: { id: string; label: string } | null = null;
+
+    for (const item of dateItems) {
+      const itemY = dateSeparatorOffsetsRef.current[item.id];
+      if (typeof itemY === 'number' && y > itemY + 1) {
+        nextStickyDate = { id: item.id, label: item.label };
+      }
+    }
+
+    if (stickyDateIdRef.current === nextStickyDate?.id) {
+      return;
+    }
+
+    stickyDateIdRef.current = nextStickyDate?.id ?? null;
+    setStickyDate(nextStickyDate);
+  };
+
   const handleRefresh = async () => {
     if (isPullRefreshing || !conversationId) {
       return;
@@ -633,6 +661,7 @@ export default function ChatDetailScreen() {
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - y;
     const deltaY = y - lastScrollY.current;
     scrollYRef.current = y;
+    updateStickyDate(y);
     isNearBottomRef.current = distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM;
 
     if (distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM) {
@@ -914,64 +943,66 @@ export default function ChatDetailScreen() {
           <ActiveCallBanner callRoom={activeCall} onJoin={handleJoinActiveCall} />
         ) : null}
 
-        <ScrollView
-          className="flex-1"
-          contentContainerStyle={{
-            flexGrow: 1,
-            paddingBottom: scrollViewBottomPadding,
-            paddingHorizontal: 14,
-            paddingTop: 14,
-          }}
-          keyboardShouldPersistTaps="handled"
-          onContentSizeChange={handleContentSizeChange}
-          onScroll={handleScroll}
-          onScrollBeginDrag={() => {
-            Keyboard.dismiss();
-            setAttachmentMenuVisible(false);
-          }}
-          refreshControl={
-            <RefreshControl
-              colors={['#f8fafc']}
-              onRefresh={handleRefresh}
-              refreshing={isPullRefreshing}
-              tintColor="#f8fafc"
-            />
-          }
-          ref={scrollViewRef}
-          scrollEventThrottle={16}
-          showsVerticalScrollIndicator={false}
-          stickyHeaderIndices={stickyHeaderIndices}
-        >
-          {conversationQuery.isLoading || messagesQuery.isLoading ? (
-            <EmptyConversation label="Loading messages" />
-          ) : conversationQuery.isError || messagesQuery.isError ? (
-            <EmptyConversation label="Could not load messages" />
-          ) : messages.length ? (
-            renderItems.map((item) =>
-              item.type === 'date' ? (
-                <DateSeparator
-                  id={item.id}
-                  key={item.id}
-                  label={item.label}
-                  onLayout={handleDateSeparatorLayout}
-                  onPress={handlePressDateSeparator}
-                />
-              ) : (
-                <MessageBubble
-                  conversation={conversation}
-                  index={item.index}
-                  key={item.id}
-                  message={item.message}
-                  onLongPressMessage={setMessageActionTarget}
-                  onRetryFailedMessage={handleRetryFailedMessage}
-                  totalMessages={messages.length}
-                />
-              ),
-            )
-          ) : (
-            <EmptyConversation label="No messages yet" />
-          )}
-        </ScrollView>
+        <View className="flex-1">
+          <ScrollView
+            className="flex-1"
+            contentContainerStyle={{
+              flexGrow: 1,
+              paddingBottom: scrollViewBottomPadding,
+              paddingHorizontal: 14,
+              paddingTop: 14,
+            }}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={handleContentSizeChange}
+            onScroll={handleScroll}
+            onScrollBeginDrag={() => {
+              Keyboard.dismiss();
+              setAttachmentMenuVisible(false);
+            }}
+            refreshControl={
+              <RefreshControl
+                colors={['#f8fafc']}
+                onRefresh={handleRefresh}
+                refreshing={isPullRefreshing}
+                tintColor="#f8fafc"
+              />
+            }
+            ref={scrollViewRef}
+            scrollEventThrottle={16}
+            showsVerticalScrollIndicator={false}
+          >
+            {conversationQuery.isLoading || messagesQuery.isLoading ? (
+              <EmptyConversation label="Loading messages" />
+            ) : conversationQuery.isError || messagesQuery.isError ? (
+              <EmptyConversation label="Could not load messages" />
+            ) : messages.length ? (
+              renderItems.map((item) =>
+                item.type === 'date' ? (
+                  <DateSeparator
+                    id={item.id}
+                    key={item.id}
+                    label={item.label}
+                    onLayout={handleDateSeparatorLayout}
+                    onPress={handlePressDateSeparator}
+                  />
+                ) : (
+                  <MessageBubble
+                    conversation={conversation}
+                    index={item.index}
+                    key={item.id}
+                    message={item.message}
+                    onLongPressMessage={setMessageActionTarget}
+                    onRetryFailedMessage={handleRetryFailedMessage}
+                    totalMessages={messages.length}
+                  />
+                ),
+              )
+            ) : (
+              <EmptyConversation label="No messages yet" />
+            )}
+          </ScrollView>
+          {stickyDate ? <DateOverlay date={stickyDate} onPress={handlePressDateSeparator} /> : null}
+        </View>
 
         <MessageActionSheet
           message={messageActionTarget}
@@ -1289,11 +1320,16 @@ function formatMessageDate(value: string): string {
     return 'Yesterday';
   }
 
-  return date.toLocaleDateString([], {
+  const options: Intl.DateTimeFormatOptions = {
     day: 'numeric',
     month: 'short',
-    year: today.getFullYear() === date.getFullYear() ? undefined : 'numeric',
-  });
+  };
+
+  if (today.getFullYear() !== date.getFullYear()) {
+    options.year = 'numeric';
+  }
+
+  return date.toLocaleDateString([], options);
 }
 
 function getLastReadOwnMessageId(
@@ -1920,6 +1956,25 @@ function DateSeparator({
         onPress={() => onPress(id)}
       >
         <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+function DateOverlay({
+  date,
+  onPress,
+}: {
+  date: { id: string; label: string };
+  onPress: (id: string) => void;
+}) {
+  return (
+    <View className="absolute left-0 right-0 top-0 items-center py-2" pointerEvents="box-none">
+      <Pressable
+        className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5"
+        onPress={() => onPress(date.id)}
+      >
+        <Text className="text-xs font-bold text-muted-foreground">{date.label}</Text>
       </Pressable>
     </View>
   );
