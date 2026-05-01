@@ -139,6 +139,7 @@ export default function ChatDetailScreen() {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
+  const [composerInputExtraHeightState, setComposerInputExtraHeightState] = useState(0);
   const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget | null>(null);
   const [failedOutgoingMessages, setFailedOutgoingMessages] = useState<FailedOutgoingMessage[]>([]);
   const hasComposerText = composerText.trim().length > 0;
@@ -359,6 +360,11 @@ export default function ChatDetailScreen() {
       requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
     });
   };
+  const syncMessagesToBottomIfNearBottom = () => {
+    if (isNearBottomRef.current) {
+      syncMessagesToBottom();
+    }
+  };
   const setJumpButtonVisible = (visible: boolean) => {
     if (isJumpButtonVisible.current === visible) {
       return;
@@ -407,7 +413,7 @@ export default function ChatDetailScreen() {
     const showSubscription = Keyboard.addListener(showEvent, (event) => {
       setAttachmentMenuVisible(false);
       setIsComposerExpanded(true);
-      syncMessagesToBottom();
+      syncMessagesToBottomIfNearBottom();
       animateComposer(1, event.duration ?? 240);
     });
     const hideSubscription = Keyboard.addListener(hideEvent, (event) => {
@@ -417,7 +423,7 @@ export default function ChatDetailScreen() {
     const changeFrameSubscription =
       Platform.OS === 'ios'
         ? Keyboard.addListener('keyboardWillChangeFrame', () => {
-            syncMessagesToBottom();
+            syncMessagesToBottomIfNearBottom();
           })
         : undefined;
 
@@ -459,7 +465,7 @@ export default function ChatDetailScreen() {
     lastAutoScrolledConversationIdRef.current = conversationId;
     lastAutoScrolledMessageIdRef.current = lastMessage.id;
 
-    if (isNewConversation || isNearBottomRef.current || lastMessage.sender === authRecord.id) {
+    if (isNewConversation || isNearBottomRef.current || lastMessage.senderId === authRecord.id) {
       syncMessagesToBottom();
     }
   }, [authRecord.id, conversationId, messages]);
@@ -548,6 +554,11 @@ export default function ChatDetailScreen() {
     inputRange: [0, 1],
     outputRange: [0.88, 1],
   });
+  const scrollViewBottomPadding =
+    Math.max(insets.bottom, 12) +
+    (isComposerExpanded ? COMPOSER_EXPANDED_HEIGHT : COMPOSER_HEIGHT) +
+    composerInputExtraHeightState +
+    16;
 
   const handleContentSizeChange = () => {
     if (didScrollToEnd.current) {
@@ -599,10 +610,7 @@ export default function ChatDetailScreen() {
 
     if (distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM) {
       setJumpButtonVisible(false);
-    } else if (
-      deltaY > SCROLL_DIRECTION_THRESHOLD &&
-      distanceFromBottom > JUMP_BUTTON_FAR_FROM_BOTTOM
-    ) {
+    } else if (distanceFromBottom > JUMP_BUTTON_FAR_FROM_BOTTOM) {
       setJumpButtonVisible(true);
     } else if (deltaY < -SCROLL_DIRECTION_THRESHOLD) {
       setJumpButtonVisible(false);
@@ -630,13 +638,14 @@ export default function ChatDetailScreen() {
       }
 
       composerInputExtraHeightValue.current = 0;
+      setComposerInputExtraHeightState(0);
       setIsComposerInputScrollable(false);
       Animated.timing(composerInputExtraHeight, {
         toValue: 0,
         duration: 120,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: false,
-      }).start(() => syncMessagesToBottom());
+      }).start(syncMessagesToBottomIfNearBottom);
       return;
     }
 
@@ -652,13 +661,14 @@ export default function ChatDetailScreen() {
     }
 
     composerInputExtraHeightValue.current = nextExtraHeight;
+    setComposerInputExtraHeightState(nextExtraHeight);
     setIsComposerInputScrollable(contentHeight > COMPOSER_INPUT_MAX_CONTENT_HEIGHT);
     Animated.timing(composerInputExtraHeight, {
       toValue: nextExtraHeight,
       duration: 120,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
-    }).start(() => syncMessagesToBottom());
+    }).start(syncMessagesToBottomIfNearBottom);
   };
 
   const handleSendMessage = () => {
@@ -881,7 +891,7 @@ export default function ChatDetailScreen() {
           className="flex-1"
           contentContainerStyle={{
             flexGrow: 1,
-            paddingBottom: Math.max(insets.bottom, 12) + COMPOSER_EXPANDED_HEIGHT + 16,
+            paddingBottom: scrollViewBottomPadding,
             paddingHorizontal: 14,
             paddingTop: 14,
           }}
@@ -1023,7 +1033,7 @@ export default function ChatDetailScreen() {
                 onFocus={() => {
                   setAttachmentMenuVisible(false);
                   setIsComposerExpanded(true);
-                  syncMessagesToBottom();
+                  syncMessagesToBottomIfNearBottom();
                   animateComposer(1, 220);
                 }}
                 placeholder="Message"
