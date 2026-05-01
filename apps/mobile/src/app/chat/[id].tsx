@@ -56,6 +56,7 @@ import {
   listOutboxMessagesForConversation,
   listRecentLocalMessages,
 } from '../../lib/chat-sync-store';
+import { logDebugEvent } from '../../lib/debug-log';
 import { getDeviceId } from '../../lib/device-id';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
@@ -741,6 +742,12 @@ export default function ChatDetailScreen() {
       if (nextOldestSeq) {
         setMessageWindowStartSeq(nextOldestSeq);
       }
+    } catch (error) {
+      void logDebugEvent('warn', 'chat-history', 'Could not load older messages', {
+        conversationId,
+        error: getErrorMessage(error, 'Unknown error'),
+        oldestLoadedSeq,
+      });
     } finally {
       isLoadingOlderMessagesRef.current = false;
       setIsLoadingOlderMessages(false);
