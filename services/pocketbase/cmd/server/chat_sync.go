@@ -764,6 +764,7 @@ func markConversationReadCommand(app core.App, userId string, conversationId str
 	}
 
 	var membership *core.Record
+	var cursor int
 	err := app.RunInTransaction(func(txApp core.App) error {
 		conversation, currentMembership, err := findActiveConversationMembership(txApp, conversationId, userId)
 		if err != nil {
@@ -776,15 +777,30 @@ func markConversationReadCommand(app core.App, userId string, conversationId str
 		if currentMembership.GetInt("last_read_message_seq") > lastReadSeq {
 			lastReadSeq = currentMembership.GetInt("last_read_message_seq")
 		}
+		if currentMembership.GetInt("last_read_message_seq") == lastReadSeq {
+			membership = currentMembership
+			cursor, err = latestConversationEventCursor(txApp)
+			return err
+		}
+
 		currentMembership.Set("last_read_message_seq", lastReadSeq)
 		if err := txApp.Save(currentMembership); err != nil {
 			return err
 		}
 		membership = currentMembership
-		return nil
+		cursor, err = nextConversationEventCursor(txApp)
+		if err != nil {
+			return err
+		}
+		conversation.Set("latest_event_cursor", cursor)
+		if err := txApp.Save(conversation); err != nil {
+			return err
+		}
+
+		return createConversationEvent(txApp, conversation, "read.updated", userId, currentMembership.Id, userId, currentMembership.Id, "", cursor, conversationEventPayload{Conversation: conversation, Membership: currentMembership})
 	})
 
-	return map[string]any{"membership": membership}, err
+	return map[string]any{"cursor": cursor, "membership": membership}, err
 }
 
 func messageReadersCommand(app core.App, userId string, messageId string) (map[string]any, error) {

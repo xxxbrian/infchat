@@ -12,16 +12,16 @@ func init() {
 	m.Register(func(app core.App) error {
 		for _, name := range []string{
 			"call_participants",
-			"call_rooms",
 			"push_outbox",
 			"idempotency_keys",
-			"conversation_events",
-			"conversation_memberships",
 			"sync_events",
 			"sync_cursors",
 			"conversation_user_states",
 			"conversation_reads",
+			"conversation_events",
 			"messages",
+			"call_rooms",
+			"conversation_memberships",
 			"conversations",
 			"event_cursors",
 		} {
@@ -101,9 +101,23 @@ func init() {
 			return err
 		}
 
+		membershipScopedConversationRule := "@request.auth.id != '' && @collection.conversation_memberships.conversation ?= id && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'"
+		conversations.ListRule = pointer(membershipScopedConversationRule)
+		conversations.ViewRule = pointer(membershipScopedConversationRule)
+		if err := app.Save(conversations); err != nil {
+			return err
+		}
+
+		membershipScopedMembershipRule := "@request.auth.id != '' && @collection.conversation_memberships.conversation ?= conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'"
+		memberships.ListRule = pointer(membershipScopedMembershipRule)
+		memberships.ViewRule = pointer(membershipScopedMembershipRule)
+		if err := app.Save(memberships); err != nil {
+			return err
+		}
+
 		messages := core.NewBaseCollection("messages")
 		messages.ListRule = nil
-		messages.ViewRule = pointer("@request.auth.id != ''")
+		messages.ViewRule = pointer("@request.auth.id != '' && @collection.conversation_memberships.conversation ?= conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active' && message_seq >= @collection.conversation_memberships.history_start_message_seq")
 		messages.CreateRule = nil
 		messages.UpdateRule = nil
 		messages.DeleteRule = nil
@@ -142,7 +156,7 @@ func init() {
 			&core.NumberField{Name: "cursor", Required: true, OnlyInt: true},
 			&core.RelationField{Name: "conversation", CollectionId: conversations.Id, CascadeDelete: true, MaxSelect: 1, Required: true},
 			&core.NumberField{Name: "event_seq", Required: true, OnlyInt: true},
-			&core.SelectField{Name: "type", Required: true, Values: []string{"conversation.created", "conversation.updated", "conversation.history_policy_updated", "membership.added", "membership.left", "membership.removed", "membership.role_updated", "message.created", "message.edited", "message.deleted", "call.started", "call.updated", "call.ended"}},
+			&core.SelectField{Name: "type", Required: true, Values: []string{"conversation.created", "conversation.updated", "conversation.history_policy_updated", "membership.added", "membership.left", "membership.removed", "membership.role_updated", "read.updated", "message.created", "message.edited", "message.deleted", "call.started", "call.updated", "call.ended"}},
 			&core.RelationField{Name: "actor_user", CollectionId: users.Id, CascadeDelete: false, MaxSelect: 1},
 			&core.RelationField{Name: "actor_membership", CollectionId: memberships.Id, CascadeDelete: false, MaxSelect: 1},
 			&core.RelationField{Name: "subject_user", CollectionId: users.Id, CascadeDelete: false, MaxSelect: 1},
@@ -230,8 +244,8 @@ func init() {
 		}
 
 		callRooms := core.NewBaseCollection("call_rooms")
-		callRooms.ListRule = pointer("@request.auth.id != ''")
-		callRooms.ViewRule = pointer("@request.auth.id != ''")
+		callRooms.ListRule = pointer("@request.auth.id != '' && @collection.conversation_memberships.conversation ?= conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'")
+		callRooms.ViewRule = pointer("@request.auth.id != '' && @collection.conversation_memberships.conversation ?= conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'")
 		callRooms.CreateRule = nil
 		callRooms.UpdateRule = nil
 		callRooms.DeleteRule = nil
@@ -254,8 +268,8 @@ func init() {
 		}
 
 		callParticipants := core.NewBaseCollection("call_participants")
-		callParticipants.ListRule = pointer("@request.auth.id != ''")
-		callParticipants.ViewRule = pointer("@request.auth.id != ''")
+		callParticipants.ListRule = pointer("@request.auth.id != '' && @collection.conversation_memberships.conversation ?= call_room.conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'")
+		callParticipants.ViewRule = pointer("@request.auth.id != '' && @collection.conversation_memberships.conversation ?= call_room.conversation && @collection.conversation_memberships.user ?= @request.auth.id && @collection.conversation_memberships.status ?= 'active'")
 		callParticipants.CreateRule = nil
 		callParticipants.UpdateRule = nil
 		callParticipants.DeleteRule = nil

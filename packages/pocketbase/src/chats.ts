@@ -87,6 +87,7 @@ export type ConversationEventType =
   | 'membership.left'
   | 'membership.removed'
   | 'membership.role_updated'
+  | 'read.updated'
   | 'message.created'
   | 'message.edited'
   | 'message.deleted'
@@ -177,6 +178,7 @@ export type SendMessageCommandResponse = {
 };
 
 export type MarkConversationReadCommandResponse = {
+  cursor: number;
   membership: ConversationMembershipRecord;
 };
 

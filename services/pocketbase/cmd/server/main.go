@@ -308,6 +308,38 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 		group := se.Router.Group("/api/infchat/calls")
 		group.Bind(apis.RequireAuth("users"))
 
+		group.GET("/active", func(e *core.RequestEvent) error {
+			if err := cleanupStaleCalls(e.App); err != nil {
+				return err
+			}
+
+			memberships, err := findActiveMembershipsForUser(e.App, e.Auth.Id)
+			if err != nil {
+				return err
+			}
+			callRooms := make([]*core.Record, 0)
+			for _, membership := range memberships {
+				rooms, err := e.App.FindRecordsByFilter(
+					"call_rooms",
+					"conversation={:conversation} && ("+callRoomActiveFilter+")",
+					"-created",
+					0,
+					0,
+					dbx.Params{"conversation": membership.GetString("conversation")},
+				)
+				if err != nil {
+					return err
+				}
+				callRooms = append(callRooms, rooms...)
+			}
+
+			sort.Slice(callRooms, func(i, j int) bool {
+				return callRooms[i].GetString("created") > callRooms[j].GetString("created")
+			})
+
+			return e.JSON(http.StatusOK, map[string]any{"callRooms": callRooms})
+		})
+
 		group.POST("/start", func(e *core.RequestEvent) error {
 			if err := cleanupStaleCalls(e.App); err != nil {
 				return err
@@ -728,7 +760,7 @@ func createStartedCallRoom(app core.App, conversation *core.Record, userId strin
 		if err != nil {
 			return err
 		}
-		message, err := createCallMessage(txApp, callRoom, membership, cursor)
+		conversation, message, err := createCallMessage(txApp, callRoom, membership, cursor)
 		if err != nil {
 			return err
 		}
@@ -742,15 +774,15 @@ func createStartedCallRoom(app core.App, conversation *core.Record, userId strin
 	return callRoom, err
 }
 
-func createCallMessage(app core.App, callRoom *core.Record, membership *core.Record, cursor int) (*core.Record, error) {
+func createCallMessage(app core.App, callRoom *core.Record, membership *core.Record, cursor int) (*core.Record, *core.Record, error) {
 	collection, err := app.FindCollectionByNameOrId("messages")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conversationId := callRoom.GetString("conversation")
 	messageSeq, err := reserveMessageSeq(app, conversationId)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	message := core.NewRecord(collection)
@@ -763,13 +795,14 @@ func createCallMessage(app core.App, callRoom *core.Record, membership *core.Rec
 	message.Set("message_seq", messageSeq)
 	message.Set("edit_version", 0)
 	if err := app.Save(message); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if _, err := updateConversationPreviewFromMessageWithCursor(app, message, message.GetString("created"), cursor); err != nil {
-		return nil, err
+	conversation, err := updateConversationPreviewFromMessageWithCursor(app, message, message.GetString("created"), cursor)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	return message, nil
+	return conversation, message, nil
 }
 
 func runCallCleanup(app core.App) {
@@ -1001,12 +1034,17 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 		if err := markActiveCallParticipantsLeft(txApp, currentCallRoom.Id); err != nil {
 			return err
 		}
-		if err := updateCallMessageForEndedCall(txApp, currentCallRoom, status); err != nil {
+		message, err := updateCallMessageForEndedCall(txApp, currentCallRoom, status)
+		if err != nil {
 			return err
 		}
 		conversation, err := txApp.FindRecordById("conversations", currentCallRoom.GetString("conversation"))
 		if err != nil {
 			return err
+		}
+		if message != nil && conversation.GetString("last_message_id") == message.Id {
+			conversation.Set("last_message_text", getMessagePreview(message))
+			conversation.Set("last_message_at", message.GetString("updated"))
 		}
 		cursor, err := nextConversationEventCursor(txApp)
 		if err != nil {
@@ -1014,10 +1052,6 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 		}
 		conversation.Set("latest_event_cursor", cursor)
 		if err := txApp.Save(conversation); err != nil {
-			return err
-		}
-		message, err := txApp.FindFirstRecordByFilter("messages", "call_room={:callRoomId}", dbx.Params{"callRoomId": currentCallRoom.Id})
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		messageId := ""
@@ -1045,7 +1079,7 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 	return nil
 }
 
-func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status string) error {
+func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status string) (*core.Record, error) {
 	message, err := app.FindFirstRecordByFilter(
 		"messages",
 		"call_room={:callRoomId}",
@@ -1053,15 +1087,15 @@ func updateCallMessageForEndedCall(app core.App, callRoom *core.Record, status s
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil
+			return nil, nil
 		}
 
-		return err
+		return nil, err
 	}
 
 	message.Set("body", callMessageBody(callRoom, status))
 
-	return app.Save(message)
+	return message, app.Save(message)
 }
 
 func finishedCallStatus(callRoom *core.Record, userId string) string {

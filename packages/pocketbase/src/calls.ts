@@ -21,6 +21,10 @@ export type CallTokenResponse = {
   token: string;
 };
 
+export type ActiveCallsResponse = {
+  callRooms: CallRoomRecord[];
+};
+
 const ACTIVE_CALL_FILTER = '(status={:ringing} || status={:active})';
 
 export function startCall(
@@ -54,13 +58,9 @@ export async function getActiveCallForConversation(
 }
 
 export function listActiveCalls(pb: PocketBase): Promise<CallRoomRecord[]> {
-  return pb.collection('call_rooms').getFullList<CallRoomRecord>({
-    filter: pb.filter(ACTIVE_CALL_FILTER, {
-      active: 'active',
-      ringing: 'ringing',
-    }),
-    sort: '-created',
-  });
+  return pb
+    .send<ActiveCallsResponse>('/api/infchat/calls/active', { method: 'GET' })
+    .then((response) => response.callRooms);
 }
 
 export function joinCall(
