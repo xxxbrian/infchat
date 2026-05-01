@@ -137,7 +137,6 @@ export default function FriendsTab() {
   const suggestionsQuery = useQuery({
     queryKey: ['friend-suggestions', currentUserId],
     queryFn: () => listFriendSuggestions(pb),
-    enabled: shouldShowSuggestions,
     networkMode: 'always',
     staleTime: 1000 * 60,
   });
@@ -188,14 +187,16 @@ export default function FriendsTab() {
   );
   const findPeople = useMemo(() => {
     if (shouldShowSuggestions) {
-      return (suggestionsQuery.data ?? []).map((suggestion) =>
-        toSuggestedPerson(
-          suggestion,
-          activeFriendshipByUserId.get(suggestion.profile.user),
-          currentUserId,
-          fileTokenQuery.data,
-        ),
-      );
+      return (suggestionsQuery.data ?? [])
+        .map((suggestion) =>
+          toSuggestedPerson(
+            suggestion,
+            activeFriendshipByUserId.get(suggestion.profile.user),
+            currentUserId,
+            fileTokenQuery.data,
+          ),
+        )
+        .filter((person) => person.status === 'none');
     }
 
     if (shouldSearchProfiles) {
@@ -566,7 +567,16 @@ export default function FriendsTab() {
       return incoming.length;
     }
 
-    return findPeople.length;
+    return (suggestionsQuery.data ?? [])
+      .map((suggestion) =>
+        toSuggestedPerson(
+          suggestion,
+          activeFriendshipByUserId.get(suggestion.profile.user),
+          currentUserId,
+          fileTokenQuery.data,
+        ),
+      )
+      .filter((person) => person.status === 'none').length;
   };
   const isLoading = friendshipsQuery.isLoading && friendships.length === 0;
   const hasError = friendshipsQuery.isError && friendships.length === 0;
@@ -695,7 +705,6 @@ export default function FriendsTab() {
         keyboardShouldPersistTaps="handled"
         onScroll={handleScroll}
         onScrollBeginDrag={Keyboard.dismiss}
-        onTouchStart={Keyboard.dismiss}
         refreshControl={
           <RefreshControl
             colors={['#f8fafc']}
