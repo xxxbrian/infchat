@@ -1065,7 +1065,6 @@ export default function ChatDetailScreen() {
 
         <View className="flex-1">
           <FlashList
-            className="flex-1"
             contentContainerStyle={listContentContainerStyle}
             data={renderItems}
             extraData={{
@@ -1088,10 +1087,10 @@ export default function ChatDetailScreen() {
             onStartReachedThreshold={0.1}
             refreshControl={
               <RefreshControl
-                colors={['#f8fafc']}
+                colorsClassName="accent-foreground"
                 onRefresh={handleRefresh}
                 refreshing={isPullRefreshing}
-                tintColor="#f8fafc"
+                tintColorClassName="accent-foreground"
               />
             }
             ref={listRef}
@@ -2020,7 +2019,7 @@ function EmptyConversation({ label }: { label: string }) {
 function OlderMessagesSpinner() {
   return (
     <View className="items-center py-3">
-      <ActivityIndicator color="#f8fafc" size="small" />
+      <ActivityIndicator colorClassName="accent-foreground" size="small" />
     </View>
   );
 }
