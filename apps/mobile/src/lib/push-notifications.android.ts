@@ -61,6 +61,8 @@ export function setupNotificationResponses(onMessageResponse?: () => void) {
   };
 }
 
+export function setupCallUpdateBackgroundNotifications() {}
+
 export async function registerPushDeviceForPlatform(
   _appVersion?: string,
   _options: { throwOnFailure?: boolean } = {},

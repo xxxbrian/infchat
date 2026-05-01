@@ -38,6 +38,7 @@ import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
   endSystemCallForCallRoom,
   registerPushDeviceForPlatform,
+  setupCallUpdateBackgroundNotifications,
   setupNotificationPresentation,
   setupNotificationResponses,
   setupPushRegistrationRecovery,
@@ -47,6 +48,7 @@ import { LoginScreen } from '../screens/LoginScreen';
 import { RegisterScreen } from '../screens/RegisterScreen';
 
 setupNotificationPresentation();
+setupCallUpdateBackgroundNotifications();
 installDebugLogCapture();
 
 const navigationTheme = {

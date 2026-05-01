@@ -65,21 +65,38 @@ extension AppDelegate: PKPushRegistryDelegate {
     let callerName = payloadDictionary["callerName"] as? String ?? "InfChat"
     let handle = payloadDictionary["handle"] as? String ?? callerName
     let hasVideo = (payloadDictionary["kind"] as? String) == "video"
+    let payloadType = payloadDictionary["type"] as? String
+    let endReason = infChatCallEndReason(payloadDictionary["status"] as? String ?? "ended")
 
-    if (payloadDictionary["type"] as? String) == "call_update" {
+    if payloadType == "call_update" {
       infChatTerminalCallUUIDs.insert(uuid)
       RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
-      RNCallKeep.endCall(withUUID: uuid, reason: infChatCallEndReason(payloadDictionary["status"] as? String ?? "ended"))
-      completion()
+      infChatReportEndedVoipPush(
+        uuid: uuid,
+        handle: handle,
+        hasVideo: hasVideo,
+        callerName: callerName,
+        payload: payloadDictionary,
+        endReason: endReason,
+        completion: completion
+      )
       return
     }
 
-    if infChatTerminalCallUUIDs.contains(uuid) {
-      completion()
+    if payloadType != "call" || infChatTerminalCallUUIDs.contains(uuid) {
+      RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
+      infChatReportEndedVoipPush(
+        uuid: uuid,
+        handle: handle,
+        hasVideo: hasVideo,
+        callerName: callerName,
+        payload: payloadDictionary,
+        endReason: endReason,
+        completion: completion
+      )
       return
     }
 
-    RNVoipPushNotificationManager.addCompletionHandler(uuid, completionHandler: completion)
     RNVoipPushNotificationManager.didReceiveIncomingPush(with: payload, forType: type.rawValue)
     RNCallKeep.reportNewIncomingCall(
       uuid,
@@ -94,6 +111,35 @@ extension AppDelegate: PKPushRegistryDelegate {
       fromPushKit: true,
       payload: payloadDictionary,
       withCompletionHandler: completion
+    )
+  }
+
+  private func infChatReportEndedVoipPush(
+    uuid: String,
+    handle: String,
+    hasVideo: Bool,
+    callerName: String,
+    payload: [AnyHashable: Any],
+    endReason: Int32,
+    completion: @escaping () -> Void
+  ) {
+    // VoIP pushes must be reported to CallKit before completion, even for stale payloads.
+    RNCallKeep.reportNewIncomingCall(
+      uuid,
+      handle: handle,
+      handleType: "generic",
+      hasVideo: hasVideo,
+      localizedCallerName: callerName,
+      supportsHolding: false,
+      supportsDTMF: false,
+      supportsGrouping: false,
+      supportsUngrouping: false,
+      fromPushKit: true,
+      payload: payload,
+      withCompletionHandler: {
+        RNCallKeep.endCall(withUUID: uuid, reason: endReason)
+        completion()
+      }
     )
   }
 

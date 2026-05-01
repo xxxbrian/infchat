@@ -362,7 +362,7 @@ func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status
 			deviceIdToExclude = excludedDeviceId
 		}
 
-		if err := sendAPNsToUserDevices(app, userId, "voip_token", apns2.PushTypeVOIP, apns2.PriorityHigh, ".voip", callRoom.Id, payload, deviceIdToExclude, nil); err != nil {
+		if err := sendAPNsToUserDevices(app, userId, "apns_token", apns2.PushTypeBackground, apns2.PriorityLow, "", callRoom.Id, payload, deviceIdToExclude, nil); err != nil {
 			log.Printf("push: call update notification failed for user %s: %v", userId, err)
 		}
 	}

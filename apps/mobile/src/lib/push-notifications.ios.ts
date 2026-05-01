@@ -2,6 +2,7 @@ import { endCall, type PushEnvironment, registerPushDevice } from '@infchat/pock
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
+import * as TaskManager from 'expo-task-manager';
 import { AppState, Platform } from 'react-native';
 import RNCallKeep, { CONSTANTS as CALLKEEP_CONSTANTS } from 'react-native-callkeep';
 import VoipPushNotification from 'react-native-voip-push-notification';
@@ -37,6 +38,7 @@ type PendingCallKeepAction = 'answer' | 'end';
 const PENDING_CALLKEEP_ACTION_TIMEOUT = 30_000;
 const TERMINAL_CALL_UUID_TIMEOUT = 10 * 60_000;
 const PUSH_REGISTRATION_RETRY_DELAYS = [1_000, 5_000, 15_000];
+const CALL_UPDATE_BACKGROUND_NOTIFICATION_TASK = 'infchat-call-update-background-notification';
 
 export type IOSSystemCallEndReason =
   | 'answered-elsewhere'
@@ -51,6 +53,21 @@ const pendingCallKeepActionsByUUID = new Map<
   string,
   { actions: PendingCallKeepAction[]; timeout: ReturnType<typeof setTimeout> }
 >();
+
+if (Platform.OS === 'ios' && !TaskManager.isTaskDefined(CALL_UPDATE_BACKGROUND_NOTIFICATION_TASK)) {
+  TaskManager.defineTask<Notifications.NotificationTaskPayload>(
+    CALL_UPDATE_BACKGROUND_NOTIFICATION_TASK,
+    async ({ data, error }) => {
+      if (error) {
+        return Notifications.BackgroundNotificationTaskResult.Failed;
+      }
+
+      return handleCallUpdateNotificationPayload(data)
+        ? Notifications.BackgroundNotificationTaskResult.NewData
+        : Notifications.BackgroundNotificationTaskResult.NoData;
+    },
+  );
+}
 
 export function setIOSSystemCallHandlers(handlers: SystemCallHandlers) {
   systemCallHandlers = handlers;
@@ -172,6 +189,72 @@ function handleCallUpdatePayload(payload: CallPushPayload): boolean {
   return true;
 }
 
+function handleCallUpdateNotificationPayload(data: unknown): boolean {
+  const payload = callPushPayloadFromNotificationData(data);
+  if (!payload) {
+    return false;
+  }
+
+  return handleCallUpdatePayload(payload);
+}
+
+function callPushPayloadFromNotificationData(data: unknown): CallPushPayload | null {
+  const record = asRecord(data);
+  if (!record) {
+    return null;
+  }
+
+  if (typeof record.dataString === 'string') {
+    const parsedPayload = parseCallPushPayloadString(record.dataString);
+    if (parsedPayload) {
+      return parsedPayload;
+    }
+  }
+
+  const type = stringValue(record.type);
+  const uuid = stringValue(record.uuid);
+  if (type || uuid) {
+    const kind = stringValue(record.kind);
+    return {
+      callerName: stringValue(record.callerName),
+      callRoomId: stringValue(record.callRoomId),
+      conversationId: stringValue(record.conversationId),
+      handle: stringValue(record.handle),
+      kind: kind === 'video' || kind === 'voice' ? kind : undefined,
+      status: stringValue(record.status),
+      type,
+      uuid,
+    };
+  }
+
+  return (
+    callPushPayloadFromNotificationData(record.data) ??
+    callPushPayloadFromNotificationData(record.notification) ??
+    callPushPayloadFromNotificationData(record.request) ??
+    callPushPayloadFromNotificationData(record.content)
+  );
+}
+
+function parseCallPushPayloadString(value: string): CallPushPayload | null {
+  try {
+    return callPushPayloadFromNotificationData(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
 function systemCallEndReasonForStatus(
   status: string | undefined,
 ): Exclude<IOSSystemCallEndReason, 'local'> {
@@ -192,13 +275,15 @@ export function setupNotificationPresentation() {
     handleNotification: async (notification) => {
       const data = notification.request.content.data;
       const isMessageNotification = data?.type === 'message';
+      const isCallUpdateNotification = data?.type === 'call_update';
+      const shouldPresent = !isMessageNotification && !isCallUpdateNotification;
 
       return {
-        shouldPlaySound: !isMessageNotification,
+        shouldPlaySound: shouldPresent,
         shouldSetBadge: true,
-        shouldShowAlert: !isMessageNotification,
-        shouldShowBanner: !isMessageNotification,
-        shouldShowList: !isMessageNotification,
+        shouldShowAlert: shouldPresent,
+        shouldShowBanner: shouldPresent,
+        shouldShowList: shouldPresent,
       };
     },
   });
@@ -217,6 +302,14 @@ export function setupNotificationResponses(onMessageResponse?: () => void) {
   return () => {
     notificationSubscription.remove();
   };
+}
+
+export function setupCallUpdateBackgroundNotifications() {
+  if (Platform.OS !== 'ios') {
+    return;
+  }
+
+  void Notifications.registerTaskAsync(CALL_UPDATE_BACKGROUND_NOTIFICATION_TASK).catch(() => {});
 }
 
 export async function registerIOSPushDevice(
@@ -369,6 +462,9 @@ export function setupIOSSystemCalls() {
   const endSubscription = RNCallKeep.addEventListener('endCall', ({ callUUID }) => {
     handleEndCall(callUUID);
   });
+  const notificationSubscription = Notifications.addNotificationReceivedListener((notification) => {
+    handleCallUpdateNotificationPayload(notification.request.content.data);
+  });
   const callKeepInitialEventsSubscription = RNCallKeep.addEventListener(
     'didLoadWithEvents',
     (events) => {
@@ -436,6 +532,7 @@ export function setupIOSSystemCalls() {
     answerSubscription.remove();
     callKeepInitialEventsSubscription.remove();
     endSubscription.remove();
+    notificationSubscription.remove();
     VoipPushNotification.removeEventListener('register');
     VoipPushNotification.removeEventListener('notification');
     VoipPushNotification.removeEventListener('didLoadWithEvents');
