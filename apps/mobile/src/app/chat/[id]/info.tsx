@@ -570,11 +570,7 @@ function AddMembersModal({
     if (!visible) {
       setQuery('');
       setSelectedUserIds([]);
-      return;
     }
-
-    const focusTimer = setTimeout(() => searchRef.current?.focus(), 220);
-    return () => clearTimeout(focusTimer);
   }, [visible]);
 
   useEffect(() => {
@@ -771,9 +767,6 @@ function EditGroupModal({
     setDescription(conversation.description || '');
     setSelectedAvatar(null);
     setHistoryPolicy(conversation.default_history_policy || 'full');
-    const focusTimer = setTimeout(() => titleRef.current?.focus(), 220);
-
-    return () => clearTimeout(focusTimer);
   }, [conversation, visible]);
 
   const trimmedTitle = title.trim();

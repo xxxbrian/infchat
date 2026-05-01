@@ -180,16 +180,6 @@ export default function NewGroupScreen() {
     };
   }, [friendUserIds, isOnline, queryClient]);
 
-  useEffect(() => {
-    if (step === 'members') {
-      const focusTimer = setTimeout(() => searchRef.current?.focus(), 220);
-      return () => clearTimeout(focusTimer);
-    }
-
-    const focusTimer = setTimeout(() => titleRef.current?.focus(), 220);
-    return () => clearTimeout(focusTimer);
-  }, [step]);
-
   const toggleSelected = (userId: string) => {
     setSelectedUserIds((current) => {
       if (current.includes(userId)) {
