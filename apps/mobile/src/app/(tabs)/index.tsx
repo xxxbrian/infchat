@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   type CallRoomRecord,
+  type ConversationMembershipRecord,
   type ConversationRecord,
   getProfileAvatarUrl,
   listActiveCalls,
@@ -26,7 +27,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { useChatSyncService } from '../../lib/chat-sync-context';
-import { listLocalConversationStates, listLocalConversations } from '../../lib/chat-sync-store';
+import { listLocalConversations, listLocalMemberships } from '../../lib/chat-sync-store';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
@@ -86,23 +87,33 @@ export default function ChatTab() {
     queryKey: ['active-calls', authRecord.id],
     queryFn: () => listActiveCalls(pb),
   });
-  const readStatesQuery = useQuery({
-    queryKey: ['chat', authRecord.id, 'conversation-states'],
-    queryFn: () => listLocalConversationStates(authRecord.id),
+  const membershipsQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'memberships'],
+    queryFn: () => listLocalMemberships(authRecord.id),
   });
   const conversations = conversationsQuery.data ?? [];
-  const readStates = readStatesQuery.data ?? [];
+  const memberships = membershipsQuery.data ?? [];
+  const membershipsByConversation = useMemo(
+    () => groupMembershipsByConversation(memberships),
+    [memberships],
+  );
   const unreadCounts = useMemo(() => {
     const counts: Record<string, number> = {};
 
-    for (const state of readStates) {
-      if (state.user === authRecord.id) {
-        counts[state.conversation] = state.unread_count ?? 0;
+    for (const conversation of conversations) {
+      const currentMembership = membershipsByConversation
+        .get(conversation.id)
+        ?.find((membership) => membership.user === authRecord.id && membership.status === 'active');
+      if (currentMembership) {
+        counts[conversation.id] = Math.max(
+          0,
+          (conversation.last_message_seq ?? 0) - (currentMembership.last_read_message_seq ?? 0),
+        );
       }
     }
 
     return counts;
-  }, [authRecord.id, readStates]);
+  }, [authRecord.id, conversations, membershipsByConversation]);
   const activeCallByConversation = useMemo(() => {
     const calls = new Map<string, CallRoomRecord>();
 
@@ -118,15 +129,15 @@ export default function ChatTab() {
     const ids = new Set<string>();
 
     for (const conversation of conversations) {
-      for (const memberId of conversation.members) {
-        if (memberId !== authRecord.id) {
-          ids.add(memberId);
+      for (const membership of membershipsByConversation.get(conversation.id) ?? []) {
+        if (membership.status === 'active' && membership.user !== authRecord.id) {
+          ids.add(membership.user);
         }
       }
     }
 
     return [...ids].sort();
-  }, [authRecord.id, conversations]);
+  }, [authRecord.id, conversations, membershipsByConversation]);
   const profilesQuery = useQuery({
     queryKey: ['profiles', 'chat-members', relatedUserIds],
     queryFn: () => listCachedProfilesByUserIds(pb, relatedUserIds),
@@ -152,6 +163,7 @@ export default function ChatTab() {
           fileTokenQuery.data,
           activeCallByConversation.get(conversation.id),
           unreadCounts[conversation.id] ?? 0,
+          membershipsByConversation.get(conversation.id) ?? [],
         ),
       ),
     [
@@ -161,6 +173,7 @@ export default function ChatTab() {
       fileTokenQuery.data,
       profilesByUserId,
       unreadCounts,
+      membershipsByConversation,
     ],
   );
   const visibleConversations = useMemo(() => {
@@ -456,8 +469,12 @@ function toConversationView(
   fileToken?: string,
   activeCall?: CallRoomRecord,
   unread = 0,
+  memberships: ConversationMembershipRecord[] = [],
 ): ConversationView {
-  const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
+  const activeMemberIds = memberships
+    .filter((membership) => membership.status === 'active')
+    .map((membership) => membership.user);
+  const otherMemberIds = activeMemberIds.filter((memberId) => memberId !== currentUserId);
   const otherProfiles = otherMemberIds
     .map((memberId) => profilesByUserId.get(memberId))
     .filter((profile): profile is ProfileRecord => Boolean(profile));
@@ -478,13 +495,27 @@ function toConversationView(
     message: conversation.last_message_text || 'No messages yet',
     time: formatConversationTime(conversation.last_message_at || conversation.updated),
     unread,
-    subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
+    subtitle:
+      conversation.kind === 'group'
+        ? `${conversation.member_count ?? activeMemberIds.length} members`
+        : 'friend',
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
     activeCall,
     members: otherProfiles.map((profile) => profile.display_name || profile.username),
   };
+}
+
+function groupMembershipsByConversation(memberships: ConversationMembershipRecord[]) {
+  const grouped = new Map<string, ConversationMembershipRecord[]>();
+  for (const membership of memberships) {
+    const current = grouped.get(membership.conversation) ?? [];
+    current.push(membership);
+    grouped.set(membership.conversation, current);
+  }
+
+  return grouped;
 }
 
 function formatConversationTime(value?: string): string {

@@ -1,5 +1,6 @@
 import {
   bootstrapChatSync,
+  type ConversationMembershipRecord,
   type ConversationRecord,
   deleteConversationMessages,
   listConversationMessagesBeforeSeq,
@@ -146,9 +147,21 @@ export class ChatSyncService {
     this.enqueueSync('manual');
   }
 
-  async applyConversationSnapshot(conversation: ConversationRecord) {
-    await applyLocalChatRecords(this.authId, { conversation });
-    this.invalidateChatQueries(conversation.id);
+  async applyConversationStart(response: {
+    conversation: ConversationRecord;
+    membership?: ConversationMembershipRecord;
+    memberships?: ConversationMembershipRecord[];
+  }) {
+    await applyLocalChatRecords(this.authId, {
+      conversation: response.conversation,
+      membership: response.membership,
+    });
+    for (const membership of response.memberships ?? []) {
+      await applyLocalChatRecords(this.authId, {
+        membership,
+      });
+    }
+    this.invalidateChatQueries(response.conversation.id);
   }
 
   async syncConversationHistory(conversationId: string, beforeSeq?: number) {
@@ -172,7 +185,9 @@ export class ChatSyncService {
       lastReadSeq,
     });
     const response = await markConversationReadBySeq(this.pb, conversationId, lastReadSeq);
-    await applyLocalChatRecords(this.authId, { state: response.state });
+    await applyLocalChatRecords(this.authId, {
+      membership: response.membership,
+    });
     this.invalidateChatQueries(conversationId);
     this.enqueueSync('manual');
   }
@@ -210,13 +225,13 @@ export class ChatSyncService {
         void logDebugEvent('info', 'chat-sync', 'Bootstrap received', {
           conversations: bootstrap.conversations.length,
           cursor: bootstrap.cursor,
-          states: bootstrap.states.length,
+          memberships: bootstrap.memberships.length,
           trigger,
         });
         await applyChatBootstrap(
           this.authId,
           bootstrap.conversations,
-          bootstrap.states,
+          bootstrap.memberships,
           bootstrap.cursor,
         );
         await writeSyncJournal(this.authId, trigger, 'success', fromCursor, bootstrap.cursor);
@@ -304,6 +319,7 @@ export class ChatSyncService {
           });
           await applyLocalChatRecords(this.authId, {
             conversation: response.conversation,
+            membership: response.membership,
             message: response.message,
           });
           void logDebugEvent('info', 'outbox', 'Outbox message sent', {
@@ -382,10 +398,10 @@ export class ChatSyncService {
         queryKey: ['chat', this.authId, 'outbox', conversationId],
       });
       void this.queryClient.invalidateQueries({
-        queryKey: ['chat', this.authId, 'conversation-states'],
+        queryKey: ['chat', this.authId, 'memberships'],
       });
       void this.queryClient.invalidateQueries({
-        queryKey: ['chat', this.authId, 'conversation-states', conversationId],
+        queryKey: ['chat', this.authId, 'memberships', conversationId],
       });
     }
   }

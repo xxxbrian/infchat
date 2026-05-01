@@ -3,7 +3,7 @@ import {
   type CallKind,
   getProfileAvatarUrl,
   startCall,
-  startPrivateConversation,
+  startPrivateConversationCommand,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import MaskedView from '@react-native-masked-view/masked-view';
@@ -116,11 +116,14 @@ export default function ProfileScreen() {
   const initial = getAvatarInitial(displayName, username);
   const fallbackAvatarColor = getAvatarColor(profile?.user || profileUserId || username);
   const startChatMutation = useMutation({
-    mutationFn: () => startPrivateConversation(pb, profileUserId),
-    onSuccess: async (conversation) => {
-      await chatSyncService.applyConversationSnapshot(conversation);
+    mutationFn: () => startPrivateConversationCommand(pb, profileUserId),
+    onSuccess: async (response) => {
+      await chatSyncService.applyConversationStart(response);
       await chatSyncService.syncNow('manual');
-      router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
+      router.push({
+        pathname: '/chat/[id]',
+        params: { id: response.conversation.id },
+      });
     },
     onError: (error) => {
       Alert.alert(
@@ -131,13 +134,13 @@ export default function ProfileScreen() {
   });
   const startCallMutation = useMutation({
     mutationFn: async (kind: CallKind) => {
-      const conversation = await startPrivateConversation(pb, profileUserId);
-      await chatSyncService.applyConversationSnapshot(conversation);
+      const response = await startPrivateConversationCommand(pb, profileUserId);
+      await chatSyncService.applyConversationStart(response);
       await chatSyncService.syncNow('manual');
       const deviceId = await getDeviceId();
-      const call = await startCall(pb, conversation.id, kind, deviceId);
+      const call = await startCall(pb, response.conversation.id, kind, deviceId);
 
-      return { call, conversation };
+      return { call, conversation: response.conversation };
     },
     onSuccess: ({ call, conversation }) => {
       queryClient.invalidateQueries({

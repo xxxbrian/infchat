@@ -1,6 +1,11 @@
 import type PocketBase from 'pocketbase';
 
 export type ConversationKind = 'private' | 'group';
+export type GroupHistoryPolicy = 'full' | 'since_join';
+export type MembershipRole = 'owner' | 'admin' | 'member';
+export type MembershipStatus = 'active' | 'left' | 'removed';
+export type MembershipJoinSource = 'created' | 'added_by_member' | 'invite_link';
+export type MembershipNotificationLevel = 'all' | 'mentions' | 'muted';
 export type MessageKind = 'text' | 'image' | 'file' | 'voice' | 'call';
 
 export type MessageUploadFile = {
@@ -14,14 +19,40 @@ export type ConversationRecord = {
   kind: ConversationKind;
   pair_key?: string;
   created_by?: string;
-  members: string[];
   title?: string;
-  last_change_cursor?: number;
+  avatar?: string;
+  description?: string;
+  default_history_policy?: GroupHistoryPolicy;
+  member_count?: number;
+  next_message_seq?: number;
+  next_event_seq?: number;
+  latest_event_cursor?: number;
   last_message_id?: string;
   last_message_seq?: number;
   last_message_text?: string;
   last_message_at?: string;
-  next_message_seq?: number;
+  created: string;
+  updated: string;
+};
+
+export type ConversationMembershipRecord = {
+  id: string;
+  conversation: string;
+  user: string;
+  epoch_no: number;
+  role: MembershipRole;
+  status: MembershipStatus;
+  join_source: MembershipJoinSource;
+  added_by?: string;
+  removed_by?: string;
+  joined_message_seq: number;
+  history_start_message_seq: number;
+  live_start_cursor: number;
+  ended_message_seq?: number;
+  ended_cursor?: number;
+  ended_at?: string;
+  last_read_message_seq: number;
+  notification_level: MembershipNotificationLevel;
   created: string;
   updated: string;
 };
@@ -36,6 +67,7 @@ export type MessageRecord = {
   edit_version?: number;
   message_seq?: number;
   sender: string;
+  sender_membership?: string;
   sender_device_id?: string;
   kind: MessageKind;
   body: string;
@@ -47,32 +79,41 @@ export type MessageRecord = {
   updated: string;
 };
 
-export type ConversationUserStateRecord = {
-  id: string;
-  conversation: string;
-  user: string;
-  last_read_seq: number;
-  unread_count: number;
-  last_delivered_cursor: number;
-  created: string;
-  updated: string;
+export type ConversationEventType =
+  | 'conversation.created'
+  | 'conversation.updated'
+  | 'conversation.history_policy_updated'
+  | 'membership.added'
+  | 'membership.left'
+  | 'membership.removed'
+  | 'membership.role_updated'
+  | 'message.created'
+  | 'message.edited'
+  | 'message.deleted'
+  | 'call.started'
+  | 'call.updated'
+  | 'call.ended';
+
+export type ConversationEventPayload = {
+  conversation?: ConversationRecord;
+  membership?: ConversationMembershipRecord;
+  memberships?: ConversationMembershipRecord[];
+  message?: MessageRecord;
+  removed?: boolean;
 };
 
-export type ChatSyncEventType =
-  | 'message.created'
-  | 'message.updated'
-  | 'message.deleted'
-  | 'conversation.updated'
-  | 'read.updated';
-
-export type ChatSyncEventRecord = {
+export type ConversationEventRecord = {
   id: string;
-  conversation?: string;
+  actor_membership?: string;
+  actor_user?: string;
+  conversation: string;
   cursor: number;
-  entity_id?: string;
-  payload?: unknown;
-  type: ChatSyncEventType;
-  user: string;
+  event_seq: number;
+  message?: string;
+  payload?: ConversationEventPayload | string;
+  subject_membership?: string;
+  subject_user?: string;
+  type: ConversationEventType;
   created: string;
   updated: string;
 };
@@ -80,13 +121,44 @@ export type ChatSyncEventRecord = {
 export type ChatBootstrapResponse = {
   conversations: ConversationRecord[];
   cursor: number;
-  states: ConversationUserStateRecord[];
+  memberships: ConversationMembershipRecord[];
 };
 
 export type ChatSyncResponse = {
   cursor: number;
-  events: ChatSyncEventRecord[];
+  events: ConversationEventRecord[];
   hasMore: boolean;
+};
+
+export type StartConversationResponse = {
+  conversation: ConversationRecord;
+  cursor: number;
+  membership: ConversationMembershipRecord;
+  memberships: ConversationMembershipRecord[];
+};
+
+export type CreateGroupInput = {
+  defaultHistoryPolicy: GroupHistoryPolicy;
+  memberUserIds: string[];
+  title: string;
+};
+
+export type GroupMembershipsResponse = {
+  conversation: ConversationRecord;
+  cursor: number;
+  memberships: ConversationMembershipRecord[];
+};
+
+export type GroupMembershipResponse = {
+  conversation: ConversationRecord;
+  cursor: number;
+  membership: ConversationMembershipRecord;
+};
+
+export type UpdateGroupInput = {
+  defaultHistoryPolicy?: GroupHistoryPolicy;
+  description?: string;
+  title?: string;
 };
 
 export type SendTextMessageCommandInput = {
@@ -99,13 +171,18 @@ export type SendTextMessageCommandInput = {
 export type SendMessageCommandResponse = {
   conversation: ConversationRecord;
   cursor: number;
+  membership: ConversationMembershipRecord;
   message: MessageRecord;
   replayed: boolean;
 };
 
 export type MarkConversationReadCommandResponse = {
-  cursor: number;
-  state: ConversationUserStateRecord;
+  membership: ConversationMembershipRecord;
+};
+
+export type MessageReadersResponse = {
+  readers: ConversationMembershipRecord[];
+  seenCount: number;
 };
 
 export type DeleteMessagesCommandResponse = {
@@ -131,46 +208,81 @@ export async function startPrivateConversation(
   pb: PocketBase,
   recipientUserId: string,
 ): Promise<ConversationRecord> {
-  const currentUserId = pb.authStore.record?.id;
+  const response = await pb.send<StartConversationResponse>(
+    '/api/infchat/conversations/private/start',
+    {
+      body: { recipientUserId },
+      method: 'POST',
+    },
+  );
 
-  if (!currentUserId) {
-    throw new Error('Sign in to start a chat.');
-  }
+  return response.conversation;
+}
 
-  const pairKey = getPairKey(currentUserId, recipientUserId);
+export function startPrivateConversationCommand(
+  pb: PocketBase,
+  recipientUserId: string,
+): Promise<StartConversationResponse> {
+  return pb.send('/api/infchat/conversations/private/start', {
+    body: { recipientUserId },
+    method: 'POST',
+  });
+}
 
-  try {
-    return await pb.collection('conversations').getFirstListItem<ConversationRecord>(
-      pb.filter('kind={:kind} && pair_key={:pairKey}', {
-        kind: 'private',
-        pairKey,
-      }),
-    );
-  } catch {
-    return pb.collection('conversations').create<ConversationRecord>({
-      kind: 'private',
-      members: [currentUserId, recipientUserId],
-    });
-  }
+export function createGroupConversation(
+  pb: PocketBase,
+  input: CreateGroupInput,
+): Promise<StartConversationResponse> {
+  return pb.send('/api/infchat/groups/create', {
+    body: input,
+    method: 'POST',
+  });
+}
+
+export function addGroupMembers(
+  pb: PocketBase,
+  conversationId: string,
+  memberUserIds: string[],
+): Promise<GroupMembershipsResponse> {
+  return pb.send(`/api/infchat/groups/${conversationId}/members/add`, {
+    body: { memberUserIds },
+    method: 'POST',
+  });
+}
+
+export function removeGroupMember(
+  pb: PocketBase,
+  conversationId: string,
+  userId: string,
+): Promise<GroupMembershipResponse> {
+  return pb.send(`/api/infchat/groups/${conversationId}/members/${userId}/remove`, {
+    method: 'POST',
+  });
+}
+
+export function leaveGroupConversation(
+  pb: PocketBase,
+  conversationId: string,
+): Promise<GroupMembershipResponse> {
+  return pb.send(`/api/infchat/groups/${conversationId}/leave`, {
+    method: 'POST',
+  });
+}
+
+export function updateGroupConversation(
+  pb: PocketBase,
+  conversationId: string,
+  input: UpdateGroupInput,
+): Promise<{ conversation: ConversationRecord; cursor: number }> {
+  return pb.send(`/api/infchat/groups/${conversationId}`, {
+    body: input,
+    method: 'PATCH',
+  });
 }
 
 export function listMessages(pb: PocketBase, conversationId: string): Promise<MessageRecord[]> {
   return pb.collection('messages').getFullList<MessageRecord>({
     filter: pb.filter('conversation={:conversationId}', { conversationId }),
-    sort: 'created',
-  });
-}
-
-export function listMessagesUpdatedAfter(
-  pb: PocketBase,
-  conversationId: string,
-  updatedAfter: string,
-): Promise<MessageRecord[]> {
-  return pb.collection('messages').getFullList<MessageRecord>({
-    filter: pb.filter('conversation={:conversationId} && updated>{:updatedAfter}', {
-      conversationId,
-      updatedAfter,
-    }),
     sort: 'created',
   });
 }
@@ -240,6 +352,15 @@ export function markConversationReadBySeq(
   });
 }
 
+export function listMessageReaders(
+  pb: PocketBase,
+  messageId: string,
+): Promise<MessageReadersResponse> {
+  return pb.send(`/api/infchat/messages/${messageId}/readers`, {
+    method: 'GET',
+  });
+}
+
 export function deleteConversationMessages(
   pb: PocketBase,
   conversationId: string,
@@ -249,33 +370,6 @@ export function deleteConversationMessages(
     body: { messageIds },
     method: 'POST',
   });
-}
-
-export async function countUnreadMessages(
-  pb: PocketBase,
-  conversationId: string,
-  lastReadAt?: string,
-): Promise<number> {
-  const currentUserId = pb.authStore.record?.id;
-
-  if (!currentUserId) {
-    return 0;
-  }
-
-  const filters = [
-    pb.filter('conversation={:conversationId}', { conversationId }),
-    pb.filter('sender!={:currentUserId}', { currentUserId }),
-  ];
-
-  if (lastReadAt) {
-    filters.push(pb.filter('created>{:lastReadAt}', { lastReadAt }));
-  }
-
-  const page = await pb.collection('messages').getList<MessageRecord>(1, 1, {
-    filter: filters.join(' && '),
-  });
-
-  return page.totalItems;
 }
 
 export function sendTextMessage(pb: PocketBase, conversationId: string, body: string) {
@@ -331,8 +425,4 @@ function sendAttachmentMessage(
   formData.append('attachments', file as unknown as Blob);
 
   return pb.collection('messages').create<MessageRecord>(formData);
-}
-
-function getPairKey(firstUserId: string, secondUserId: string): string {
-  return [firstUserId, secondUserId].sort().join(':');
 }

@@ -2,24 +2,19 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   type CallKind,
   type CallRoomRecord,
+  type ConversationMembershipRecord,
   type ConversationRecord,
-  type ConversationUserStateRecord,
   getActiveCallForConversation,
   getMessageAttachmentUrl,
   getProfileAvatarUrl,
   type MessageRecord,
-  type MessageUploadFile,
   type ProfileRecord,
-  sendFileMessage,
-  sendImageMessage,
   startCall,
 } from '@infchat/pocketbase';
 import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -54,7 +49,7 @@ import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   getLocalConversation,
-  listLocalConversationStatesForConversation,
+  listLocalMembershipsForConversation,
   listLocalMessages,
   listOutboxMessagesForConversation,
 } from '../../lib/chat-sync-store';
@@ -72,7 +67,7 @@ type ConversationView = {
   avatarUrl?: string | null;
   avatarUserId: string;
   avatarUsername: string;
-  members: string[];
+  memberNames: string[];
 };
 
 type ChatMessage = {
@@ -179,17 +174,19 @@ export default function ChatDetailScreen() {
     queryFn: () => getActiveCallForConversation(pb, conversationId),
     enabled: Boolean(conversationId),
   });
-  const readStatesQuery = useQuery({
-    queryKey: ['chat', authRecord.id, 'conversation-states', conversationId],
-    queryFn: () => listLocalConversationStatesForConversation(authRecord.id, conversationId),
+  const membershipsQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'memberships', conversationId],
+    queryFn: () => listLocalMembershipsForConversation(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
   });
+  const conversationMemberships = membershipsQuery.data ?? [];
   const memberIds = useMemo(
     () =>
-      (conversationQuery.data?.members ?? [])
-        .filter((memberId) => memberId !== authRecord.id)
+      conversationMemberships
+        .filter((membership) => membership.status === 'active' && membership.user !== authRecord.id)
+        .map((membership) => membership.user)
         .sort(),
-    [authRecord.id, conversationQuery.data?.members],
+    [authRecord.id, conversationMemberships],
   );
   const profilesQuery = useQuery({
     queryKey: ['profiles', 'conversation-members', conversationId, memberIds],
@@ -213,13 +210,20 @@ export default function ChatDetailScreen() {
         profilesByUserId,
         authRecord.id,
         fileTokenQuery.data,
+        conversationMemberships,
       ),
-    [authRecord.id, conversationQuery.data, fileTokenQuery.data, profilesByUserId],
+    [
+      authRecord.id,
+      conversationMemberships,
+      conversationQuery.data,
+      fileTokenQuery.data,
+      profilesByUserId,
+    ],
   );
   const messages = useMemo(() => {
     const readMessageId = getLastReadOwnMessageId(
       messagesQuery.data ?? [],
-      readStatesQuery.data ?? [],
+      conversationMemberships,
       authRecord.id,
     );
     const cachedMessages = (messagesQuery.data ?? []).map((message) =>
@@ -259,7 +263,7 @@ export default function ChatDetailScreen() {
     messagesQuery.data,
     outboxMessagesQuery.data,
     profilesByUserId,
-    readStatesQuery.data,
+    conversationMemberships,
   ]);
   const activeCall = activeCallQuery.data;
   const activeSessionCallRoomId = activeSession?.callRoom.id;
@@ -279,26 +283,6 @@ export default function ChatDetailScreen() {
   const removeFailedOutgoingMessage = (messageId: string) => {
     setFailedOutgoingMessages((current) => current.filter((message) => message.id !== messageId));
   };
-  const sendAttachmentMutation = useMutation({
-    mutationFn: ({
-      file,
-      kind,
-    }: {
-      file: MessageUploadFile;
-      kind: Extract<MessageRecord['kind'], 'image' | 'file'>;
-    }) =>
-      kind === 'image'
-        ? sendImageMessage(pb, conversationId, file)
-        : sendFileMessage(pb, conversationId, file),
-    onSuccess: (message) => {
-      didScrollToEnd.current = false;
-      void chatSyncService.syncNow('manual');
-      queryClient.invalidateQueries({ queryKey: ['chat', authRecord.id] });
-    },
-    onError: () => {
-      Alert.alert('Could not send attachment', 'Check your connection and try again.');
-    },
-  });
   const startCallMutation = useMutation({
     mutationFn: async (kind: CallKind) => {
       const deviceId = await getDeviceId();
@@ -681,7 +665,7 @@ export default function ChatDetailScreen() {
 
   const handleSendMessage = () => {
     const body = composerText.trim();
-    if (!body || sendAttachmentMutation.isPending) {
+    if (!body) {
       return;
     }
 
@@ -837,64 +821,19 @@ export default function ChatDetailScreen() {
   };
 
   const handlePickImage = async () => {
-    if (sendAttachmentMutation.isPending) {
-      return;
-    }
-
     setAttachmentMenuVisible(false);
-
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Photos access needed', 'Allow photos access to send an image.');
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.9,
-    });
-
-    if (result.canceled) {
-      return;
-    }
-
-    const asset = result.assets[0];
-    if (!asset) {
-      return;
-    }
-
-    sendAttachmentMutation.mutate({
-      file: imageAssetToUploadFile(asset),
-      kind: 'image',
-    });
+    Alert.alert(
+      'Attachments unavailable',
+      'Image messages will be re-enabled on the new sync protocol.',
+    );
   };
 
   const handlePickFile = async () => {
-    if (sendAttachmentMutation.isPending) {
-      return;
-    }
-
     setAttachmentMenuVisible(false);
-
-    const result = await DocumentPicker.getDocumentAsync({
-      copyToCacheDirectory: true,
-      multiple: false,
-      type: '*/*',
-    });
-
-    if (result.canceled) {
-      return;
-    }
-
-    const asset = result.assets[0];
-    if (!asset) {
-      return;
-    }
-
-    sendAttachmentMutation.mutate({
-      file: documentAssetToUploadFile(asset),
-      kind: asset.mimeType?.startsWith('image/') ? 'image' : 'file',
-    });
+    Alert.alert(
+      'Attachments unavailable',
+      'File messages will be re-enabled on the new sync protocol.',
+    );
   };
 
   return (
@@ -1134,6 +1073,7 @@ function toConversationView(
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
   fileToken?: string,
+  memberships: ConversationMembershipRecord[] = [],
 ): ConversationView {
   if (!conversation) {
     return {
@@ -1145,11 +1085,14 @@ function toConversationView(
       avatarUrl: null,
       avatarUserId: '',
       avatarUsername: 'Chat',
-      members: [],
+      memberNames: [],
     };
   }
 
-  const otherMemberIds = conversation.members.filter((memberId) => memberId !== currentUserId);
+  const activeMemberIds = memberships
+    .filter((membership) => membership.status === 'active')
+    .map((membership) => membership.user);
+  const otherMemberIds = activeMemberIds.filter((memberId) => memberId !== currentUserId);
   const otherProfiles = otherMemberIds
     .map((memberId) => profilesByUserId.get(memberId))
     .filter((profile): profile is ProfileRecord => Boolean(profile));
@@ -1165,12 +1108,15 @@ function toConversationView(
     id: conversation.id,
     kind: conversation.kind,
     name,
-    subtitle: conversation.kind === 'group' ? `${conversation.members.length} members` : 'friend',
+    subtitle:
+      conversation.kind === 'group'
+        ? `${conversation.member_count ?? activeMemberIds.length} members`
+        : 'friend',
     accent: getAvatarColor(firstProfile?.user || conversation.id),
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
-    members: otherProfiles.map((profile) => profile.display_name || profile.username),
+    memberNames: otherProfiles.map((profile) => profile.display_name || profile.username),
   };
 }
 
@@ -1240,12 +1186,12 @@ function toOutboxDeliveryStatus(
 
 function getLastReadOwnMessageId(
   messages: MessageRecord[],
-  states: ConversationUserStateRecord[],
+  memberships: ConversationMembershipRecord[],
   currentUserId: string,
 ): string | null {
-  const otherLastReadSeqs = states
-    .filter((state) => state.user !== currentUserId)
-    .map((state) => state.last_read_seq ?? 0)
+  const otherLastReadSeqs = memberships
+    .filter((membership) => membership.status === 'active' && membership.user !== currentUserId)
+    .map((membership) => membership.last_read_message_seq ?? 0)
     .filter((lastReadSeq) => lastReadSeq > 0);
 
   if (otherLastReadSeqs.length === 0) {
@@ -1321,25 +1267,6 @@ function fitImageSize(width: number, height: number, windowWidth: number) {
   return {
     height: Math.max(1, Math.round(height * ratio)),
     width: Math.max(1, Math.round(width * ratio)),
-  };
-}
-
-function imageAssetToUploadFile(asset: ImagePicker.ImagePickerAsset): MessageUploadFile {
-  const type = asset.mimeType || 'image/jpeg';
-  const extension = type.split('/')[1] || 'jpg';
-
-  return {
-    name: asset.fileName || `image.${extension}`,
-    type,
-    uri: asset.uri,
-  };
-}
-
-function documentAssetToUploadFile(asset: DocumentPicker.DocumentPickerAsset): MessageUploadFile {
-  return {
-    name: asset.name,
-    type: asset.mimeType || 'application/octet-stream',
-    uri: asset.uri,
   };
 }
 
@@ -1860,7 +1787,7 @@ function AvatarStack({
           {getAvatarInitial(conversation.name, conversation.name)}
         </Text>
       </View>
-      {(conversation.members ?? []).slice(0, 2).map((member, index) => (
+      {conversation.memberNames.slice(0, 2).map((member, index) => (
         <View
           className="absolute items-center justify-center rounded-full border-2 border-background"
           key={member}

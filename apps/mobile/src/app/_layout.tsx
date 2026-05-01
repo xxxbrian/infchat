@@ -296,10 +296,7 @@ function ChatSyncProvider({
       pb.collection('conversations').subscribe('*', () => {
         service.enqueueSync('realtime');
       }),
-      pb.collection('messages').subscribe('*', () => {
-        service.enqueueSync('realtime');
-      }),
-      pb.collection('conversation_user_states').subscribe('*', () => {
+      pb.collection('conversation_memberships').subscribe('*', () => {
         service.enqueueSync('realtime');
       }),
       pb.collection('call_rooms').subscribe('*', () => {

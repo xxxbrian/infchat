@@ -9,7 +9,7 @@ import {
   listFriendSuggestions,
   type ProfileRecord,
   sendFriendRequest,
-  startPrivateConversation,
+  startPrivateConversationCommand,
 } from '@infchat/pocketbase';
 import { normalizeUsername } from '@infchat/shared';
 import { useNetInfo } from '@react-native-community/netinfo';
@@ -272,11 +272,14 @@ export default function FriendsTab() {
     onSuccess: refreshFriendships,
   });
   const startPrivateChatMutation = useMutation({
-    mutationFn: (recipientUserId: string) => startPrivateConversation(pb, recipientUserId),
-    onSuccess: async (conversation) => {
-      await chatSyncService.applyConversationSnapshot(conversation);
+    mutationFn: (recipientUserId: string) => startPrivateConversationCommand(pb, recipientUserId),
+    onSuccess: async (response) => {
+      await chatSyncService.applyConversationStart(response);
       await chatSyncService.syncNow('manual');
-      router.push({ pathname: '/chat/[id]', params: { id: conversation.id } });
+      router.push({
+        pathname: '/chat/[id]',
+        params: { id: response.conversation.id },
+      });
     },
   });
   const isMutatingFriendship =

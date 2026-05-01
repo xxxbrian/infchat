@@ -1,7 +1,8 @@
 import {
-  type ChatSyncEventRecord,
+  type ConversationEventPayload,
+  type ConversationEventRecord,
+  type ConversationMembershipRecord,
   type ConversationRecord,
-  type ConversationUserStateRecord,
   type MessageRecord,
 } from '@infchat/pocketbase';
 import * as SQLite from 'expo-sqlite';
@@ -42,8 +43,8 @@ export type LocalOutboxMessage = {
   updated_at: string;
 };
 
-const CHAT_SYNC_SCHEMA_VERSION = 2;
-const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v3.db');
+const CHAT_SYNC_SCHEMA_VERSION = 3;
+const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v4.db');
 let schemaPromise: Promise<void> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -72,7 +73,7 @@ async function getDb() {
       id TEXT NOT NULL,
       value TEXT NOT NULL,
       last_message_seq INTEGER NOT NULL DEFAULT 0,
-      last_change_cursor INTEGER NOT NULL DEFAULT 0,
+      latest_event_cursor INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (auth_id, id)
     );
@@ -80,17 +81,26 @@ async function getDb() {
     CREATE INDEX IF NOT EXISTS local_conversations_sort_idx
       ON local_conversations (auth_id, last_message_seq DESC, updated_at DESC);
 
-    CREATE TABLE IF NOT EXISTS local_conversation_states (
+    CREATE TABLE IF NOT EXISTS local_memberships (
       auth_id TEXT NOT NULL,
+      id TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
       value TEXT NOT NULL,
-      last_read_seq INTEGER NOT NULL DEFAULT 0,
-      unread_count INTEGER NOT NULL DEFAULT 0,
-      last_delivered_cursor INTEGER NOT NULL DEFAULT 0,
+      role TEXT NOT NULL,
+      status TEXT NOT NULL,
+      history_start_message_seq INTEGER NOT NULL DEFAULT 1,
+      last_read_message_seq INTEGER NOT NULL DEFAULT 0,
+      live_start_cursor INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (auth_id, conversation_id, user_id)
+      PRIMARY KEY (auth_id, id)
     );
+
+    CREATE INDEX IF NOT EXISTS local_memberships_conversation_idx
+      ON local_memberships (auth_id, conversation_id, status, user_id);
+
+    CREATE INDEX IF NOT EXISTS local_memberships_user_idx
+      ON local_memberships (auth_id, user_id, status);
 
     CREATE TABLE IF NOT EXISTS local_messages (
       auth_id TEXT NOT NULL,
@@ -164,7 +174,7 @@ async function getDb() {
       await enqueueDbWrite(() =>
         db.withExclusiveTransactionAsync(async (txn) => {
           await txn.runAsync('DELETE FROM local_conversations');
-          await txn.runAsync('DELETE FROM local_conversation_states');
+          await txn.runAsync('DELETE FROM local_memberships');
           await txn.runAsync('DELETE FROM local_messages');
           await txn.runAsync('DELETE FROM outbox_messages');
           await txn.runAsync('DELETE FROM sync_journal');
@@ -219,7 +229,7 @@ export async function setChatSyncCursor(authId: string, cursor: number): Promise
 export async function applyChatBootstrap(
   authId: string,
   conversations: ConversationRecord[],
-  states: ConversationUserStateRecord[],
+  memberships: ConversationMembershipRecord[],
   cursor: number,
 ): Promise<void> {
   const db = await getDb();
@@ -227,12 +237,12 @@ export async function applyChatBootstrap(
   await enqueueDbWrite(() =>
     db.withExclusiveTransactionAsync(async (txn) => {
       await txn.runAsync('DELETE FROM local_conversations WHERE auth_id = ?', authId);
-      await txn.runAsync('DELETE FROM local_conversation_states WHERE auth_id = ?', authId);
+      await txn.runAsync('DELETE FROM local_memberships WHERE auth_id = ?', authId);
       for (const conversation of conversations) {
         await writeConversationRow(txn, authId, conversation);
       }
-      for (const state of states) {
-        await writeConversationStateRow(txn, authId, state);
+      for (const membership of memberships) {
+        await writeMembershipRow(txn, authId, membership);
       }
       await writeChatSyncCursor(txn, authId, cursor);
     }),
@@ -241,7 +251,7 @@ export async function applyChatBootstrap(
 
 export async function applyChatSyncEvents(
   authId: string,
-  events: ChatSyncEventRecord[],
+  events: ConversationEventRecord[],
   cursor: number,
 ): Promise<void> {
   if (events.length === 0) {
@@ -254,9 +264,29 @@ export async function applyChatSyncEvents(
   await enqueueDbWrite(() =>
     db.withExclusiveTransactionAsync(async (txn) => {
       for (const event of events) {
-        const payload = normalizeSyncPayload(event.payload);
+        const payload = normalizeEventPayload(event.payload);
+        const isTerminalCurrentUserMembership =
+          (event.type === 'membership.left' || event.type === 'membership.removed') &&
+          payload.membership?.user === authId;
+        if (isTerminalCurrentUserMembership) {
+          await removeConversationReplica(txn, authId, event.conversation);
+          continue;
+        }
+        const terminalMembership = (payload.memberships ?? []).find(
+          (membership) => membership.user === authId && membership.status !== 'active',
+        );
+        if (terminalMembership) {
+          await removeConversationReplica(txn, authId, event.conversation);
+          continue;
+        }
         if (payload.conversation) {
           await writeConversationRow(txn, authId, payload.conversation);
+        }
+        if (payload.membership) {
+          await writeMembershipRow(txn, authId, payload.membership);
+        }
+        for (const membership of payload.memberships ?? []) {
+          await writeMembershipRow(txn, authId, membership);
         }
         if (payload.message) {
           if (event.type === 'message.deleted') {
@@ -265,9 +295,6 @@ export async function applyChatSyncEvents(
             await writeMessageRow(txn, authId, payload.message);
             await confirmOutboxMessage(txn, authId, payload.message);
           }
-        }
-        if (payload.readState) {
-          await writeConversationStateRow(txn, authId, payload.readState);
         }
       }
       await writeChatSyncCursor(txn, authId, cursor);
@@ -299,8 +326,8 @@ export async function applyLocalChatRecords(
   authId: string,
   records: {
     conversation?: ConversationRecord;
+    membership?: ConversationMembershipRecord;
     message?: MessageRecord;
-    state?: ConversationUserStateRecord;
   },
 ): Promise<void> {
   const db = await getDb();
@@ -310,14 +337,26 @@ export async function applyLocalChatRecords(
       if (records.conversation) {
         await writeConversationRow(txn, authId, records.conversation);
       }
+      if (records.membership) {
+        await writeMembershipRow(txn, authId, records.membership);
+      }
       if (records.message) {
         await writeMessageRow(txn, authId, records.message);
         await confirmOutboxMessage(txn, authId, records.message);
       }
-      if (records.state) {
-        await writeConversationStateRow(txn, authId, records.state);
-      }
     }),
+  );
+}
+
+export async function removeLocalConversation(
+  authId: string,
+  conversationId: string,
+): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.withExclusiveTransactionAsync((txn) =>
+      removeConversationReplica(txn, authId, conversationId),
+    ),
   );
 }
 
@@ -366,34 +405,51 @@ export async function getLocalConversation(
   return JSON.parse(row.value) as ConversationRecord;
 }
 
-export async function listLocalConversationStates(
+export async function listLocalMemberships(
   authId: string,
-): Promise<ConversationUserStateRecord[]> {
+): Promise<ConversationMembershipRecord[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<JsonRow>(
-    `SELECT value FROM local_conversation_states
+    `SELECT value FROM local_memberships
      WHERE auth_id = ?
-     ORDER BY conversation_id ASC`,
+     ORDER BY conversation_id ASC, user_id ASC`,
     authId,
   );
 
-  return rows.map((row) => JSON.parse(row.value) as ConversationUserStateRecord);
+  return rows.map((row) => JSON.parse(row.value) as ConversationMembershipRecord);
 }
 
-export async function listLocalConversationStatesForConversation(
+export async function listLocalMembershipsForConversation(
   authId: string,
   conversationId: string,
-): Promise<ConversationUserStateRecord[]> {
+): Promise<ConversationMembershipRecord[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<JsonRow>(
-    `SELECT value FROM local_conversation_states
-     WHERE auth_id = ? AND conversation_id = ?
+    `SELECT value FROM local_memberships
+     WHERE auth_id = ? AND conversation_id = ? AND status = 'active'
      ORDER BY user_id ASC`,
     authId,
     conversationId,
   );
 
-  return rows.map((row) => JSON.parse(row.value) as ConversationUserStateRecord);
+  return rows.map((row) => JSON.parse(row.value) as ConversationMembershipRecord);
+}
+
+export async function getLocalCurrentMembership(
+  authId: string,
+  conversationId: string,
+): Promise<ConversationMembershipRecord | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<JsonRow>(
+    `SELECT value FROM local_memberships
+     WHERE auth_id = ? AND conversation_id = ? AND user_id = ? AND status = 'active'
+     LIMIT 1`,
+    authId,
+    conversationId,
+    authId,
+  );
+
+  return row ? (JSON.parse(row.value) as ConversationMembershipRecord) : null;
 }
 
 export async function listLocalMessages(
@@ -638,34 +694,37 @@ async function writeConversationRow(
 ) {
   await db.runAsync(
     `INSERT OR REPLACE INTO local_conversations
-      (auth_id, id, value, last_message_seq, last_change_cursor, updated_at)
+      (auth_id, id, value, last_message_seq, latest_event_cursor, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
     authId,
     conversation.id,
     JSON.stringify(conversation),
     conversation.last_message_seq ?? 0,
-    conversation.last_change_cursor ?? 0,
+    conversation.latest_event_cursor ?? 0,
     conversation.updated,
   );
 }
 
-async function writeConversationStateRow(
+async function writeMembershipRow(
   db: SqliteWriter,
   authId: string,
-  state: ConversationUserStateRecord,
+  membership: ConversationMembershipRecord,
 ) {
   await db.runAsync(
-    `INSERT OR REPLACE INTO local_conversation_states
-      (auth_id, conversation_id, user_id, value, last_read_seq, unread_count, last_delivered_cursor, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO local_memberships
+      (auth_id, id, conversation_id, user_id, value, role, status, history_start_message_seq, last_read_message_seq, live_start_cursor, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     authId,
-    state.conversation,
-    state.user,
-    JSON.stringify(state),
-    state.last_read_seq ?? 0,
-    state.unread_count ?? 0,
-    state.last_delivered_cursor ?? 0,
-    state.updated,
+    membership.id,
+    membership.conversation,
+    membership.user,
+    JSON.stringify(membership),
+    membership.role,
+    membership.status,
+    membership.history_start_message_seq ?? 1,
+    membership.last_read_message_seq ?? 0,
+    membership.live_start_cursor ?? 0,
+    membership.updated,
   );
 }
 
@@ -686,6 +745,29 @@ async function writeMessageRow(db: SqliteWriter, authId: string, message: Messag
 
 async function removeMessageRow(db: SqliteWriter, authId: string, messageId: string) {
   await db.runAsync('DELETE FROM local_messages WHERE auth_id = ? AND id = ?', authId, messageId);
+}
+
+async function removeConversationReplica(db: SqliteWriter, authId: string, conversationId: string) {
+  await db.runAsync(
+    'DELETE FROM local_messages WHERE auth_id = ? AND conversation_id = ?',
+    authId,
+    conversationId,
+  );
+  await db.runAsync(
+    'DELETE FROM local_memberships WHERE auth_id = ? AND conversation_id = ?',
+    authId,
+    conversationId,
+  );
+  await db.runAsync(
+    'DELETE FROM outbox_messages WHERE auth_id = ? AND conversation_id = ?',
+    authId,
+    conversationId,
+  );
+  await db.runAsync(
+    'DELETE FROM local_conversations WHERE auth_id = ? AND id = ?',
+    authId,
+    conversationId,
+  );
 }
 
 async function confirmOutboxMessage(db: SqliteWriter, authId: string, message: MessageRecord) {
@@ -717,16 +799,12 @@ async function writeChatSyncCursor(db: SqliteWriter, authId: string, cursor: num
   );
 }
 
-function normalizeSyncPayload(payload: unknown): {
-  conversation?: ConversationRecord;
-  message?: MessageRecord;
-  readState?: ConversationUserStateRecord;
-} {
+function normalizeEventPayload(payload: unknown): ConversationEventPayload {
   if (typeof payload === 'string') {
-    return JSON.parse(payload) as ReturnType<typeof normalizeSyncPayload>;
+    return JSON.parse(payload) as ConversationEventPayload;
   }
 
-  return (payload ?? {}) as ReturnType<typeof normalizeSyncPayload>;
+  return (payload ?? {}) as ConversationEventPayload;
 }
 
 function cursorKey(authId: string) {

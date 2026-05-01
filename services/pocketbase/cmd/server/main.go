@@ -353,19 +353,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 				return err
 			}
 
-			members := conversation.GetStringSlice("members")
-			for _, memberId := range members {
-				_, err := findOpenCallForUser(e.App, memberId, conversation.Id)
-				if err == nil {
-					if memberId == e.Auth.Id {
-						return e.BadRequestError("You are already in another call.", nil)
-					}
-
-					return e.BadRequestError("The other person is already in another call.", nil)
-				}
-				if !errors.Is(err, sql.ErrNoRows) {
-					return err
-				}
+			if err := ensureUserCanJoinCall(e.App, e.Auth.Id, nil); err != nil {
+				return e.BadRequestError("You are already in another call.", err)
 			}
 
 			callRoom, err := createStartedCallRoom(e.App, conversation, e.Auth.Id, kind, data.DeviceId)
@@ -498,6 +487,9 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 			}
 
 			if isJoinableCallStatus(callRoom.GetString("status")) {
+				if err := ensureUserCanEndCallForEveryone(e.App, callRoom, e.Auth.Id); err != nil {
+					return err
+				}
 				status := finishedCallStatus(callRoom, e.Auth.Id)
 				if err := finishCallRoom(e.App, callRoom, status); err != nil {
 					return err
@@ -512,24 +504,8 @@ func bindCallRoutes(app *pocketbase.PocketBase) {
 }
 
 func findConversationForCall(app core.App, conversationId string, userId string) (*core.Record, error) {
-	if strings.TrimSpace(conversationId) == "" {
-		return nil, router.NewBadRequestError("Conversation is required.", nil)
-	}
-
-	conversation, err := app.FindRecordById("conversations", conversationId)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, router.NewBadRequestError("Conversation was not found.", nil)
-		}
-
-		return nil, err
-	}
-
-	if !containsString(conversation.GetStringSlice("members"), userId) {
-		return nil, router.NewForbiddenError("You are not a member of this conversation.", nil)
-	}
-
-	return conversation, nil
+	conversation, _, err := findActiveConversationMembership(app, conversationId, userId)
+	return conversation, err
 }
 
 func findCallRoomForUser(app core.App, callRoomId string, userId string) (*core.Record, error) {
@@ -554,19 +530,30 @@ func findCallRoomForUser(app core.App, callRoomId string, userId string) (*core.
 }
 
 func findOpenCallForUser(app core.App, userId string, excludedConversationId string) (*core.Record, error) {
-	return app.FindFirstRecordByFilter(
-		"call_rooms",
-		"conversation!={:conversationId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
+	participant, err := app.FindFirstRecordByFilter(
+		"call_participants",
+		"user={:userId} && status='active' && call_room.conversation!={:conversationId} && (call_room.status='ringing' || call_room.status='active')",
 		dbx.Params{"conversationId": excludedConversationId, "userId": userId},
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	return app.FindRecordById("call_rooms", participant.GetString("call_room"))
 }
 
 func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) error {
-	otherCallRoom, err := app.FindFirstRecordByFilter(
-		"call_rooms",
-		"id!={:callRoomId} && conversation.members.id ?= {:userId} && ("+callRoomActiveFilter+")",
-		dbx.Params{"callRoomId": callRoom.Id, "userId": userId},
-	)
+	excludedCallRoomId := ""
+	if callRoom != nil {
+		excludedCallRoomId = callRoom.Id
+	}
+	filter := "user={:userId} && status='active' && (call_room.status='ringing' || call_room.status='active')"
+	params := dbx.Params{"userId": userId}
+	if excludedCallRoomId != "" {
+		filter += " && call_room!={:callRoomId}"
+		params["callRoomId"] = excludedCallRoomId
+	}
+	otherParticipant, err := app.FindFirstRecordByFilter("call_participants", filter, params)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -574,7 +561,7 @@ func ensureUserCanJoinCall(app core.App, userId string, callRoom *core.Record) e
 		return err
 	}
 
-	return fmt.Errorf("user is already in call %s", otherCallRoom.Id)
+	return fmt.Errorf("user is already in call %s", otherParticipant.GetString("call_room"))
 }
 
 func joinCallRoom(app core.App, callRoom *core.Record, userId string, deviceId string) (bool, error) {
@@ -604,6 +591,21 @@ func joinCallRoom(app core.App, callRoom *core.Record, userId string, deviceId s
 	})
 
 	return activated, err
+}
+
+func ensureUserCanEndCallForEveryone(app core.App, callRoom *core.Record, userId string) error {
+	conversation, membership, err := findActiveConversationMembership(app, callRoom.GetString("conversation"), userId)
+	if err != nil {
+		return err
+	}
+	if conversation.GetString("kind") == "private" {
+		return nil
+	}
+	if membershipCanManageGroup(membership) {
+		return nil
+	}
+
+	return router.NewForbiddenError("Only group admins can end this call for everyone.", nil)
 }
 
 func respondWithCallToken(e *core.RequestEvent, callRoom *core.Record, deviceId string) error {
@@ -701,6 +703,10 @@ func callRoomPayload(callRoom *core.Record) map[string]any {
 func createStartedCallRoom(app core.App, conversation *core.Record, userId string, kind string, deviceId string) (*core.Record, error) {
 	var callRoom *core.Record
 	err := app.RunInTransaction(func(txApp core.App) error {
+		conversation, membership, err := findActiveConversationMembership(txApp, conversation.Id, userId)
+		if err != nil {
+			return err
+		}
 		collection, err := txApp.FindCollectionByNameOrId("call_rooms")
 		if err != nil {
 			return err
@@ -709,6 +715,7 @@ func createStartedCallRoom(app core.App, conversation *core.Record, userId strin
 		callRoom = core.NewRecord(collection)
 		callRoom.Set("conversation", conversation.Id)
 		callRoom.Set("created_by", userId)
+		callRoom.Set("created_by_membership", membership.Id)
 		callRoom.Set("kind", kind)
 		callRoom.Set("room_name", newCallRoomName(conversation.Id))
 		callRoom.Set("status", "ringing")
@@ -717,7 +724,15 @@ func createStartedCallRoom(app core.App, conversation *core.Record, userId strin
 		if err := txApp.Save(callRoom); err != nil {
 			return err
 		}
-		if err := createCallMessage(txApp, callRoom); err != nil {
+		cursor, err := nextConversationEventCursor(txApp)
+		if err != nil {
+			return err
+		}
+		message, err := createCallMessage(txApp, callRoom, membership, cursor)
+		if err != nil {
+			return err
+		}
+		if err := createConversationEvent(txApp, conversation, "call.started", userId, membership.Id, "", "", message.Id, cursor, conversationEventPayload{Conversation: conversation, Membership: membership, Message: message}); err != nil {
 			return err
 		}
 
@@ -727,27 +742,34 @@ func createStartedCallRoom(app core.App, conversation *core.Record, userId strin
 	return callRoom, err
 }
 
-func createCallMessage(app core.App, callRoom *core.Record) error {
+func createCallMessage(app core.App, callRoom *core.Record, membership *core.Record, cursor int) (*core.Record, error) {
 	collection, err := app.FindCollectionByNameOrId("messages")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	conversationId := callRoom.GetString("conversation")
 	messageSeq, err := reserveMessageSeq(app, conversationId)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	message := core.NewRecord(collection)
 	message.Set("conversation", conversationId)
 	message.Set("sender", callRoom.GetString("created_by"))
+	message.Set("sender_membership", membership.Id)
 	message.Set("kind", "call")
 	message.Set("body", activeCallMessageBody(callRoom.GetString("kind")))
 	message.Set("call_room", callRoom.Id)
 	message.Set("message_seq", messageSeq)
 	message.Set("edit_version", 0)
+	if err := app.Save(message); err != nil {
+		return nil, err
+	}
+	if _, err := updateConversationPreviewFromMessageWithCursor(app, message, message.GetString("created"), cursor); err != nil {
+		return nil, err
+	}
 
-	return app.Save(message)
+	return message, nil
 }
 
 func runCallCleanup(app core.App) {
@@ -871,6 +893,10 @@ func hasActiveCallParticipants(app core.App, callRoomId string) (bool, error) {
 func markCallParticipantActive(app core.App, callRoom *core.Record, userId string, deviceId string) error {
 	deviceId = normalizedDeviceId(deviceId)
 	now := types.NowDateTime()
+	_, membership, err := findActiveConversationMembership(app, callRoom.GetString("conversation"), userId)
+	if err != nil {
+		return err
+	}
 	participant, err := findCallParticipant(app, callRoom.Id, userId, deviceId)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
@@ -885,6 +911,7 @@ func markCallParticipantActive(app core.App, callRoom *core.Record, userId strin
 		participant = core.NewRecord(collection)
 		participant.Set("call_room", callRoom.Id)
 		participant.Set("user", userId)
+		participant.Set("membership", membership.Id)
 		participant.Set("device_id", deviceId)
 		participant.Set("joined_at", now)
 	}
@@ -975,6 +1002,29 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 			return err
 		}
 		if err := updateCallMessageForEndedCall(txApp, currentCallRoom, status); err != nil {
+			return err
+		}
+		conversation, err := txApp.FindRecordById("conversations", currentCallRoom.GetString("conversation"))
+		if err != nil {
+			return err
+		}
+		cursor, err := nextConversationEventCursor(txApp)
+		if err != nil {
+			return err
+		}
+		conversation.Set("latest_event_cursor", cursor)
+		if err := txApp.Save(conversation); err != nil {
+			return err
+		}
+		message, err := txApp.FindFirstRecordByFilter("messages", "call_room={:callRoomId}", dbx.Params{"callRoomId": currentCallRoom.Id})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		messageId := ""
+		if message != nil {
+			messageId = message.Id
+		}
+		if err := createConversationEvent(txApp, conversation, "call.ended", currentCallRoom.GetString("created_by"), currentCallRoom.GetString("created_by_membership"), "", "", messageId, cursor, conversationEventPayload{Conversation: conversation, Message: message}); err != nil {
 			return err
 		}
 
@@ -1108,166 +1158,18 @@ func normalizedDeviceId(deviceId string) string {
 func bindConversationHooks(app *pocketbase.PocketBase) {
 	app.OnRecordCreateRequest("conversations").BindFunc(func(e *core.RecordRequestEvent) error {
 		if e.HasSuperuserAuth() {
-			prepareConversationRecord(e.Record)
 			return e.Next()
 		}
 
-		if e.Auth == nil {
-			return router.NewForbiddenError("Sign in to start a chat.", nil)
-		}
-
-		members := uniqueStrings(e.Record.GetStringSlice("members"))
-		if !containsString(members, e.Auth.Id) {
-			members = append(members, e.Auth.Id)
-		}
-
-		if len(members) != 2 {
-			return router.NewBadRequestError("Private chats require exactly two members.", nil)
-		}
-
-		otherUserId := members[0]
-		if otherUserId == e.Auth.Id {
-			otherUserId = members[1]
-		}
-
-		if err := ensureAcceptedFriendship(e.App, e.Auth.Id, otherUserId); err != nil {
-			return err
-		}
-
-		pairKey := friendshipPairKey(e.Auth.Id, otherUserId)
-		_, err := e.App.FindFirstRecordByFilter(
-			"conversations",
-			"kind='private' && pair_key={:pairKey}",
-			dbx.Params{"pairKey": pairKey},
-		)
-		if err == nil {
-			return router.NewBadRequestError("A private chat already exists for these users.", nil)
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-
-		e.Record.Set("kind", "private")
-		e.Record.Set("members", sortedStrings(members))
-		e.Record.Set("created_by", e.Auth.Id)
-		e.Record.Set("pair_key", pairKey)
-		e.Record.Set("title", "")
-
-		return e.Next()
-	})
-
-	app.OnRecordAfterCreateSuccess("conversations").BindFunc(func(e *core.RecordEvent) error {
-		cursor, err := nextSyncCursor(e.App)
-		if err != nil {
-			return err
-		}
-		if err := emitConversationUpdatedEvents(e.App, e.Record, cursor); err != nil {
-			return err
-		}
-
-		return e.Next()
+		return router.NewBadRequestError("Use the InfChat conversation command endpoints.", nil)
 	})
 
 	app.OnRecordCreateRequest("messages").BindFunc(func(e *core.RecordRequestEvent) error {
-		if e.Auth == nil {
-			return router.NewForbiddenError("Sign in to send messages.", nil)
-		}
-		if !e.HasSuperuserAuth() && e.Record.GetString("client_message_id") != "" {
-			return router.NewBadRequestError("Use the chat sync send endpoint for clientMessageId messages.", nil)
-		}
-
-		conversation, err := e.App.FindRecordById("conversations", e.Record.GetString("conversation"))
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return router.NewBadRequestError("Conversation was not found.", nil)
-			}
-
-			return err
-		}
-
-		if !e.HasSuperuserAuth() && !containsString(conversation.GetStringSlice("members"), e.Auth.Id) {
-			return router.NewForbiddenError("You are not a member of this conversation.", nil)
-		}
-
-		if !e.HasSuperuserAuth() {
-			e.Record.Set("sender", e.Auth.Id)
-		}
-		kind := e.Record.GetString("kind")
-		if kind == "" {
-			kind = "text"
-			e.Record.Set("kind", "text")
-		}
-		body := strings.TrimSpace(e.Record.GetString("body"))
-		e.Record.Set("body", body)
-
-		switch kind {
-		case "text":
-			if body == "" {
-				return router.NewBadRequestError("Message text is required.", nil)
-			}
-		case "image", "file", "voice":
-			// Body is an optional caption for attachment-backed messages.
-		case "call":
-			if !e.HasSuperuserAuth() {
-				return router.NewBadRequestError("Call messages are created by call routes.", nil)
-			}
-		default:
-			return router.NewBadRequestError("Invalid message kind.", nil)
-		}
-
-		if e.Record.GetInt("message_seq") <= 0 {
-			messageSeq, err := reserveMessageSeq(e.App, conversation.Id)
-			if err != nil {
-				return err
-			}
-			e.Record.Set("message_seq", messageSeq)
-		}
-		if e.Record.GetInt("edit_version") <= 0 {
-			e.Record.Set("edit_version", 0)
-		}
-
-		return e.Next()
-	})
-
-	app.OnRecordAfterCreateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
-		if e.Record.GetString("client_message_id") != "" {
+		if e.HasSuperuserAuth() {
 			return e.Next()
 		}
 
-		cursor, err := nextSyncCursor(e.App)
-		if err != nil {
-			return err
-		}
-		conversation, err := updateConversationPreviewFromMessageWithCursor(e.App, e.Record, e.Record.GetString("created"), cursor)
-		if err != nil {
-			return err
-		}
-		if err := emitMessageCreatedEvents(e.App, conversation, e.Record, cursor, e.Record.GetString("sender")); err != nil {
-			return err
-		}
-		go sendMessagePushNotifications(e.App, e.Record)
-
-		return e.Next()
-	})
-
-	app.OnRecordAfterUpdateSuccess("messages").BindFunc(func(e *core.RecordEvent) error {
-		if !shouldEmitMessageUpdate(e.Record) {
-			return e.Next()
-		}
-
-		cursor, err := nextSyncCursor(e.App)
-		if err != nil {
-			return err
-		}
-		conversation, err := updateConversationPreviewFromMessageWithCursor(e.App, e.Record, e.Record.GetString("updated"), cursor)
-		if err != nil {
-			return err
-		}
-		if err := emitMessageUpdatedEvents(e.App, conversation, e.Record, cursor); err != nil {
-			return err
-		}
-
-		return e.Next()
+		return router.NewBadRequestError("Use the InfChat message command endpoint.", nil)
 	})
 }
 
@@ -1294,7 +1196,7 @@ func updateConversationPreviewFromMessageWithCursor(app core.App, message *core.
 		conversation.Set("next_message_seq", messageSeq+1)
 	}
 	if cursor > 0 {
-		conversation.Set("last_change_cursor", cursor)
+		conversation.Set("latest_event_cursor", cursor)
 	}
 
 	return conversation, app.Save(conversation)
@@ -1333,15 +1235,6 @@ func updateConversationPreviewAfterMessageDelete(app core.App, conversation *cor
 	conversation.Set("last_message_at", message.GetString("created"))
 
 	return conversation, nil
-}
-
-func shouldEmitMessageUpdate(message *core.Record) bool {
-	switch message.GetString("kind") {
-	case "call", "image", "file", "voice":
-		return true
-	default:
-		return false
-	}
 }
 
 func getMessagePreview(record *core.Record) string {
@@ -1397,19 +1290,6 @@ func isAlphaNumeric(value string) bool {
 	}
 
 	return value != ""
-}
-
-func prepareConversationRecord(record *core.Record) {
-	if record.GetString("kind") == "" {
-		record.Set("kind", "private")
-	}
-
-	members := uniqueStrings(record.GetStringSlice("members"))
-	record.Set("members", sortedStrings(members))
-
-	if record.GetString("kind") == "private" && len(members) == 2 {
-		record.Set("pair_key", friendshipPairKey(members[0], members[1]))
-	}
 }
 
 func bindProfileHooks(app *pocketbase.PocketBase) {

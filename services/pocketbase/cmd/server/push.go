@@ -245,7 +245,12 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 		"type":           "message",
 	}
 
-	for _, userId := range conversation.GetStringSlice("members") {
+	memberIds, err := activeConversationMemberIds(app, conversation.Id)
+	if err != nil {
+		log.Printf("push: could not load message conversation members: %v", err)
+		return
+	}
+	for _, userId := range memberIds {
 		if userId == senderId {
 			continue
 		}
@@ -300,7 +305,12 @@ func sendIncomingCallPushNotifications(app core.App, callRoom *core.Record) {
 		"uuid":           callUUID(callRoom.Id),
 	}
 
-	for _, userId := range conversation.GetStringSlice("members") {
+	memberIds, err := activeConversationMemberIds(app, conversation.Id)
+	if err != nil {
+		log.Printf("push: could not load call conversation members: %v", err)
+		return
+	}
+	for _, userId := range memberIds {
 		if userId == callerId {
 			continue
 		}
@@ -341,7 +351,12 @@ func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status
 		"uuid":           callUUID(callRoom.Id),
 	}
 
-	for _, userId := range conversation.GetStringSlice("members") {
+	memberIds, err := activeConversationMemberIds(app, conversation.Id)
+	if err != nil {
+		log.Printf("push: could not load call update conversation members: %v", err)
+		return
+	}
+	for _, userId := range memberIds {
 		deviceIdToExclude := ""
 		if userId == excludedUserId {
 			deviceIdToExclude = excludedDeviceId
@@ -351,6 +366,27 @@ func sendCallUpdatePushNotifications(app core.App, callRoom *core.Record, status
 			log.Printf("push: call update notification failed for user %s: %v", userId, err)
 		}
 	}
+}
+
+func activeConversationMemberIds(app core.App, conversationId string) ([]string, error) {
+	memberships, err := app.FindRecordsByFilter(
+		"conversation_memberships",
+		"conversation={:conversation} && status='active' && notification_level!='muted'",
+		"created",
+		0,
+		0,
+		dbx.Params{"conversation": conversationId},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	memberIds := make([]string, 0, len(memberships))
+	for _, membership := range memberships {
+		memberIds = append(memberIds, membership.GetString("user"))
+	}
+
+	return memberIds, nil
 }
 
 func callRoomHasStatus(app core.App, callRoomId string, status string) bool {
