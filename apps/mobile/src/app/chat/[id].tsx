@@ -85,6 +85,10 @@ type ChatMessage = {
   time: string;
 };
 
+type ChatRenderItem =
+  | { id: string; label: string; type: 'date' }
+  | { id: string; index: number; message: ChatMessage; type: 'message' };
+
 type MessageAttachment = {
   name: string;
   thumbUrl?: string;
@@ -265,6 +269,11 @@ export default function ChatDetailScreen() {
     conversationMemberships,
   ]);
   const activeCall = activeCallQuery.data;
+  const renderItems = useMemo(() => toChatRenderItems(messages), [messages]);
+  const stickyHeaderIndices = useMemo(
+    () => renderItems.flatMap((item, index) => (item.type === 'date' ? [index] : [])),
+    [renderItems],
+  );
   const activeSessionCallRoomId = activeSession?.callRoom.id;
   const shouldShowActiveCallBanner = Boolean(
     activeCall && activeSessionCallRoomId !== activeCall.id,
@@ -913,23 +922,28 @@ export default function ChatDetailScreen() {
           ref={scrollViewRef}
           scrollEventThrottle={16}
           showsVerticalScrollIndicator={false}
+          stickyHeaderIndices={stickyHeaderIndices}
         >
           {conversationQuery.isLoading || messagesQuery.isLoading ? (
             <EmptyConversation label="Loading messages" />
           ) : conversationQuery.isError || messagesQuery.isError ? (
             <EmptyConversation label="Could not load messages" />
           ) : messages.length ? (
-            messages.map((message, index) => (
-              <MessageBubble
-                conversation={conversation}
-                index={index}
-                key={message.id}
-                message={message}
-                onLongPressMessage={setMessageActionTarget}
-                onRetryFailedMessage={handleRetryFailedMessage}
-                totalMessages={messages.length}
-              />
-            ))
+            renderItems.map((item) =>
+              item.type === 'date' ? (
+                <DateSeparator key={item.id} label={item.label} />
+              ) : (
+                <MessageBubble
+                  conversation={conversation}
+                  index={item.index}
+                  key={item.id}
+                  message={item.message}
+                  onLongPressMessage={setMessageActionTarget}
+                  onRetryFailedMessage={handleRetryFailedMessage}
+                  totalMessages={messages.length}
+                />
+              ),
+            )
           ) : (
             <EmptyConversation label="No messages yet" />
           )}
@@ -1195,6 +1209,67 @@ function toOutboxDeliveryStatus(
     default:
       return undefined;
   }
+}
+
+function toChatRenderItems(messages: ChatMessage[]): ChatRenderItem[] {
+  const items: ChatRenderItem[] = [];
+  let lastDateKey = '';
+
+  messages.forEach((message, index) => {
+    const dateKey = getMessageDateKey(message.created);
+    if (dateKey && dateKey !== lastDateKey) {
+      items.push({
+        id: `date-${dateKey}`,
+        label: formatMessageDate(message.created),
+        type: 'date',
+      });
+      lastDateKey = dateKey;
+    }
+
+    items.push({
+      id: message.id,
+      index,
+      message,
+      type: 'message',
+    });
+  });
+
+  return items;
+}
+
+function getMessageDateKey(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatMessageDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const dateKey = getMessageDateKey(value);
+
+  if (dateKey === getMessageDateKey(today.toISOString())) {
+    return 'Today';
+  }
+
+  if (dateKey === getMessageDateKey(yesterday.toISOString())) {
+    return 'Yesterday';
+  }
+
+  return date.toLocaleDateString([], {
+    day: 'numeric',
+    month: 'short',
+    year: today.getFullYear() === date.getFullYear() ? undefined : 'numeric',
+  });
 }
 
 function getLastReadOwnMessageId(
@@ -1796,6 +1871,16 @@ function EmptyConversation({ label }: { label: string }) {
         <Ionicons color="#64748b" name="chatbubble-ellipses" size={28} />
       </View>
       <Text className="mt-4 text-lg font-bold text-foreground">{label}</Text>
+    </View>
+  );
+}
+
+function DateSeparator({ label }: { label: string }) {
+  return (
+    <View className="items-center bg-background/95 py-2">
+      <View className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5">
+        <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
+      </View>
     </View>
   );
 }
