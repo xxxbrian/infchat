@@ -136,6 +136,7 @@ export default function ChatDetailScreen() {
   const attachmentMenuProgress = useRef(new Animated.Value(0)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeightValue = useRef(0);
+  const dateSeparatorOffsetsRef = useRef<Record<string, number>>({});
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
@@ -149,6 +150,7 @@ export default function ChatDetailScreen() {
   const hasComposerText = composerText.trim().length > 0;
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
   const isNearBottomRef = useRef(true);
+  const scrollYRef = useRef(0);
   const lastAutoScrolledConversationIdRef = useRef('');
   const lastAutoScrolledMessageIdRef = useRef('');
 
@@ -457,6 +459,8 @@ export default function ChatDetailScreen() {
     lastAutoScrolledMessageIdRef.current = '';
     isNearBottomRef.current = true;
     didScrollToEnd.current = false;
+    dateSeparatorOffsetsRef.current = {};
+    scrollYRef.current = 0;
   }, [conversationId]);
 
   useEffect(() => {
@@ -583,6 +587,19 @@ export default function ChatDetailScreen() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   };
 
+  const handleDateSeparatorLayout = (id: string, y: number) => {
+    dateSeparatorOffsetsRef.current[id] = y;
+  };
+
+  const handlePressDateSeparator = (id: string) => {
+    const y = dateSeparatorOffsetsRef.current[id];
+    if (typeof y !== 'number' || scrollYRef.current <= y + 1) {
+      return;
+    }
+
+    scrollViewRef.current?.scrollTo({ animated: true, y });
+  };
+
   const handleRefresh = async () => {
     if (isPullRefreshing || !conversationId) {
       return;
@@ -615,6 +632,7 @@ export default function ChatDetailScreen() {
     const y = contentOffset.y;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - y;
     const deltaY = y - lastScrollY.current;
+    scrollYRef.current = y;
     isNearBottomRef.current = distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM;
 
     if (distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM) {
@@ -931,7 +949,13 @@ export default function ChatDetailScreen() {
           ) : messages.length ? (
             renderItems.map((item) =>
               item.type === 'date' ? (
-                <DateSeparator key={item.id} label={item.label} />
+                <DateSeparator
+                  id={item.id}
+                  key={item.id}
+                  label={item.label}
+                  onLayout={handleDateSeparatorLayout}
+                  onPress={handlePressDateSeparator}
+                />
               ) : (
                 <MessageBubble
                   conversation={conversation}
@@ -1875,12 +1899,28 @@ function EmptyConversation({ label }: { label: string }) {
   );
 }
 
-function DateSeparator({ label }: { label: string }) {
+function DateSeparator({
+  id,
+  label,
+  onLayout,
+  onPress,
+}: {
+  id: string;
+  label: string;
+  onLayout: (id: string, y: number) => void;
+  onPress: (id: string) => void;
+}) {
   return (
-    <View className="items-center py-2" pointerEvents="none">
-      <View className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5">
+    <View
+      className="items-center py-2"
+      onLayout={(event) => onLayout(id, event.nativeEvent.layout.y)}
+    >
+      <Pressable
+        className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5"
+        onPress={() => onPress(id)}
+      >
         <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
-      </View>
+      </Pressable>
     </View>
   );
 }
