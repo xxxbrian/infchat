@@ -38,7 +38,8 @@
         "android.permission.RECORD_AUDIO",
         "android.permission.WAKE_LOCK"
       ],
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "bundler": "metro",
