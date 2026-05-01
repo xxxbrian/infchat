@@ -132,6 +132,8 @@ export default function RootLayout() {
                       <Stack.Screen name="(tabs)" />
                       <Stack.Screen name="call/[id]" />
                       <Stack.Screen name="chat/[id]" />
+                      <Stack.Screen name="chat/[id]/info" />
+                      <Stack.Screen name="chat/new-group" />
                       <Stack.Screen name="debug" />
                       <Stack.Screen name="profile/[userId]" />
                       <Stack.Screen name="profile/edit" />

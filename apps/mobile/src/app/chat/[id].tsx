@@ -860,9 +860,17 @@ export default function ChatDetailScreen() {
                 name="videocam"
                 onPress={() => handleStartCall('video')}
               />
-              {/*<IconButton
-                name={conversation.kind === 'group' ? 'information-circle' : 'person-circle'}
-              />*/}
+              {conversation.kind === 'group' ? (
+                <IconButton
+                  name="information-circle"
+                  onPress={() =>
+                    router.push({
+                      pathname: '/chat/[id]/info',
+                      params: { id: conversation.id },
+                    })
+                  }
+                />
+              ) : null}
             </View>
           </View>
         </View>

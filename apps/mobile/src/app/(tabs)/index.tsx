@@ -3,22 +3,28 @@ import {
   type CallRoomRecord,
   type ConversationMembershipRecord,
   type ConversationRecord,
+  type FriendshipRecord,
   getProfileAvatarUrl,
   listActiveCalls,
   type ProfileRecord,
+  startPrivateConversationCommand,
 } from '@infchat/pocketbase';
 import { useNetInfo } from '@react-native-community/netinfo';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
+  Keyboard,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type ViewStyle,
 } from 'react-native';
@@ -28,7 +34,12 @@ import { ProfileAvatar } from '../../components/ProfileAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { useChatSyncService } from '../../lib/chat-sync-context';
 import { listLocalConversations, listLocalMemberships } from '../../lib/chat-sync-store';
-import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
+import {
+  listCachedFriendships,
+  listCachedProfilesByUserIds,
+  refreshCachedFriendships,
+  refreshCachedProfilesByUserIds,
+} from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -44,6 +55,15 @@ type ConversationView = {
   avatarUsername: string;
   activeCall?: CallRoomRecord;
   members?: string[];
+};
+
+type NewMessagePerson = {
+  avatarUrl?: string | null;
+  id: string;
+  name: string;
+  note: string;
+  userId: string;
+  username: string;
 };
 
 const SEARCH_HEIGHT = 40;
@@ -72,6 +92,7 @@ export default function ChatTab() {
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [isNewMessageSheetVisible, setIsNewMessageSheetVisible] = useState(false);
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
 
   const conversationsQuery = useQuery({
@@ -365,7 +386,7 @@ export default function ChatTab() {
               name="search"
               onPress={revealSearch}
             />
-            <RoundIcon isPrimary name="add" onPress={() => router.push('/friends')} />
+            <RoundIcon isPrimary name="add" onPress={() => setIsNewMessageSheetVisible(true)} />
           </View>
         </View>
 
@@ -458,6 +479,321 @@ export default function ChatTab() {
           <EmptyState icon="chatbubble-ellipses" title="No chats yet" />
         )}
       </Animated.ScrollView>
+
+      <NewMessageSheet
+        currentUserId={authRecord.id}
+        onClose={() => setIsNewMessageSheetVisible(false)}
+        visible={isNewMessageSheetVisible}
+      />
+    </View>
+  );
+}
+
+function NewMessageSheet({
+  currentUserId,
+  onClose,
+  visible,
+}: {
+  currentUserId: string;
+  onClose: () => void;
+  visible: boolean;
+}) {
+  const chatSyncService = useChatSyncService();
+  const queryClient = useQueryClient();
+  const netInfo = useNetInfo();
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const searchRef = useRef<TextInput>(null);
+  const [query, setQuery] = useState('');
+  const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
+
+  const friendshipsQuery = useQuery({
+    queryKey: ['friendships', currentUserId, 'new-message'],
+    queryFn: () => listCachedFriendships(pb),
+    enabled: visible,
+    networkMode: 'always',
+  });
+  const fileTokenQuery = useQuery({
+    queryKey: ['file-token', currentUserId],
+    queryFn: () => pb.files.getToken(),
+    staleTime: 1000 * 60 * 5,
+  });
+  const friendUserIds = useMemo(
+    () => getAcceptedFriendUserIds(friendshipsQuery.data ?? [], currentUserId),
+    [currentUserId, friendshipsQuery.data],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ['profiles', 'new-message-friends', friendUserIds],
+    queryFn: () => listCachedProfilesByUserIds(pb, friendUserIds),
+    enabled: visible && friendUserIds.length > 0,
+    networkMode: 'always',
+  });
+  const people = useMemo(
+    () => toNewMessagePeople(profilesQuery.data ?? [], fileTokenQuery.data),
+    [fileTokenQuery.data, profilesQuery.data],
+  );
+  const visiblePeople = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return people;
+    }
+
+    return people.filter(
+      (person) =>
+        person.name.toLowerCase().includes(normalizedQuery) ||
+        person.username.toLowerCase().includes(normalizedQuery),
+    );
+  }, [people, query]);
+
+  const startPrivateChatMutation = useMutation({
+    mutationFn: (recipientUserId: string) => startPrivateConversationCommand(pb, recipientUserId),
+    onSuccess: async (response) => {
+      await chatSyncService.applyConversationStart(response);
+      await chatSyncService.syncNow('manual');
+      await queryClient.invalidateQueries({
+        queryKey: ['chat', currentUserId],
+      });
+      onClose();
+      router.push({
+        pathname: '/chat/[id]',
+        params: { id: response.conversation.id },
+      });
+    },
+    onError: (error) => {
+      Alert.alert(
+        'Could not open chat',
+        getErrorMessage(error, 'Check your connection and try again.'),
+      );
+    },
+  });
+
+  useEffect(() => {
+    if (!visible) {
+      setQuery('');
+      return;
+    }
+
+    const focusTimer = setTimeout(() => searchRef.current?.focus(), 280);
+    return () => clearTimeout(focusTimer);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible || !isOnline) {
+      return;
+    }
+
+    let isMounted = true;
+    void refreshCachedFriendships(pb)
+      .then((friendships) => {
+        if (isMounted) {
+          queryClient.setQueryData(['friendships', currentUserId, 'new-message'], friendships);
+        }
+      })
+      .catch(() => {
+        // Cached friends stay usable while the network recovers.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId, isOnline, queryClient, visible]);
+
+  useEffect(() => {
+    if (!visible || !isOnline || friendUserIds.length === 0) {
+      return;
+    }
+
+    let isMounted = true;
+    void refreshCachedProfilesByUserIds(pb, friendUserIds)
+      .then((profiles) => {
+        if (isMounted) {
+          queryClient.setQueryData(['profiles', 'new-message-friends', friendUserIds], profiles);
+        }
+      })
+      .catch(() => {
+        // Local profile cache is enough for the compose sheet.
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [friendUserIds, isOnline, queryClient, visible]);
+
+  const handleClose = () => {
+    Keyboard.dismiss();
+    onClose();
+  };
+
+  const handleNewGroup = () => {
+    handleClose();
+    router.push('/chat/new-group');
+  };
+
+  const handleAddFriend = () => {
+    handleClose();
+    router.push('/friends');
+  };
+
+  return (
+    <Modal
+      animationType="slide"
+      onRequestClose={handleClose}
+      presentationStyle="overFullScreen"
+      transparent
+      visible={visible}
+    >
+      <Pressable className="flex-1 justify-end bg-black/45" onPress={handleClose}>
+        <Pressable
+          className="overflow-hidden rounded-t-[34px] bg-background"
+          onPress={(event) => event.stopPropagation()}
+          style={{
+            maxHeight: windowHeight * 0.92,
+            minHeight: windowHeight * 0.72,
+          }}
+        >
+          <View className="px-5 pb-3" style={{ paddingTop: 16 }}>
+            <View className="mb-5 h-1.5 w-12 self-center rounded-full bg-border" />
+            <View className="h-12 flex-row items-center justify-center">
+              <Pressable
+                className="absolute left-0 h-12 w-12 items-center justify-center rounded-full bg-muted"
+                onPress={handleClose}
+              >
+                <Ionicons color="#f8fafc" name="close" size={28} />
+              </Pressable>
+              <Text className="text-2xl font-black text-foreground">New Message</Text>
+            </View>
+
+            <View className="mt-5 h-12 flex-row items-center rounded-full bg-muted px-4">
+              <Ionicons color="#64748b" name="search" size={20} />
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                className="h-full min-w-0 flex-1 px-3 text-[17px] text-foreground"
+                onChangeText={setQuery}
+                placeholder="Search"
+                placeholderTextColor="#64748b"
+                ref={searchRef}
+                returnKeyType="search"
+                selectionColor="#f8fafc"
+                value={query}
+              />
+              {query ? (
+                <Pressable
+                  className="h-7 w-7 items-center justify-center rounded-full bg-background/60"
+                  onPress={() => setQuery('')}
+                >
+                  <Ionicons color="#94a3b8" name="close" size={16} />
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+
+          <ScrollView
+            contentContainerStyle={{
+              paddingBottom: Math.max(insets.bottom, 16) + 16,
+            }}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            onScrollBeginDrag={Keyboard.dismiss}
+            showsVerticalScrollIndicator={false}
+          >
+            <View className="px-5">
+              <ComposeAction icon="people-outline" label="New Group" onPress={handleNewGroup} />
+              <ComposeAction
+                icon="person-add-outline"
+                label="Add Friend"
+                onPress={handleAddFriend}
+              />
+            </View>
+
+            <View className="mt-2 px-5">
+              {friendshipsQuery.isLoading && people.length === 0 ? (
+                <SheetEmptyState icon="people" title="Loading friends" />
+              ) : visiblePeople.length ? (
+                visiblePeople.map((person) => (
+                  <NewMessagePersonRow
+                    disabled={startPrivateChatMutation.isPending}
+                    key={person.userId}
+                    onPress={() => startPrivateChatMutation.mutate(person.userId)}
+                    person={person}
+                  />
+                ))
+              ) : (
+                <SheetEmptyState
+                  icon="search"
+                  title={query ? 'No matching friends' : 'No friends yet'}
+                />
+              )}
+            </View>
+          </ScrollView>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+function ComposeAction({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable className="min-h-[58px] flex-row items-center gap-4" onPress={onPress}>
+      <View className="h-11 w-11 items-center justify-center rounded-full bg-primary/15">
+        <Ionicons color="#60a5fa" name={icon} size={25} />
+      </View>
+      <View className="min-h-[58px] min-w-0 flex-1 justify-center border-b border-border/60">
+        <Text className="text-lg font-semibold text-primary">{label}</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function NewMessagePersonRow({
+  disabled,
+  onPress,
+  person,
+}: {
+  disabled: boolean;
+  onPress: () => void;
+  person: NewMessagePerson;
+}) {
+  return (
+    <Pressable
+      className="min-h-[66px] flex-row items-center gap-3"
+      disabled={disabled}
+      onPress={onPress}
+    >
+      <ProfileAvatar
+        avatarUrl={person.avatarUrl}
+        name={person.name}
+        size={48}
+        userId={person.userId}
+        username={person.username}
+      />
+      <View className="min-h-[66px] min-w-0 flex-1 justify-center border-b border-border/60">
+        <Text className="text-[17px] font-semibold text-foreground" numberOfLines={1}>
+          {person.name}
+        </Text>
+        <Text className="mt-0.5 text-[14px] font-medium text-muted-foreground" numberOfLines={1}>
+          {person.note}
+        </Text>
+      </View>
+    </Pressable>
+  );
+}
+
+function SheetEmptyState({ icon, title }: { icon: keyof typeof Ionicons.glyphMap; title: string }) {
+  return (
+    <View className="items-center py-14">
+      <View className="h-14 w-14 items-center justify-center rounded-full bg-muted">
+        <Ionicons color="#64748b" name={icon} size={25} />
+      </View>
+      <Text className="mt-3 text-base font-bold text-muted-foreground">{title}</Text>
     </View>
   );
 }
@@ -507,6 +843,40 @@ function toConversationView(
   };
 }
 
+function getAcceptedFriendUserIds(
+  friendships: FriendshipRecord[],
+  currentUserId: string,
+): string[] {
+  const ids = new Set<string>();
+
+  for (const friendship of friendships) {
+    if (friendship.status !== 'accepted') {
+      continue;
+    }
+
+    ids.add(friendship.requester === currentUserId ? friendship.recipient : friendship.requester);
+  }
+
+  return [...ids].sort();
+}
+
+function toNewMessagePeople(profiles: ProfileRecord[], fileToken?: string): NewMessagePerson[] {
+  return profiles
+    .map((profile) => {
+      const name = profile.display_name || profile.username;
+
+      return {
+        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+        id: profile.id,
+        name,
+        note: `@${profile.username}`,
+        userId: profile.user,
+        username: profile.username,
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function groupMembershipsByConversation(memberships: ConversationMembershipRecord[]) {
   const grouped = new Map<string, ConversationMembershipRecord[]>();
   for (const membership of memberships) {
@@ -541,6 +911,17 @@ function formatConversationTime(value?: string): string {
   }
 
   return date.toLocaleDateString([], { weekday: 'short' });
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      return message;
+    }
+  }
+
+  return fallback;
 }
 
 function RoundIcon({
