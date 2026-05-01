@@ -66,12 +66,6 @@ type ConversationView = {
   avatarUrl?: string | null;
   avatarUserId: string;
   avatarUsername: string;
-  members: Array<{
-    avatarUrl?: string | null;
-    name: string;
-    userId: string;
-    username: string;
-  }>;
 };
 
 type ChatMessage = {
@@ -1096,7 +1090,6 @@ function toConversationView(
       avatarUrl: null,
       avatarUserId: '',
       avatarUsername: 'Chat',
-      members: [],
     };
   }
 
@@ -1127,12 +1120,6 @@ function toConversationView(
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken, 'thumb') : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
-    members: otherProfiles.map((profile) => ({
-      avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
-      name: profile.display_name || profile.username,
-      userId: profile.user,
-      username: profile.username,
-    })),
   };
 }
 
@@ -1779,7 +1766,6 @@ function AvatarStack({
   return (
     <ConversationAvatar
       conversation={conversation.conversation}
-      members={conversation.members}
       name={conversation.name}
       privateProfile={{
         avatarUrl: conversation.avatarUrl,

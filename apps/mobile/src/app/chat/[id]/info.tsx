@@ -331,7 +331,6 @@ export default function GroupInfoScreen() {
           <ConversationAvatar
             conversation={conversation}
             fileToken={fileTokenQuery.data}
-            members={members}
             name={title}
             size={128}
             variant="large"
@@ -875,7 +874,6 @@ function EditGroupModal({
               ) : (
                 <ConversationAvatar
                   conversation={conversation}
-                  members={[]}
                   name={conversation.title || 'Group chat'}
                   size={116}
                   variant="large"

@@ -56,12 +56,6 @@ type ConversationView = {
   avatarUserId: string;
   avatarUsername: string;
   activeCall?: CallRoomRecord;
-  members: Array<{
-    avatarUrl?: string | null;
-    name: string;
-    userId: string;
-    username: string;
-  }>;
 };
 
 type NewMessagePerson = {
@@ -852,12 +846,6 @@ function toConversationView(
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
     activeCall,
-    members: otherProfiles.map((profile) => ({
-      avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
-      name: profile.display_name || profile.username,
-      userId: profile.user,
-      username: profile.username,
-    })),
   };
 }
 
@@ -1002,7 +990,6 @@ function ConversationRow({
       <ConversationAvatar
         conversation={conversation.conversation}
         fileToken={fileToken}
-        members={conversation.members}
         name={conversation.name}
         privateProfile={{
           avatarUrl: conversation.avatarUrl,
