@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
-import { Animated, Easing, KeyboardAvoidingView, Platform, View } from 'react-native';
+import { Animated, Easing, KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type AuthScreenProps = {
@@ -41,9 +41,21 @@ export function AuthScreen({ children }: AuthScreenProps) {
         className="flex-1"
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View className="flex-1 justify-end px-5 pb-5 pt-4">
+        <ScrollView
+          className="flex-1"
+          contentContainerStyle={{
+            flexGrow: 1,
+            justifyContent: 'flex-end',
+            paddingBottom: 20,
+            paddingHorizontal: 20,
+            paddingTop: 16,
+          }}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
           <Animated.View style={{ opacity, transform: [{ translateY }] }}>{children}</Animated.View>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </View>
   );

@@ -1,6 +1,6 @@
 import { isValidUsername, normalizeUsername } from '@infchat/shared';
-import { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { AuthButton } from '../components/AuthButton';
 import { AuthField } from '../components/AuthField';
@@ -12,6 +12,7 @@ type LoginScreenProps = {
 };
 
 export function LoginScreen(props: LoginScreenProps) {
+  const passwordRef = useRef<TextInput>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -57,9 +58,11 @@ export function LoginScreen(props: LoginScreenProps) {
           autoCorrect={false}
           autoComplete="username"
           returnKeyType="next"
+          onSubmitEditing={() => passwordRef.current?.focus()}
           textContentType="username"
         />
         <AuthField
+          ref={passwordRef}
           label="Password"
           value={password}
           onChangeText={setPassword}

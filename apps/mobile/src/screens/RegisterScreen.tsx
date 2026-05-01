@@ -1,6 +1,6 @@
 import { isValidUsername, normalizeUsername } from '@infchat/shared';
-import { useState } from 'react';
-import { Pressable, Text, View } from 'react-native';
+import { useRef, useState } from 'react';
+import { Pressable, Text, TextInput, View } from 'react-native';
 
 import { AuthButton } from '../components/AuthButton';
 import { AuthField } from '../components/AuthField';
@@ -12,6 +12,7 @@ type RegisterScreenProps = {
 };
 
 export function RegisterScreen(props: RegisterScreenProps) {
+  const passwordRef = useRef<TextInput>(null);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -62,12 +63,14 @@ export function RegisterScreen(props: RegisterScreenProps) {
           autoCorrect={false}
           autoComplete="username-new"
           returnKeyType="next"
+          onSubmitEditing={() => passwordRef.current?.focus()}
           textContentType="username"
         />
         <Text className="-mt-2 px-1 text-xs font-semibold text-muted-foreground">
           3-32 lowercase letters, numbers, or underscores.
         </Text>
         <AuthField
+          ref={passwordRef}
           label="Password"
           value={password}
           onChangeText={setPassword}

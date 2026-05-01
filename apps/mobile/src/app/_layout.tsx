@@ -24,7 +24,7 @@ import * as Notifications from 'expo-notifications';
 import { router, Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
-import { Animated, AppState, Pressable, Text, Vibration, View } from 'react-native';
+import { Animated, AppState, Keyboard, Pressable, Text, Vibration, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
@@ -155,12 +155,18 @@ export default function RootLayout() {
             <View className="flex-1 bg-background">
               {route === 'login' ? (
                 <LoginScreen
-                  onCreateAccount={() => setRoute('register')}
+                  onCreateAccount={() => {
+                    Keyboard.dismiss();
+                    setRoute('register');
+                  }}
                   onSubmit={(username, password) => signInWithUsername(pb, { username, password })}
                 />
               ) : (
                 <RegisterScreen
-                  onSignIn={() => setRoute('login')}
+                  onSignIn={() => {
+                    Keyboard.dismiss();
+                    setRoute('login');
+                  }}
                   onSubmit={(username, password) =>
                     registerWithUsername(pb, { username, password })
                   }
