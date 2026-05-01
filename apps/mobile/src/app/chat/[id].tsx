@@ -1877,7 +1877,7 @@ function EmptyConversation({ label }: { label: string }) {
 
 function DateSeparator({ label }: { label: string }) {
   return (
-    <View className="items-center bg-background/95 py-2">
+    <View className="items-center py-2" pointerEvents="none">
       <View className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5">
         <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
       </View>
