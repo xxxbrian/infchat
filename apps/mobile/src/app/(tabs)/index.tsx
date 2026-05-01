@@ -17,7 +17,9 @@ import {
   Alert,
   Animated,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -509,9 +511,9 @@ function NewMessageSheet({
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
-  const searchRef = useRef<TextInput>(null);
   const [query, setQuery] = useState('');
   const isOnline = Boolean(netInfo.isConnected && netInfo.isInternetReachable !== false);
+  const sheetHeight = Math.min(windowHeight * 0.88, windowHeight - insets.top - 12);
 
   const friendshipsQuery = useQuery({
     queryKey: ['friendships', currentUserId, 'new-message'],
@@ -576,11 +578,7 @@ function NewMessageSheet({
   useEffect(() => {
     if (!visible) {
       setQuery('');
-      return;
     }
-
-    const focusTimer = setTimeout(() => searchRef.current?.focus(), 280);
-    return () => clearTimeout(focusTimer);
   }, [visible]);
 
   useEffect(() => {
@@ -648,92 +646,93 @@ function NewMessageSheet({
       transparent
       visible={visible}
     >
-      <Pressable className="flex-1 justify-end bg-black/45" onPress={handleClose}>
-        <Pressable
-          className="overflow-hidden rounded-t-[34px] bg-background"
-          onPress={(event) => event.stopPropagation()}
-          style={{
-            maxHeight: windowHeight * 0.92,
-            minHeight: windowHeight * 0.72,
-          }}
-        >
-          <View className="px-5 pb-3" style={{ paddingTop: 16 }}>
-            <View className="mb-5 h-1.5 w-12 self-center rounded-full bg-border" />
-            <View className="h-12 flex-row items-center justify-center">
-              <Pressable
-                className="absolute left-0 h-12 w-12 items-center justify-center rounded-full bg-muted"
-                onPress={handleClose}
-              >
-                <Ionicons color="#f8fafc" name="close" size={28} />
-              </Pressable>
-              <Text className="text-2xl font-black text-foreground">New Message</Text>
-            </View>
-
-            <View className="mt-5 h-12 flex-row items-center rounded-full bg-muted px-4">
-              <Ionicons color="#64748b" name="search" size={20} />
-              <TextInput
-                autoCapitalize="none"
-                autoCorrect={false}
-                className="h-full min-w-0 flex-1 px-3 text-[17px] text-foreground"
-                onChangeText={setQuery}
-                placeholder="Search"
-                placeholderTextColor="#64748b"
-                ref={searchRef}
-                returnKeyType="search"
-                selectionColor="#f8fafc"
-                value={query}
-              />
-              {query ? (
-                <Pressable
-                  className="h-7 w-7 items-center justify-center rounded-full bg-background/60"
-                  onPress={() => setQuery('')}
-                >
-                  <Ionicons color="#94a3b8" name="close" size={16} />
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-
-          <ScrollView
-            contentContainerStyle={{
-              paddingBottom: Math.max(insets.bottom, 16) + 16,
-            }}
-            keyboardDismissMode="on-drag"
-            keyboardShouldPersistTaps="handled"
-            onScrollBeginDrag={Keyboard.dismiss}
-            showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        className="flex-1"
+      >
+        <Pressable className="flex-1 justify-end bg-black/45" onPress={handleClose}>
+          <Pressable
+            className="overflow-hidden rounded-t-[34px] bg-background"
+            onPress={(event) => event.stopPropagation()}
+            style={{ height: sheetHeight }}
           >
-            <View className="px-5">
-              <ComposeAction icon="people-outline" label="New Group" onPress={handleNewGroup} />
-              <ComposeAction
-                icon="person-add-outline"
-                label="Add Friend"
-                onPress={handleAddFriend}
-              />
+            <View className="px-5 pb-3" style={{ paddingTop: 16 }}>
+              <View className="mb-5 h-1.5 w-12 self-center rounded-full bg-border" />
+              <View className="h-12 flex-row items-center justify-center">
+                <Pressable
+                  className="absolute left-0 h-12 w-12 items-center justify-center rounded-full bg-muted"
+                  onPress={handleClose}
+                >
+                  <Ionicons color="#f8fafc" name="close" size={28} />
+                </Pressable>
+                <Text className="text-2xl font-black text-foreground">New Message</Text>
+              </View>
+
+              <View className="mt-5 h-12 flex-row items-center rounded-full bg-muted px-4">
+                <Ionicons color="#64748b" name="search" size={20} />
+                <TextInput
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  className="h-full min-w-0 flex-1 px-3 text-[17px] text-foreground"
+                  onChangeText={setQuery}
+                  placeholder="Search"
+                  placeholderTextColor="#64748b"
+                  returnKeyType="search"
+                  selectionColor="#f8fafc"
+                  value={query}
+                />
+                {query ? (
+                  <Pressable
+                    className="h-7 w-7 items-center justify-center rounded-full bg-background/60"
+                    onPress={() => setQuery('')}
+                  >
+                    <Ionicons color="#94a3b8" name="close" size={16} />
+                  </Pressable>
+                ) : null}
+              </View>
             </View>
 
-            <View className="mt-2 px-5">
-              {friendshipsQuery.isLoading && people.length === 0 ? (
-                <SheetEmptyState icon="people" title="Loading friends" />
-              ) : visiblePeople.length ? (
-                visiblePeople.map((person) => (
-                  <NewMessagePersonRow
-                    disabled={startPrivateChatMutation.isPending}
-                    key={person.userId}
-                    onPress={() => startPrivateChatMutation.mutate(person.userId)}
-                    person={person}
-                  />
-                ))
-              ) : (
-                <SheetEmptyState
-                  icon="search"
-                  title={query ? 'No matching friends' : 'No friends yet'}
+            <ScrollView
+              contentContainerStyle={{
+                paddingBottom: Math.max(insets.bottom, 16) + 16,
+              }}
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              keyboardShouldPersistTaps="handled"
+              onScrollBeginDrag={Keyboard.dismiss}
+              showsVerticalScrollIndicator={false}
+            >
+              <View className="px-5">
+                <ComposeAction icon="people-outline" label="New Group" onPress={handleNewGroup} />
+                <ComposeAction
+                  icon="person-add-outline"
+                  label="Add Friend"
+                  onPress={handleAddFriend}
                 />
-              )}
-            </View>
-          </ScrollView>
+              </View>
+
+              <View className="mt-2 px-5">
+                {friendshipsQuery.isLoading && people.length === 0 ? (
+                  <SheetEmptyState icon="people" title="Loading friends" />
+                ) : visiblePeople.length ? (
+                  visiblePeople.map((person) => (
+                    <NewMessagePersonRow
+                      disabled={startPrivateChatMutation.isPending}
+                      key={person.userId}
+                      onPress={() => startPrivateChatMutation.mutate(person.userId)}
+                      person={person}
+                    />
+                  ))
+                ) : (
+                  <SheetEmptyState
+                    icon="search"
+                    title={query ? 'No matching friends' : 'No friends yet'}
+                  />
+                )}
+              </View>
+            </ScrollView>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
