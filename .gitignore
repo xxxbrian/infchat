@@ -70,3 +70,6 @@ rn-makeitanimated/
 
 # mise
 .mise.local.toml
+
+# testflight
+testflight/
