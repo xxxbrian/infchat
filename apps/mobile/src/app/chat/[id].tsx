@@ -11,7 +11,6 @@ import {
   type ProfileRecord,
   startCall,
 } from '@infchat/pocketbase';
-import { getAvatarColor, getAvatarInitial } from '@infchat/shared';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -42,7 +41,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ProfileAvatar } from '../../components/ProfileAvatar';
+import { ConversationAvatar } from '../../components/ConversationAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { useCallSession } from '../../lib/call-context';
 import { useRingingSecondsLeft } from '../../lib/call-countdown';
@@ -61,13 +60,18 @@ import { pb } from '../../lib/pocketbase';
 type ConversationView = {
   id: string;
   kind: ConversationRecord['kind'];
+  conversation?: ConversationRecord;
   name: string;
   subtitle: string;
-  accent: string;
   avatarUrl?: string | null;
   avatarUserId: string;
   avatarUsername: string;
-  memberNames: string[];
+  members: Array<{
+    avatarUrl?: string | null;
+    name: string;
+    userId: string;
+    username: string;
+  }>;
 };
 
 type ChatMessage = {
@@ -1089,11 +1093,10 @@ function toConversationView(
       kind: 'private',
       name: 'Chat',
       subtitle: '',
-      accent: '#64748b',
       avatarUrl: null,
       avatarUserId: '',
       avatarUsername: 'Chat',
-      memberNames: [],
+      members: [],
     };
   }
 
@@ -1115,16 +1118,21 @@ function toConversationView(
   return {
     id: conversation.id,
     kind: conversation.kind,
+    conversation,
     name,
     subtitle:
       conversation.kind === 'group'
         ? `${conversation.member_count ?? activeMemberIds.length} members`
         : 'friend',
-    accent: getAvatarColor(firstProfile?.user || conversation.id),
-    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
+    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken, 'thumb') : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
-    memberNames: otherProfiles.map((profile) => profile.display_name || profile.username),
+    members: otherProfiles.map((profile) => ({
+      avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
+      name: profile.display_name || profile.username,
+      userId: profile.user,
+      username: profile.username,
+    })),
   };
 }
 
@@ -1767,50 +1775,21 @@ function AvatarStack({
 }) {
   const isLarge = size === 'large';
   const avatarSize = isLarge ? 82 : 40;
-  const secondarySize = isLarge ? 34 : 18;
-
-  if (conversation.kind === 'private') {
-    return (
-      <ProfileAvatar
-        avatarUrl={conversation.avatarUrl}
-        name={conversation.name}
-        size={avatarSize}
-        userId={conversation.avatarUserId}
-        username={conversation.avatarUsername}
-      />
-    );
-  }
 
   return (
-    <View style={{ height: avatarSize, width: avatarSize }}>
-      <View
-        className="absolute left-0 top-0 items-center justify-center rounded-full"
-        style={{
-          backgroundColor: conversation.accent,
-          height: avatarSize * 0.72,
-          width: avatarSize * 0.72,
-        }}
-      >
-        <Text className={`${isLarge ? 'text-2xl' : 'text-sm'} font-bold text-background`}>
-          {getAvatarInitial(conversation.name, conversation.name)}
-        </Text>
-      </View>
-      {conversation.memberNames.slice(0, 2).map((member, index) => (
-        <View
-          className="absolute items-center justify-center rounded-full border-2 border-background"
-          key={member}
-          style={{
-            backgroundColor: index === 0 ? '#a78bfa' : '#34d399',
-            bottom: index === 0 ? secondarySize * 0.65 : 0,
-            height: secondarySize,
-            right: 0,
-            width: secondarySize,
-          }}
-        >
-          <Text className="text-[10px] font-bold text-background">{member.slice(0, 1)}</Text>
-        </View>
-      ))}
-    </View>
+    <ConversationAvatar
+      conversation={conversation.conversation}
+      members={conversation.members}
+      name={conversation.name}
+      privateProfile={{
+        avatarUrl: conversation.avatarUrl,
+        name: conversation.name,
+        userId: conversation.avatarUserId,
+        username: conversation.avatarUsername,
+      }}
+      size={avatarSize}
+      variant={isLarge ? 'large' : 'thumb'}
+    />
   );
 }
 

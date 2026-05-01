@@ -14,6 +14,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/router"
 	"github.com/pocketbase/pocketbase/tools/types"
 )
@@ -192,8 +193,12 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 			if err := e.BindBody(&data); err != nil {
 				return e.BadRequestError("Failed to read group update data.", err)
 			}
+			avatarFiles, err := e.FindUploadedFiles("avatar")
+			if err != nil && !errors.Is(err, http.ErrMissingFile) {
+				return e.BadRequestError("Failed to read group avatar.", err)
+			}
 
-			result, err := updateGroupCommand(e.App, e.Auth.Id, e.Request.PathValue("id"), data)
+			result, err := updateGroupCommand(e.App, e.Auth.Id, e.Request.PathValue("id"), data, avatarFiles)
 			if err != nil {
 				return err
 			}
@@ -569,7 +574,7 @@ func leaveGroupCommand(app core.App, userId string, conversationId string) (map[
 	return map[string]any{"conversation": conversation, "cursor": cursor, "membership": membership}, err
 }
 
-func updateGroupCommand(app core.App, actorId string, conversationId string, data updateGroupRequest) (map[string]any, error) {
+func updateGroupCommand(app core.App, actorId string, conversationId string, data updateGroupRequest, avatarFiles []*filesystem.File) (map[string]any, error) {
 	conversation, membership, err := findActiveConversationMembership(app, conversationId, actorId)
 	if err != nil {
 		return nil, err
@@ -599,6 +604,9 @@ func updateGroupCommand(app core.App, actorId string, conversationId string, dat
 		}
 		if data.DefaultHistoryPolicy != nil {
 			conversation.Set("default_history_policy", normalizeHistoryPolicy(*data.DefaultHistoryPolicy))
+		}
+		if len(avatarFiles) > 0 {
+			conversation.Set("avatar", avatarFiles[0])
 		}
 		cursor, err = nextConversationEventCursor(txApp)
 		if err != nil {

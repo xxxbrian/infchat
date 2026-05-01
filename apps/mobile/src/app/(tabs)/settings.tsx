@@ -102,7 +102,7 @@ export default function SettingsTab() {
   const profile = profileQuery.data;
   const displayName = profile?.display_name || authRecord.username || 'user';
   const username = profile?.username || authRecord.username || 'user';
-  const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
+  const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data, 'hero') : null;
   const cachedAvatarUrl = useCachedRemoteUri(
     avatarUrl,
     avatarUrl ? `settings-hero:${authRecord.id}:${avatarUrl.split('?')[0]}` : undefined,

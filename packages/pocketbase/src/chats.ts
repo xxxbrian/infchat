@@ -1,5 +1,7 @@
 import type PocketBase from 'pocketbase';
 
+import { type AvatarImageVariant, getAvatarThumb } from './profiles';
+
 export type ConversationKind = 'private' | 'group';
 export type GroupHistoryPolicy = 'full' | 'since_join';
 export type MembershipRole = 'owner' | 'admin' | 'member';
@@ -13,6 +15,8 @@ export type MessageUploadFile = {
   name: string;
   type: string;
 };
+
+export type ConversationAvatarUploadFile = MessageUploadFile;
 
 export type ConversationRecord = {
   id: string;
@@ -157,6 +161,7 @@ export type GroupMembershipResponse = {
 };
 
 export type UpdateGroupInput = {
+  avatar?: ConversationAvatarUploadFile;
   defaultHistoryPolicy?: GroupHistoryPolicy;
   description?: string;
   title?: string;
@@ -276,10 +281,57 @@ export function updateGroupConversation(
   conversationId: string,
   input: UpdateGroupInput,
 ): Promise<{ conversation: ConversationRecord; cursor: number }> {
+  if (input.avatar) {
+    const formData = new FormData();
+    appendGroupUpdateFields(formData, input);
+    formData.append('avatar', input.avatar as unknown as Blob);
+
+    return pb.send(`/api/infchat/groups/${conversationId}`, {
+      body: formData,
+      method: 'PATCH',
+    });
+  }
+
   return pb.send(`/api/infchat/groups/${conversationId}`, {
-    body: input,
+    body: {
+      ...(input.defaultHistoryPolicy === undefined
+        ? {}
+        : { defaultHistoryPolicy: input.defaultHistoryPolicy }),
+      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.title === undefined ? {} : { title: input.title }),
+    },
     method: 'PATCH',
   });
+}
+
+export function getConversationAvatarUrl(
+  pb: PocketBase,
+  conversation: ConversationRecord,
+  fileToken?: string,
+  variant: AvatarImageVariant = 'thumb',
+): string | null {
+  if (!conversation.avatar) {
+    return null;
+  }
+
+  const thumb = getAvatarThumb(variant);
+
+  return pb.files.getURL(conversation, conversation.avatar, {
+    ...(fileToken ? { token: fileToken } : {}),
+    ...(thumb ? { thumb } : {}),
+  });
+}
+
+function appendGroupUpdateFields(formData: FormData, input: UpdateGroupInput) {
+  if (input.defaultHistoryPolicy !== undefined) {
+    formData.append('defaultHistoryPolicy', input.defaultHistoryPolicy);
+  }
+  if (input.description !== undefined) {
+    formData.append('description', input.description);
+  }
+  if (input.title !== undefined) {
+    formData.append('title', input.title);
+  }
 }
 
 export function listMessages(pb: PocketBase, conversationId: string): Promise<MessageRecord[]> {

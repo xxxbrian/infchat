@@ -21,6 +21,8 @@ export type ProfileUploadFile = {
   type: string;
 };
 
+export type AvatarImageVariant = 'thumb' | 'medium' | 'large' | 'hero' | 'original';
+
 export type UpdateProfileInput = {
   bio?: string;
   displayName?: string;
@@ -106,14 +108,31 @@ export function getProfileAvatarUrl(
   pb: PocketBase,
   profile: ProfileRecord,
   fileToken?: string,
+  variant: AvatarImageVariant = 'thumb',
 ): string | null {
   if (!profile.avatar) {
     return null;
   }
 
-  return pb.files.getURL(
-    profile,
-    profile.avatar,
-    fileToken ? { thumb: '160x160', token: fileToken } : { thumb: '160x160' },
-  );
+  const thumb = getAvatarThumb(variant);
+
+  return pb.files.getURL(profile, profile.avatar, {
+    ...(fileToken ? { token: fileToken } : {}),
+    ...(thumb ? { thumb } : {}),
+  });
+}
+
+export function getAvatarThumb(variant: AvatarImageVariant): string | undefined {
+  switch (variant) {
+    case 'thumb':
+      return '96x96';
+    case 'medium':
+      return '160x160';
+    case 'large':
+      return '512x512';
+    case 'hero':
+      return '1024x1024';
+    case 'original':
+      return undefined;
+  }
 }

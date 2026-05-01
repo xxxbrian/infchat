@@ -782,7 +782,7 @@ function toPerson(
     friendshipId: friendship?.id,
     name,
     username: profile.username,
-    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
     status,
     note: getFriendNote(status),
   };

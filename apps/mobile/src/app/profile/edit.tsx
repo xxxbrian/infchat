@@ -46,7 +46,8 @@ export default function EditProfileScreen() {
   });
   const profile = profileQuery.data;
   const avatarUrl =
-    selectedAvatar?.uri || (profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null);
+    selectedAvatar?.uri ||
+    (profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data, 'medium') : null);
   const parsedDisplayName = displayNameSchema.safeParse(displayName);
   const parsedBio = bioSchema.safeParse(bio);
   const hasChanges =

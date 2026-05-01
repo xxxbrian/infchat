@@ -3,6 +3,7 @@ import {
   addGroupMembers,
   type ConversationMembershipRecord,
   type ConversationRecord,
+  type ConversationAvatarUploadFile,
   type FriendshipRecord,
   type GroupHistoryPolicy,
   getProfileAvatarUrl,
@@ -13,6 +14,7 @@ import {
 } from '@infchat/pocketbase';
 import { useNetInfo } from '@react-native-community/netinfo';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
@@ -31,6 +33,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../../components/ProfileAvatar';
+import { ConversationAvatar } from '../../../components/ConversationAvatar';
 import { useAuth } from '../../../lib/auth-context';
 import { useChatSyncService } from '../../../lib/chat-sync-context';
 import {
@@ -211,6 +214,7 @@ export default function GroupInfoScreen() {
   });
   const updateGroupMutation = useMutation({
     mutationFn: (input: {
+      avatar?: ConversationAvatarUploadFile;
       defaultHistoryPolicy: GroupHistoryPolicy;
       description: string;
       title: string;
@@ -324,7 +328,14 @@ export default function GroupInfoScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View className="items-center">
-          <GroupAvatar count={memberCount} size={128} />
+          <ConversationAvatar
+            conversation={conversation}
+            fileToken={fileTokenQuery.data}
+            members={members}
+            name={title}
+            size={128}
+            variant="large"
+          />
           <Text
             className="mt-5 text-center text-[34px] font-black tracking-[-1px] text-foreground"
             numberOfLines={2}
@@ -736,6 +747,7 @@ function EditGroupModal({
   isPending: boolean;
   onClose: () => void;
   onSave: (input: {
+    avatar?: ConversationAvatarUploadFile;
     defaultHistoryPolicy: GroupHistoryPolicy;
     description: string;
     title: string;
@@ -746,6 +758,7 @@ function EditGroupModal({
   const titleRef = useRef<TextInput>(null);
   const [title, setTitle] = useState(conversation.title || '');
   const [description, setDescription] = useState(conversation.description || '');
+  const [selectedAvatar, setSelectedAvatar] = useState<ImagePicker.ImagePickerAsset | null>(null);
   const [historyPolicy, setHistoryPolicy] = useState<GroupHistoryPolicy>(
     conversation.default_history_policy || 'full',
   );
@@ -757,6 +770,7 @@ function EditGroupModal({
 
     setTitle(conversation.title || '');
     setDescription(conversation.description || '');
+    setSelectedAvatar(null);
     setHistoryPolicy(conversation.default_history_policy || 'full');
     const focusTimer = setTimeout(() => titleRef.current?.focus(), 220);
 
@@ -768,9 +782,29 @@ function EditGroupModal({
   const canSave =
     trimmedTitle.length > 0 &&
     !isPending &&
-    (trimmedTitle !== (conversation.title || '') ||
+    (Boolean(selectedAvatar) ||
+      trimmedTitle !== (conversation.title || '') ||
       trimmedDescription !== (conversation.description || '') ||
       historyPolicy !== (conversation.default_history_policy || 'full'));
+  const uploadFile = selectedAvatar ? toConversationAvatarUploadFile(selectedAvatar) : undefined;
+  const pickAvatar = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Photos access needed', 'Allow photos access to choose a group image.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      mediaTypes: ['images'],
+      quality: 0.9,
+    });
+
+    if (!result.canceled) {
+      setSelectedAvatar(result.assets[0] ?? null);
+    }
+  };
   const close = () => {
     Keyboard.dismiss();
     onClose();
@@ -803,6 +837,7 @@ function EditGroupModal({
                   defaultHistoryPolicy: historyPolicy,
                   description: trimmedDescription,
                   title: trimmedTitle,
+                  ...(uploadFile ? { avatar: uploadFile } : {}),
                 })
               }
             >
@@ -828,7 +863,28 @@ function EditGroupModal({
           showsVerticalScrollIndicator={false}
         >
           <View className="items-center pb-7">
-            <GroupAvatar count={conversation.member_count ?? 1} size={116} />
+            <Pressable className="items-center" onPress={pickAvatar}>
+              {selectedAvatar ? (
+                <ProfileAvatar
+                  avatarUrl={selectedAvatar.uri}
+                  name={conversation.title || 'Group chat'}
+                  size={116}
+                  userId={conversation.id}
+                  username={conversation.title || 'group'}
+                />
+              ) : (
+                <ConversationAvatar
+                  conversation={conversation}
+                  members={[]}
+                  name={conversation.title || 'Group chat'}
+                  size={116}
+                  variant="large"
+                />
+              )}
+              <View className="absolute bottom-8 right-0 h-9 w-9 items-center justify-center rounded-full border-4 border-background bg-foreground">
+                <Ionicons color="#080b12" name="camera" size={16} />
+              </View>
+            </Pressable>
             <Text className="mt-4 text-[17px] font-semibold text-primary">Set New Photo</Text>
           </View>
 
@@ -942,19 +998,6 @@ function EmptyState({ icon, title }: { icon: keyof typeof Ionicons.glyphMap; tit
   );
 }
 
-function GroupAvatar({ count, size }: { count: number; size: number }) {
-  return (
-    <View
-      className="items-center justify-center rounded-full bg-primary"
-      style={{ height: size, width: size }}
-    >
-      <Text className="font-black text-background" style={{ fontSize: Math.max(28, size * 0.42) }}>
-        {Math.max(1, count)}
-      </Text>
-    </View>
-  );
-}
-
 function toMemberView(
   membership: ConversationMembershipRecord,
   profilesByUserId: Map<string, ProfileRecord>,
@@ -970,7 +1013,7 @@ function toMemberView(
   const isCurrentUser = membership.user === currentUserId;
 
   return {
-    avatarUrl: profile ? getProfileAvatarUrl(pb, profile, fileToken) : null,
+    avatarUrl: profile ? getProfileAvatarUrl(pb, profile, fileToken, 'thumb') : null,
     id: membership.id,
     isCurrentUser,
     name: isCurrentUser ? `${name} (You)` : name,
@@ -1047,7 +1090,7 @@ function toAddableFriends(profiles: ProfileRecord[], fileToken?: string): Addabl
       const name = profile.display_name || profile.username;
 
       return {
-        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
         id: profile.id,
         name,
         userId: profile.user,
@@ -1055,6 +1098,19 @@ function toAddableFriends(profiles: ProfileRecord[], fileToken?: string): Addabl
       };
     })
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function toConversationAvatarUploadFile(
+  asset: ImagePicker.ImagePickerAsset,
+): ConversationAvatarUploadFile {
+  const type = asset.mimeType || 'image/jpeg';
+  const extension = type.split('/')[1] || 'jpg';
+
+  return {
+    name: asset.fileName || `group-avatar.${extension}`,
+    type,
+    uri: asset.uri,
+  };
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {

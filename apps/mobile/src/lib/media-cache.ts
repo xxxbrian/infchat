@@ -28,7 +28,6 @@ export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string)
           return;
         }
 
-        setLocalUri(null);
         await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
           intermediates: true,
         });
@@ -50,6 +49,26 @@ export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string)
   }, [cacheKey, remoteUri]);
 
   return localUri ?? remoteUri ?? null;
+}
+
+export function avatarMediaCacheKey({
+  field = 'avatar',
+  fileName,
+  recordId,
+  scope,
+  variant,
+}: {
+  field?: string;
+  fileName?: string | null;
+  recordId: string;
+  scope: 'conversation' | 'profile';
+  variant: string;
+}): string | undefined {
+  if (!fileName) {
+    return undefined;
+  }
+
+  return `${scope}:${recordId}:${field}:${fileName}:${variant}`;
 }
 
 function hashCacheKey(value: string): string {

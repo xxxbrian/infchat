@@ -31,6 +31,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
+import { ConversationAvatar } from '../../components/ConversationAvatar';
 import { useAuth } from '../../lib/auth-context';
 import { useChatSyncService } from '../../lib/chat-sync-context';
 import { listLocalConversations, listLocalMemberships } from '../../lib/chat-sync-store';
@@ -45,6 +46,7 @@ import { pb } from '../../lib/pocketbase';
 type ConversationView = {
   id: string;
   kind: ConversationRecord['kind'];
+  conversation: ConversationRecord;
   name: string;
   message: string;
   time: string;
@@ -54,7 +56,12 @@ type ConversationView = {
   avatarUserId: string;
   avatarUsername: string;
   activeCall?: CallRoomRecord;
-  members?: string[];
+  members: Array<{
+    avatarUrl?: string | null;
+    name: string;
+    userId: string;
+    username: string;
+  }>;
 };
 
 type NewMessagePerson = {
@@ -473,7 +480,12 @@ export default function ChatTab() {
           <EmptyState icon="chatbubbles" title="Loading chats" />
         ) : visibleConversations.length ? (
           visibleConversations.map((conversation, index) => (
-            <ConversationRow conversation={conversation} index={index} key={conversation.id} />
+            <ConversationRow
+              conversation={conversation}
+              fileToken={fileTokenQuery.data}
+              index={index}
+              key={conversation.id}
+            />
           ))
         ) : (
           <EmptyState icon="chatbubble-ellipses" title="No chats yet" />
@@ -827,6 +839,7 @@ function toConversationView(
   return {
     id: conversation.id,
     kind: conversation.kind,
+    conversation,
     name,
     message: conversation.last_message_text || 'No messages yet',
     time: formatConversationTime(conversation.last_message_at || conversation.updated),
@@ -835,11 +848,16 @@ function toConversationView(
       conversation.kind === 'group'
         ? `${conversation.member_count ?? activeMemberIds.length} members`
         : 'friend',
-    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken) : null,
+    avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken, 'thumb') : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
     activeCall,
-    members: otherProfiles.map((profile) => profile.display_name || profile.username),
+    members: otherProfiles.map((profile) => ({
+      avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
+      name: profile.display_name || profile.username,
+      userId: profile.user,
+      username: profile.username,
+    })),
   };
 }
 
@@ -866,7 +884,7 @@ function toNewMessagePeople(profiles: ProfileRecord[], fileToken?: string): NewM
       const name = profile.display_name || profile.username;
 
       return {
-        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
         id: profile.id,
         name,
         note: `@${profile.username}`,
@@ -948,9 +966,11 @@ function RoundIcon({
 
 function ConversationRow({
   conversation,
+  fileToken,
   index,
 }: {
   conversation: ConversationView;
+  fileToken?: string;
   index: number;
 }) {
   const opacity = useRef(new Animated.Value(0)).current;
@@ -979,12 +999,18 @@ function ConversationRow({
       onPress={() => router.push({ pathname: '/chat/[id]', params: { id: conversation.id } })}
       style={{ opacity, transform: [{ translateY }] }}
     >
-      <ProfileAvatar
-        avatarUrl={conversation.avatarUrl}
+      <ConversationAvatar
+        conversation={conversation.conversation}
+        fileToken={fileToken}
+        members={conversation.members}
         name={conversation.name}
+        privateProfile={{
+          avatarUrl: conversation.avatarUrl,
+          name: conversation.name,
+          userId: conversation.avatarUserId,
+          username: conversation.avatarUsername,
+        }}
         size={56}
-        userId={conversation.avatarUserId}
-        username={conversation.avatarUsername}
       />
 
       <View className="min-w-0 flex-1 border-b border-border/60 pb-3">

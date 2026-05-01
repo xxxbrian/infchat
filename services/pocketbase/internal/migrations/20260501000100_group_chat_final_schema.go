@@ -46,7 +46,7 @@ func init() {
 			&core.TextField{Name: "pair_key", Max: 80},
 			&core.RelationField{Name: "created_by", CollectionId: users.Id, CascadeDelete: false, MaxSelect: 1},
 			&core.TextField{Name: "title", Max: 80},
-			&core.FileField{Name: "avatar", MaxSelect: 1, MaxSize: 5 * 1024 * 1024, MimeTypes: []string{"image/jpeg", "image/png", "image/webp"}, Thumbs: []string{"160x160"}},
+			&core.FileField{Name: "avatar", MaxSelect: 1, MaxSize: 5 * 1024 * 1024, MimeTypes: []string{"image/jpeg", "image/png", "image/webp"}, Thumbs: []string{"96x96", "160x160", "512x512", "1024x1024"}},
 			&core.TextField{Name: "description", Max: 500},
 			&core.SelectField{Name: "default_history_policy", Required: true, Values: []string{"full", "since_join"}},
 			&core.NumberField{Name: "member_count", OnlyInt: true},

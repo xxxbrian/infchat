@@ -593,7 +593,7 @@ function toFriendPeople(profiles: ProfileRecord[], fileToken?: string): FriendPe
       const name = profile.display_name || profile.username;
 
       return {
-        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+        avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
         id: profile.id,
         name,
         userId: profile.user,

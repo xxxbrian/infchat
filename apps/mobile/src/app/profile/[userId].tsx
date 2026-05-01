@@ -71,7 +71,7 @@ export default function ProfileScreen() {
   const displayName = profile?.display_name || profile?.username || 'Profile';
   const username = profile?.username || 'unknown';
   const bio = profile?.bio?.trim() || 'No bio yet';
-  const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null;
+  const avatarUrl = profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data, 'hero') : null;
   const cachedAvatarUrl = useCachedRemoteUri(
     avatarUrl,
     avatarUrl ? `profile-hero:${profileUserId}:${avatarUrl.split('?')[0]}` : undefined,

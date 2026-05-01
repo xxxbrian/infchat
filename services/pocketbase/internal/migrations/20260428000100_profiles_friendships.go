@@ -32,7 +32,7 @@ func init() {
 			},
 			&core.TextField{Name: "username", Required: true, Min: 3, Max: 32, Pattern: "^[a-z0-9_]+$", Presentable: true},
 			&core.TextField{Name: "display_name", Required: true, Max: 48, Presentable: true},
-			&core.FileField{Name: "avatar", MaxSelect: 1, MaxSize: 5 * 1024 * 1024, MimeTypes: []string{"image/jpeg", "image/png", "image/webp"}, Thumbs: []string{"160x160"}},
+			&core.FileField{Name: "avatar", MaxSelect: 1, MaxSize: 5 * 1024 * 1024, MimeTypes: []string{"image/jpeg", "image/png", "image/webp"}, Thumbs: []string{"96x96", "160x160", "512x512", "1024x1024"}},
 			&core.AutodateField{Name: "created", OnCreate: true},
 			&core.AutodateField{Name: "updated", OnCreate: true, OnUpdate: true},
 		)

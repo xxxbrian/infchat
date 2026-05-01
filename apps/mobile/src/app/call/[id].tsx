@@ -1221,7 +1221,7 @@ function getGalleryColumns(count: number, windowWidth: number): number {
 
 function toCallProfile(profile: ProfileRecord, fileToken?: string): CallProfile {
   return {
-    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken),
+    avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'medium'),
     displayName: profile.display_name || profile.username,
     userId: profile.user,
     username: profile.username,

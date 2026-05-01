@@ -64,7 +64,8 @@ export default function ProfileSetupScreen() {
   const asksBio = missingFields.includes('bio');
   const asksAvatar = missingFields.includes('avatar');
   const avatarUrl =
-    selectedAvatar?.uri || (profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data) : null);
+    selectedAvatar?.uri ||
+    (profile ? getProfileAvatarUrl(pb, profile, fileTokenQuery.data, 'medium') : null);
   const parsedDisplayName = displayNameSchema.safeParse(displayName);
   const parsedBio = bioSchema.safeParse(bio);
   const hasChanges = Boolean(
