@@ -468,6 +468,69 @@ export async function listLocalMessages(
   return rows.map((row) => JSON.parse(row.value) as MessageRecord);
 }
 
+export async function listRecentLocalMessages(
+  authId: string,
+  conversationId: string,
+  limit: number,
+): Promise<MessageRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM (
+       SELECT value, message_seq, id FROM local_messages
+       WHERE auth_id = ? AND conversation_id = ?
+       ORDER BY message_seq DESC, id DESC
+       LIMIT ?
+     )
+     ORDER BY message_seq ASC, id ASC`,
+    authId,
+    conversationId,
+    limit,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as MessageRecord);
+}
+
+export async function listLocalMessagesBeforeSeq(
+  authId: string,
+  conversationId: string,
+  beforeSeq: number,
+  limit: number,
+): Promise<MessageRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM (
+       SELECT value, message_seq, id FROM local_messages
+       WHERE auth_id = ? AND conversation_id = ? AND message_seq < ?
+       ORDER BY message_seq DESC, id DESC
+       LIMIT ?
+     )
+     ORDER BY message_seq ASC, id ASC`,
+    authId,
+    conversationId,
+    beforeSeq,
+    limit,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as MessageRecord);
+}
+
+export async function getEarliestLocalMessageSeq(
+  authId: string,
+  conversationId: string,
+): Promise<number | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ message_seq: number }>(
+    `SELECT message_seq FROM local_messages
+     WHERE auth_id = ? AND conversation_id = ? AND message_seq > 0
+     ORDER BY message_seq ASC, id ASC
+     LIMIT 1`,
+    authId,
+    conversationId,
+  );
+
+  return row?.message_seq ?? null;
+}
+
 export async function enqueueTextOutboxMessage(
   authId: string,
   conversationId: string,

@@ -12,12 +12,14 @@ import {
   startCall,
 } from '@infchat/pocketbase';
 import { useNetInfo } from '@react-native-community/netinfo';
+import { FlashList, type FlashListRef, type ListRenderItemInfo } from '@shopify/flash-list';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Animated,
   Easing,
@@ -30,7 +32,6 @@ import {
   Platform,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -47,10 +48,12 @@ import { useCallSession } from '../../lib/call-context';
 import { useRingingSecondsLeft } from '../../lib/call-countdown';
 import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
+  getEarliestLocalMessageSeq,
   getLocalConversation,
+  listLocalMessagesBeforeSeq,
   listLocalMembershipsForConversation,
-  listLocalMessages,
   listOutboxMessagesForConversation,
+  listRecentLocalMessages,
 } from '../../lib/chat-sync-store';
 import { getDeviceId } from '../../lib/device-id';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
@@ -116,6 +119,7 @@ const JUMP_BUTTON_NEAR_BOTTOM = 120;
 const SCROLL_DIRECTION_THRESHOLD = 6;
 const ATTACHMENT_MENU_ROW_HEIGHT = 54;
 const ATTACHMENT_MENU_GAP = 10;
+const CHAT_MESSAGE_PAGE_SIZE = 100;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -126,7 +130,7 @@ export default function ChatDetailScreen() {
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
-  const scrollViewRef = useRef<ScrollView>(null);
+  const listRef = useRef<FlashListRef<ChatRenderItem>>(null);
   const didScrollToEnd = useRef(false);
   const isJumpButtonVisible = useRef(false);
   const lastScrollY = useRef(0);
@@ -136,12 +140,15 @@ export default function ChatDetailScreen() {
   const attachmentMenuProgress = useRef(new Animated.Value(0)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeightValue = useRef(0);
-  const dateSeparatorOffsetsRef = useRef<Record<string, number>>({});
+  const isLoadingOlderMessagesRef = useRef(false);
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
   const [isAttachmentMenuTouchable, setIsAttachmentMenuTouchable] = useState(false);
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
+  const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(true);
+  const [messagePageLimit, setMessagePageLimit] = useState(CHAT_MESSAGE_PAGE_SIZE);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const [composerInputExtraHeightState, setComposerInputExtraHeightState] = useState(0);
@@ -165,8 +172,8 @@ export default function ChatDetailScreen() {
     staleTime: 1000 * 60 * 5,
   });
   const messagesQuery = useQuery({
-    queryKey: ['chat', authRecord.id, 'messages', conversationId],
-    queryFn: () => listLocalMessages(authRecord.id, conversationId),
+    queryKey: ['chat', authRecord.id, 'messages', conversationId, messagePageLimit],
+    queryFn: () => listRecentLocalMessages(authRecord.id, conversationId, messagePageLimit),
     enabled: Boolean(conversationId),
   });
   const outboxMessagesQuery = useQuery({
@@ -271,19 +278,65 @@ export default function ChatDetailScreen() {
     conversationMemberships,
   ]);
   const activeCall = activeCallQuery.data;
+  const oldestLoadedSeq = useMemo(
+    () => getOldestMessageSeq(messagesQuery.data ?? []),
+    [messagesQuery.data],
+  );
   const renderItems = useMemo(() => toChatRenderItems(messages), [messages]);
-  const dateItems = useMemo(
+  const stickyHeaderIndices = useMemo(
     () =>
-      renderItems.filter(
-        (item): item is Extract<ChatRenderItem, { type: 'date' }> => item.type === 'date',
-      ),
+      renderItems
+        .map((item, index) => (item.type === 'date' ? index : null))
+        .filter((index): index is number => index !== null),
     [renderItems],
   );
-  const [stickyDate, setStickyDate] = useState<{
-    id: string;
-    label: string;
-  } | null>(null);
-  const stickyDateIdRef = useRef<string | null>(null);
+  const dateIndexById = useMemo(() => {
+    const indexById = new Map<string, number>();
+
+    renderItems.forEach((item, index) => {
+      if (item.type === 'date') {
+        indexById.set(item.id, index);
+      }
+    });
+
+    return indexById;
+  }, [renderItems]);
+  const listContentContainerStyle = useMemo(
+    () => ({
+      flexGrow: 1,
+      paddingBottom:
+        Math.max(insets.bottom, 12) +
+        (isComposerExpanded ? COMPOSER_EXPANDED_HEIGHT : COMPOSER_HEIGHT) +
+        composerInputExtraHeightState +
+        16,
+      paddingHorizontal: 14,
+      paddingTop: 14,
+    }),
+    [composerInputExtraHeightState, insets.bottom, isComposerExpanded],
+  );
+  const maintainVisibleContentPosition = useMemo(
+    () => ({
+      animateAutoScrollToBottom: false,
+      autoscrollToBottomThreshold: 0.2,
+      startRenderingFromBottom: true,
+    }),
+    [],
+  );
+  const stickyHeaderConfig = useMemo(
+    () => ({
+      hideRelatedCell: true,
+      offset: 0,
+      useNativeDriver: true,
+    }),
+    [],
+  );
+  const emptyConversationLabel = conversationQuery.isLoading
+    ? 'Loading messages'
+    : messagesQuery.isLoading
+      ? 'Loading messages'
+      : conversationQuery.isError || messagesQuery.isError
+        ? 'Could not load messages'
+        : 'No messages yet';
   const activeSessionCallRoomId = activeSession?.callRoom.id;
   const shouldShowActiveCallBanner = Boolean(
     activeCall && activeSessionCallRoomId !== activeCall.id,
@@ -375,8 +428,8 @@ export default function ChatDetailScreen() {
 
   const syncMessagesToBottom = () => {
     requestAnimationFrame(() => {
-      scrollViewRef.current?.scrollToEnd({ animated: false });
-      requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
+      listRef.current?.scrollToEnd({ animated: false });
+      requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
     });
   };
   const syncMessagesToBottomIfNearBottom = () => {
@@ -467,10 +520,12 @@ export default function ChatDetailScreen() {
     lastAutoScrolledMessageIdRef.current = '';
     isNearBottomRef.current = true;
     didScrollToEnd.current = false;
-    dateSeparatorOffsetsRef.current = {};
+    isLoadingOlderMessagesRef.current = false;
     scrollYRef.current = 0;
-    stickyDateIdRef.current = null;
-    setStickyDate(null);
+    lastScrollY.current = 0;
+    setHasMoreOlderMessages(true);
+    setIsLoadingOlderMessages(false);
+    setMessagePageLimit(CHAT_MESSAGE_PAGE_SIZE);
   }, [conversationId]);
 
   useEffect(() => {
@@ -577,55 +632,31 @@ export default function ChatDetailScreen() {
     inputRange: [0, 1],
     outputRange: [0.88, 1],
   });
-  const scrollViewBottomPadding =
-    Math.max(insets.bottom, 12) +
-    (isComposerExpanded ? COMPOSER_EXPANDED_HEIGHT : COMPOSER_HEIGHT) +
-    composerInputExtraHeightState +
-    16;
-
-  const handleContentSizeChange = () => {
+  const handleLoad = () => {
     if (didScrollToEnd.current) {
       return;
     }
 
     didScrollToEnd.current = true;
-    requestAnimationFrame(() => scrollViewRef.current?.scrollToEnd({ animated: false }));
+    requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
   };
 
   const handleJumpToBottom = () => {
     setJumpButtonVisible(false);
-    scrollViewRef.current?.scrollToEnd({ animated: true });
-  };
-
-  const handleDateSeparatorLayout = (id: string, y: number) => {
-    dateSeparatorOffsetsRef.current[id] = y;
+    listRef.current?.scrollToEnd({ animated: true });
   };
 
   const handlePressDateSeparator = (id: string) => {
-    const y = dateSeparatorOffsetsRef.current[id];
-    if (typeof y !== 'number' || scrollYRef.current <= y + 1) {
+    const index = dateIndexById.get(id);
+    if (typeof index !== 'number') {
       return;
     }
 
-    scrollViewRef.current?.scrollTo({ animated: true, y });
-  };
-
-  const updateStickyDate = (y: number) => {
-    let nextStickyDate: { id: string; label: string } | null = null;
-
-    for (const item of dateItems) {
-      const itemY = dateSeparatorOffsetsRef.current[item.id];
-      if (typeof itemY === 'number' && y > itemY + 1) {
-        nextStickyDate = { id: item.id, label: item.label };
-      }
-    }
-
-    if (stickyDateIdRef.current === nextStickyDate?.id) {
-      return;
-    }
-
-    stickyDateIdRef.current = nextStickyDate?.id ?? null;
-    setStickyDate(nextStickyDate);
+    void listRef.current?.scrollToIndex({
+      animated: true,
+      index,
+      viewPosition: 0,
+    });
   };
 
   const handleRefresh = async () => {
@@ -655,13 +686,89 @@ export default function ChatDetailScreen() {
     }
   };
 
+  const handleLoadOlderMessages = async () => {
+    if (
+      isLoadingOlderMessagesRef.current ||
+      !conversationId ||
+      !hasMoreOlderMessages ||
+      messagesQuery.isLoading ||
+      messagesQuery.isFetching
+    ) {
+      return;
+    }
+
+    isLoadingOlderMessagesRef.current = true;
+    setIsLoadingOlderMessages(true);
+
+    try {
+      const currentOldestSeq =
+        oldestLoadedSeq ?? (await getEarliestLocalMessageSeq(authRecord.id, conversationId));
+      if (!currentOldestSeq) {
+        setHasMoreOlderMessages(false);
+        return;
+      }
+
+      let olderMessages = await listLocalMessagesBeforeSeq(
+        authRecord.id,
+        conversationId,
+        currentOldestSeq,
+        CHAT_MESSAGE_PAGE_SIZE,
+      );
+
+      if (olderMessages.length === 0 && !isOnline) {
+        return;
+      }
+
+      if (olderMessages.length === 0) {
+        await chatSyncService.syncConversationHistory(conversationId, currentOldestSeq);
+        olderMessages = await listLocalMessagesBeforeSeq(
+          authRecord.id,
+          conversationId,
+          currentOldestSeq,
+          CHAT_MESSAGE_PAGE_SIZE,
+        );
+      }
+
+      if (olderMessages.length === 0) {
+        setHasMoreOlderMessages(false);
+        return;
+      }
+
+      setMessagePageLimit((current) => current + olderMessages.length);
+    } finally {
+      isLoadingOlderMessagesRef.current = false;
+      setIsLoadingOlderMessages(false);
+    }
+  };
+
+  const renderChatItem = ({ item, target }: ListRenderItemInfo<ChatRenderItem>) => {
+    if (item.type === 'date') {
+      return (
+        <DateSeparator
+          id={item.id}
+          isSticky={target === 'StickyHeader'}
+          label={item.label}
+          onPress={handlePressDateSeparator}
+        />
+      );
+    }
+
+    return (
+      <MessageBubble
+        conversation={conversation}
+        message={item.message}
+        onLongPressMessage={setMessageActionTarget}
+        onRetryFailedMessage={handleRetryFailedMessage}
+      />
+    );
+  };
+
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const y = contentOffset.y;
     const distanceFromBottom = contentSize.height - layoutMeasurement.height - y;
     const deltaY = y - lastScrollY.current;
     scrollYRef.current = y;
-    updateStickyDate(y);
     isNearBottomRef.current = distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM;
 
     if (distanceFromBottom < JUMP_BUTTON_NEAR_BOTTOM) {
@@ -944,21 +1051,28 @@ export default function ChatDetailScreen() {
         ) : null}
 
         <View className="flex-1">
-          <ScrollView
+          <FlashList
             className="flex-1"
-            contentContainerStyle={{
-              flexGrow: 1,
-              paddingBottom: scrollViewBottomPadding,
-              paddingHorizontal: 14,
-              paddingTop: 14,
+            contentContainerStyle={listContentContainerStyle}
+            data={renderItems}
+            extraData={{
+              conversation,
+              totalMessages: messages.length,
             }}
+            getItemType={(item) => item.type}
             keyboardShouldPersistTaps="handled"
-            onContentSizeChange={handleContentSizeChange}
+            keyExtractor={(item) => item.id}
+            ListEmptyComponent={<EmptyConversation label={emptyConversationLabel} />}
+            ListHeaderComponent={isLoadingOlderMessages ? <OlderMessagesSpinner /> : null}
+            maintainVisibleContentPosition={maintainVisibleContentPosition}
+            onLoad={handleLoad}
             onScroll={handleScroll}
             onScrollBeginDrag={() => {
               Keyboard.dismiss();
               setAttachmentMenuVisible(false);
             }}
+            onStartReached={handleLoadOlderMessages}
+            onStartReachedThreshold={0.1}
             refreshControl={
               <RefreshControl
                 colors={['#f8fafc']}
@@ -967,41 +1081,13 @@ export default function ChatDetailScreen() {
                 tintColor="#f8fafc"
               />
             }
-            ref={scrollViewRef}
+            ref={listRef}
+            renderItem={renderChatItem}
             scrollEventThrottle={16}
             showsVerticalScrollIndicator={false}
-          >
-            {conversationQuery.isLoading || messagesQuery.isLoading ? (
-              <EmptyConversation label="Loading messages" />
-            ) : conversationQuery.isError || messagesQuery.isError ? (
-              <EmptyConversation label="Could not load messages" />
-            ) : messages.length ? (
-              renderItems.map((item) =>
-                item.type === 'date' ? (
-                  <DateSeparator
-                    id={item.id}
-                    key={item.id}
-                    label={item.label}
-                    onLayout={handleDateSeparatorLayout}
-                    onPress={handlePressDateSeparator}
-                  />
-                ) : (
-                  <MessageBubble
-                    conversation={conversation}
-                    index={item.index}
-                    key={item.id}
-                    message={item.message}
-                    onLongPressMessage={setMessageActionTarget}
-                    onRetryFailedMessage={handleRetryFailedMessage}
-                    totalMessages={messages.length}
-                  />
-                ),
-              )
-            ) : (
-              <EmptyConversation label="No messages yet" />
-            )}
-          </ScrollView>
-          {stickyDate ? <DateOverlay date={stickyDate} onPress={handlePressDateSeparator} /> : null}
+            stickyHeaderConfig={stickyHeaderConfig}
+            stickyHeaderIndices={stickyHeaderIndices}
+          />
         </View>
 
         <MessageActionSheet
@@ -1292,6 +1378,17 @@ function toChatRenderItems(messages: ChatMessage[]): ChatRenderItem[] {
   return items;
 }
 
+function getOldestMessageSeq(messages: MessageRecord[]): number | null {
+  for (const message of messages) {
+    const seq = message.message_seq ?? 0;
+    if (seq > 0) {
+      return seq;
+    }
+  }
+
+  return null;
+}
+
 function getMessageDateKey(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -1482,22 +1579,16 @@ function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJo
 
 function MessageBubble({
   conversation,
-  index,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
-  totalMessages,
 }: {
   conversation: ConversationView;
-  index: number;
   message: ChatMessage;
   onLongPressMessage: (message: ChatMessage) => void;
   onRetryFailedMessage: (messageId: string) => void;
-  totalMessages: number;
 }) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
-  const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(12)).current;
   const imageAttachment = message.kind === 'image' ? message.attachments[0] : undefined;
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
   const cachedImageUrl = useCachedRemoteUri(
@@ -1514,23 +1605,6 @@ function MessageBubble({
   const [isImageViewerVisible, setIsImageViewerVisible] = useState(false);
   const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
   const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>('idle');
-
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(opacity, {
-        toValue: 1,
-        duration: 260,
-        delay: (totalMessages - 1 - index) * 40,
-        useNativeDriver: true,
-      }),
-      Animated.timing(translateY, {
-        toValue: 0,
-        duration: 260,
-        delay: (totalMessages - 1 - index) * 40,
-        useNativeDriver: true,
-      }),
-    ]).start();
-  }, [index, opacity, totalMessages, translateY]);
 
   useEffect(() => {
     const uri = cachedImageUrl;
@@ -1581,10 +1655,7 @@ function MessageBubble({
       message.text.toLowerCase().includes('canceled');
 
     return (
-      <Animated.View
-        className="my-3 self-center rounded-full border border-border/70 bg-muted/70 px-4 py-2"
-        style={{ opacity, transform: [{ translateY }] }}
-      >
+      <View className="my-3 self-center rounded-full border border-border/70 bg-muted/70 px-4 py-2">
         <Pressable
           className="flex-row items-center gap-2"
           onLongPress={() => onLongPressMessage(message)}
@@ -1601,7 +1672,7 @@ function MessageBubble({
           <Text className="text-sm font-bold text-foreground">{message.text || 'Call'}</Text>
           <Text className="text-xs font-semibold text-muted-foreground">{message.time}</Text>
         </Pressable>
-      </Animated.View>
+      </View>
     );
   }
 
@@ -1649,9 +1720,8 @@ function MessageBubble({
 
   if (imageAttachment) {
     return (
-      <Animated.View
+      <View
         className={`mb-2 overflow-hidden rounded-[24px] bg-muted ${isMine ? 'self-end' : 'self-start'}`}
-        style={{ opacity, transform: [{ translateY }] }}
       >
         <Pressable
           onLongPress={() => onLongPressMessage(message)}
@@ -1691,7 +1761,7 @@ function MessageBubble({
             </Pressable>
           </View>
         </Modal>
-      </Animated.View>
+      </View>
     );
   }
 
@@ -1707,9 +1777,8 @@ function MessageBubble({
     const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
 
     return (
-      <Animated.View
+      <View
         className={`mb-2 max-w-[78%] overflow-hidden rounded-[24px] ${isMine ? 'self-end bg-foreground' : 'self-start bg-muted'}`}
-        style={{ opacity, transform: [{ translateY }] }}
       >
         <Pressable
           className="flex-row items-center gap-3 px-3 py-2.5"
@@ -1784,12 +1853,12 @@ function MessageBubble({
             </View>
           </View>
         </Modal>
-      </Animated.View>
+      </View>
     );
   }
 
   return (
-    <Animated.View style={{ opacity, transform: [{ translateY }] }}>
+    <View>
       <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
         {isFailed && message.failedMessageId ? (
           <Pressable
@@ -1832,7 +1901,7 @@ function MessageBubble({
           ) : null}
         </Pressable>
       </View>
-    </Animated.View>
+    </View>
   );
 }
 
@@ -1935,46 +2004,32 @@ function EmptyConversation({ label }: { label: string }) {
   );
 }
 
-function DateSeparator({
-  id,
-  label,
-  onLayout,
-  onPress,
-}: {
-  id: string;
-  label: string;
-  onLayout: (id: string, y: number) => void;
-  onPress: (id: string) => void;
-}) {
+function OlderMessagesSpinner() {
   return (
-    <View
-      className="items-center py-2"
-      onLayout={(event) => onLayout(id, event.nativeEvent.layout.y)}
-    >
-      <Pressable
-        className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5"
-        onPress={() => onPress(id)}
-      >
-        <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
-      </Pressable>
+    <View className="items-center py-3">
+      <ActivityIndicator color="#f8fafc" size="small" />
     </View>
   );
 }
 
-function DateOverlay({
-  date,
+function DateSeparator({
+  id,
+  isSticky = false,
+  label,
   onPress,
 }: {
-  date: { id: string; label: string };
+  id: string;
+  isSticky?: boolean;
+  label: string;
   onPress: (id: string) => void;
 }) {
   return (
-    <View className="absolute left-0 right-0 top-0 items-center py-2" pointerEvents="box-none">
+    <View className="items-center py-2" pointerEvents="box-none">
       <Pressable
-        className="rounded-full border border-border/60 bg-muted/95 px-3 py-1.5"
-        onPress={() => onPress(date.id)}
+        className={`rounded-full border border-border/60 bg-muted/95 px-3 py-1.5 ${isSticky ? 'shadow-lg' : ''}`}
+        onPress={() => onPress(id)}
       >
-        <Text className="text-xs font-bold text-muted-foreground">{date.label}</Text>
+        <Text className="text-xs font-bold text-muted-foreground">{label}</Text>
       </Pressable>
     </View>
   );

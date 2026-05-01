@@ -46,6 +46,9 @@ importers:
       "@react-native-masked-view/masked-view":
         specifier: 0.3.2
         version: 0.3.2(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
+      "@shopify/flash-list":
+        specifier: ^2.3.1
+        version: 2.3.1(@babel/runtime@7.29.2)(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
       "@tanstack/react-query":
         specifier: ^5.100.5
         version: 5.100.5(react@19.2.0)
@@ -1968,6 +1971,16 @@ packages:
       {
         integrity: sha512-1tJHg4KKRJuQ1/EvJxatrMef3NZXEPzwUIUZ3n1yJ2t7Q97siwRtbynRpQG9/69ebbtiZ8W3ScOZF/OmhvM4Rg==,
       }
+
+  "@shopify/flash-list@2.3.1":
+    resolution:
+      {
+        integrity: sha512-7oktg2NQR7KAODjFoDaWe8/OBzyYbdTE3zQTrUBMxjIbxHTHN7UXRX1hX3DHk8KvtkgQdRfZOV8Gjj2l4fGrXw==,
+      }
+    peerDependencies:
+      "@babel/runtime": "*"
+      react: "*"
+      react-native: "*"
 
   "@sinclair/typebox@0.27.10":
     resolution:
@@ -8180,6 +8193,12 @@ snapshots:
   "@react-navigation/routers@7.5.3":
     dependencies:
       nanoid: 3.3.11
+
+  "@shopify/flash-list@2.3.1(@babel/runtime@7.29.2)(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)":
+    dependencies:
+      "@babel/runtime": 7.29.2
+      react: 19.2.0
+      react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)
 
   "@sinclair/typebox@0.27.10": {}
 
