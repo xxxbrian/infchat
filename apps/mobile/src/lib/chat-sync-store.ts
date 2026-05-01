@@ -490,6 +490,24 @@ export async function listRecentLocalMessages(
   return rows.map((row) => JSON.parse(row.value) as MessageRecord);
 }
 
+export async function listLocalMessagesFromSeq(
+  authId: string,
+  conversationId: string,
+  fromSeq: number,
+): Promise<MessageRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM local_messages
+     WHERE auth_id = ? AND conversation_id = ? AND message_seq >= ?
+     ORDER BY message_seq ASC, id ASC`,
+    authId,
+    conversationId,
+    fromSeq,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as MessageRecord);
+}
+
 export async function listLocalMessagesBeforeSeq(
   authId: string,
   conversationId: string,
@@ -500,7 +518,7 @@ export async function listLocalMessagesBeforeSeq(
   const rows = await db.getAllAsync<JsonRow>(
     `SELECT value FROM (
        SELECT value, message_seq, id FROM local_messages
-       WHERE auth_id = ? AND conversation_id = ? AND message_seq < ?
+       WHERE auth_id = ? AND conversation_id = ? AND message_seq > 0 AND message_seq < ?
        ORDER BY message_seq DESC, id DESC
        LIMIT ?
      )

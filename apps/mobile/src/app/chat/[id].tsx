@@ -50,6 +50,7 @@ import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   getEarliestLocalMessageSeq,
   getLocalConversation,
+  listLocalMessagesFromSeq,
   listLocalMessagesBeforeSeq,
   listLocalMembershipsForConversation,
   listOutboxMessagesForConversation,
@@ -148,7 +149,7 @@ export default function ChatDetailScreen() {
   const [isPullRefreshing, setIsPullRefreshing] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [hasMoreOlderMessages, setHasMoreOlderMessages] = useState(true);
-  const [messagePageLimit, setMessagePageLimit] = useState(CHAT_MESSAGE_PAGE_SIZE);
+  const [messageWindowStartSeq, setMessageWindowStartSeq] = useState<number | null>(null);
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const [composerInputExtraHeightState, setComposerInputExtraHeightState] = useState(0);
@@ -172,8 +173,11 @@ export default function ChatDetailScreen() {
     staleTime: 1000 * 60 * 5,
   });
   const messagesQuery = useQuery({
-    queryKey: ['chat', authRecord.id, 'messages', conversationId, messagePageLimit],
-    queryFn: () => listRecentLocalMessages(authRecord.id, conversationId, messagePageLimit),
+    queryKey: ['chat', authRecord.id, 'messages', conversationId, messageWindowStartSeq],
+    queryFn: () =>
+      messageWindowStartSeq === null
+        ? listRecentLocalMessages(authRecord.id, conversationId, CHAT_MESSAGE_PAGE_SIZE)
+        : listLocalMessagesFromSeq(authRecord.id, conversationId, messageWindowStartSeq),
     enabled: Boolean(conversationId),
   });
   const outboxMessagesQuery = useQuery({
@@ -524,7 +528,7 @@ export default function ChatDetailScreen() {
     lastScrollY.current = 0;
     setHasMoreOlderMessages(true);
     setIsLoadingOlderMessages(false);
-    setMessagePageLimit(CHAT_MESSAGE_PAGE_SIZE);
+    setMessageWindowStartSeq(null);
   }, [conversationId]);
 
   useEffect(() => {
@@ -733,7 +737,10 @@ export default function ChatDetailScreen() {
         return;
       }
 
-      setMessagePageLimit((current) => current + olderMessages.length);
+      const nextOldestSeq = getOldestMessageSeq(olderMessages);
+      if (nextOldestSeq) {
+        setMessageWindowStartSeq(nextOldestSeq);
+      }
     } finally {
       isLoadingOlderMessagesRef.current = false;
       setIsLoadingOlderMessages(false);
