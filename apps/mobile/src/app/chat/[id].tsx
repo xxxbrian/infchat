@@ -318,7 +318,6 @@ export default function ChatDetailScreen() {
     () => ({
       animateAutoScrollToBottom: false,
       autoscrollToBottomThreshold: 0.2,
-      startRenderingFromBottom: true,
     }),
     [],
   );
