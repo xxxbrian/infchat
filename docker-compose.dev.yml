@@ -33,7 +33,7 @@ services:
       - pocketbase_data:/app/pb_data
 
   minio:
-    image: minio/minio:RELEASE.2026-04-06T18-03-18Z
+    image: minio/minio:latest
     container_name: infchat-minio-dev
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -47,7 +47,7 @@ services:
       - minio_data:/data
 
   minio-create-bucket:
-    image: minio/mc:RELEASE.2026-04-04T19-05-26Z
+    image: minio/mc:latest
     container_name: infchat-minio-create-bucket-dev
     depends_on:
       minio:
