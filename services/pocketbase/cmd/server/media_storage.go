@@ -32,6 +32,7 @@ type mediaStorageProfile struct {
 	ID                         string
 	Driver                     string
 	Endpoint                   string
+	PresignEndpoint            string
 	Region                     string
 	Bucket                     string
 	PublicBaseURL              string
@@ -93,6 +94,7 @@ func newMediaObjectStorageFromEnv(ctx context.Context) (mediaObjectStorage, erro
 		ID:                         strings.TrimSpace(os.Getenv("INFCHAT_MEDIA_STORAGE_PROFILE_ID")),
 		Driver:                     envString("INFCHAT_MEDIA_STORAGE_DRIVER", "s3"),
 		Endpoint:                   strings.TrimSpace(os.Getenv("INFCHAT_MEDIA_S3_ENDPOINT")),
+		PresignEndpoint:            strings.TrimSpace(os.Getenv("INFCHAT_MEDIA_S3_PRESIGN_ENDPOINT")),
 		Region:                     envString("INFCHAT_MEDIA_S3_REGION", "auto"),
 		Bucket:                     strings.TrimSpace(os.Getenv("INFCHAT_MEDIA_S3_BUCKET")),
 		PublicBaseURL:              strings.TrimRight(strings.TrimSpace(os.Getenv("INFCHAT_MEDIA_PUBLIC_BASE_URL")), "/"),
@@ -147,11 +149,18 @@ func newMediaObjectStorageFromEnv(ctx context.Context) (mediaObjectStorage, erro
 		}
 		options.UsePathStyle = profile.ForcePathStyle
 	})
+	presignClient := client
+	if profile.PresignEndpoint != "" && profile.PresignEndpoint != profile.Endpoint {
+		presignClient = s3.NewFromConfig(cfg, func(options *s3.Options) {
+			options.BaseEndpoint = aws.String(profile.PresignEndpoint)
+			options.UsePathStyle = profile.ForcePathStyle
+		})
+	}
 
 	return &s3MediaObjectStorage{
 		profile: profile,
 		client:  client,
-		presign: s3.NewPresignClient(client),
+		presign: s3.NewPresignClient(presignClient),
 	}, nil
 }
 
