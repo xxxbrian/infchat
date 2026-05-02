@@ -73,6 +73,7 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
 		group := se.Router.Group("/api/infchat")
 		group.Bind(apis.RequireAuth("users"))
+		bindMediaUploadRoutes(group)
 
 		group.GET("/bootstrap", func(e *core.RequestEvent) error {
 			cursor, err := latestConversationEventCursor(e.App)

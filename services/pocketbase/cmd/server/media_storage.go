@@ -20,6 +20,7 @@ import (
 
 const (
 	mediaStorageDefaultPresignTTLSeconds       = 15 * 60
+	mediaStorageMinMultipartPartSizeBytes      = 5 * 1024 * 1024
 	mediaStorageDefaultMultipartThresholdBytes = 8 * 1024 * 1024
 	mediaStorageDefaultMultipartPartSizeBytes  = 8 * 1024 * 1024
 	mediaStorageDefaultMaxObjectSizeBytes      = 2 * 1024 * 1024 * 1024
@@ -116,7 +117,7 @@ func newMediaObjectStorageFromEnv(ctx context.Context) (mediaObjectStorage, erro
 	if profile.PresignTTL <= 0 {
 		profile.PresignTTL = mediaStorageDefaultPresignTTLSeconds * time.Second
 	}
-	if profile.MultipartPartSizeBytes <= 0 {
+	if profile.MultipartPartSizeBytes < mediaStorageMinMultipartPartSizeBytes {
 		profile.MultipartPartSizeBytes = mediaStorageDefaultMultipartPartSizeBytes
 	}
 	if profile.MultipartThresholdBytes <= 0 {
