@@ -18,7 +18,7 @@
       "bundleIdentifier": "app.infchat",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSCameraUsageDescription": "InfChat uses the camera for video calls.",
+        "NSCameraUsageDescription": "InfChat uses the camera for video calls and media messages.",
         "NSMicrophoneUsageDescription": "InfChat uses the microphone for voice and video calls."
       },
       "supportsTablet": true
@@ -79,7 +79,16 @@
         }
       ],
       "expo-sqlite",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "InfChat needs photo library access to send photos and videos.",
+          "cameraPermission": "InfChat uses the camera for video calls and media messages.",
+          "microphonePermission": "InfChat uses the microphone for voice and video calls."
+        }
+      ],
+      "expo-document-picker"
     ],
     "experiments": {
       "typedRoutes": true

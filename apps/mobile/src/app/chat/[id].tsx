@@ -14,7 +14,9 @@ import {
 import { useNetInfo } from '@react-native-community/netinfo';
 import { FlashList, type FlashListRef, type ListRenderItemInfo } from '@shopify/flash-list';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -63,6 +65,10 @@ import { logDebugEvent } from '../../lib/debug-log';
 import { getDeviceId } from '../../lib/device-id';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
+import {
+  preparePickedDocumentAttachments,
+  preparePickedMediaAttachments,
+} from '../../lib/media-outbox-files';
 import { pb } from '../../lib/pocketbase';
 
 type ConversationView = {
@@ -125,6 +131,7 @@ const SCROLL_DIRECTION_THRESHOLD = 6;
 const ATTACHMENT_MENU_ROW_HEIGHT = 54;
 const ATTACHMENT_MENU_GAP = 10;
 const CHAT_MESSAGE_PAGE_SIZE = 100;
+const MEDIA_PICKER_SELECTION_LIMIT = 10;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -1036,18 +1043,83 @@ export default function ChatDetailScreen() {
 
   const handlePickImage = async () => {
     setAttachmentMenuVisible(false);
-    Alert.alert(
-      'Attachments unavailable',
-      'Image messages will be re-enabled on the new sync protocol.',
-    );
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Photos access needed', 'Allow photos access to send photos and videos.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsMultipleSelection: true,
+        mediaTypes: ['images', 'videos'],
+        orderedSelection: true,
+        quality: 1,
+        selectionLimit: MEDIA_PICKER_SELECTION_LIMIT,
+        shouldDownloadFromNetwork: true,
+      });
+
+      if (result.canceled || result.assets.length === 0) {
+        return;
+      }
+
+      const attachments = await preparePickedMediaAttachments(result.assets);
+      if (attachments.length === 0) {
+        Alert.alert('Could not send media', 'The selected media type is not supported yet.');
+        return;
+      }
+
+      didScrollToEnd.current = false;
+      await chatSyncService.enqueueMediaMessage({
+        attachments,
+        body: composerText.trim(),
+        conversationId,
+        kind: 'media',
+      });
+      setComposerText('');
+      syncMessagesToBottom();
+    } catch (error) {
+      Alert.alert(
+        'Could not send media',
+        getErrorMessage(error, 'The selected media could not be prepared. Try again.'),
+      );
+    }
   };
 
   const handlePickFile = async () => {
     setAttachmentMenuVisible(false);
-    Alert.alert(
-      'Attachments unavailable',
-      'File messages will be re-enabled on the new sync protocol.',
-    );
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: '*/*',
+      });
+
+      if (result.canceled || result.assets.length === 0) {
+        return;
+      }
+
+      const attachments = await preparePickedDocumentAttachments(result.assets.slice(0, 1));
+      const attachment = attachments[0];
+      if (!attachment) {
+        return;
+      }
+
+      didScrollToEnd.current = false;
+      await chatSyncService.enqueueMediaMessage({
+        attachments: [attachment],
+        body: composerText.trim(),
+        conversationId,
+        kind: 'file',
+      });
+      setComposerText('');
+      syncMessagesToBottom();
+    } catch (error) {
+      Alert.alert(
+        'Could not send file',
+        getErrorMessage(error, 'The selected file could not be prepared. Try again.'),
+      );
+    }
   };
 
   return (
