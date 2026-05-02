@@ -1205,6 +1205,30 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 
 		return router.NewBadRequestError("Use the InfChat message command endpoint.", nil)
 	})
+
+	for _, collectionName := range []string{"message_attachments", "attachment_variants", "media_upload_sessions", "media_upload_parts"} {
+		app.OnRecordCreateRequest(collectionName).BindFunc(func(e *core.RecordRequestEvent) error {
+			if e.HasSuperuserAuth() {
+				return e.Next()
+			}
+
+			return router.NewBadRequestError("Use the InfChat media command endpoints.", nil)
+		})
+		app.OnRecordUpdateRequest(collectionName).BindFunc(func(e *core.RecordRequestEvent) error {
+			if e.HasSuperuserAuth() {
+				return e.Next()
+			}
+
+			return router.NewBadRequestError("Use the InfChat media command endpoints.", nil)
+		})
+		app.OnRecordDeleteRequest(collectionName).BindFunc(func(e *core.RecordRequestEvent) error {
+			if e.HasSuperuserAuth() {
+				return e.Next()
+			}
+
+			return router.NewBadRequestError("Use the InfChat media command endpoints.", nil)
+		})
+	}
 }
 
 func updateConversationPreviewFromMessage(app core.App, message *core.Record, timestamp string) error {
