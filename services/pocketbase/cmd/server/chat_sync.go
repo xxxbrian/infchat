@@ -1023,24 +1023,32 @@ func conversationMessagesResponseForMessages(app core.App, messages []*core.Reco
 	for _, message := range messages {
 		messageIds = append(messageIds, message.Id)
 	}
+	messageFilterParts := make([]string, 0, len(messageIds))
+	messageParams := dbx.Params{}
+	for index, messageId := range messageIds {
+		key := fmt.Sprintf("message%d", index)
+		messageFilterParts = append(messageFilterParts, fmt.Sprintf("message={:%s}", key))
+		messageParams[key] = messageId
+	}
+	messageFilter := strings.Join(messageFilterParts, " || ")
 	attachments, err := app.FindRecordsByFilter(
 		"message_attachments",
-		"message ?= {:messageIds}",
+		messageFilter,
 		"message,ordinal",
 		0,
 		0,
-		dbx.Params{"messageIds": messageIds},
+		messageParams,
 	)
 	if err != nil {
 		return conversationMessagesResponse{}, err
 	}
 	variants, err := app.FindRecordsByFilter(
 		"attachment_variants",
-		"message ?= {:messageIds}",
+		messageFilter,
 		"message,attachment,variant",
 		0,
 		0,
-		dbx.Params{"messageIds": messageIds},
+		messageParams,
 	)
 	if err != nil {
 		return conversationMessagesResponse{}, err

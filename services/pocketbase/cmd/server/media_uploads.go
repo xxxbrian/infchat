@@ -213,7 +213,7 @@ func startMediaUploadCommand(ctx context.Context, app core.App, userId string, d
 	if err := validateMediaUploadMIME(attachmentKind, mimeType); err != nil {
 		return mediaUploadSessionResponse{}, err
 	}
-	attachmentID := security.RandomString(15)
+	attachmentID := newMediaAttachmentRecordId()
 	objectKey := buildMediaObjectKey(conversation.Id, data.ClientMessageId, attachmentID, variant)
 	uploadMode := "single"
 	if profile.SupportsMultipartUpload && data.ByteSize >= profile.MultipartThresholdBytes {
@@ -869,6 +869,10 @@ func validateMediaUploadMIME(kind string, mimeType string) error {
 	}
 
 	return nil
+}
+
+func newMediaAttachmentRecordId() string {
+	return "r" + strings.ToLower(security.RandomString(14))
 }
 
 func buildMediaObjectKey(conversationId string, clientMessageId string, attachmentId string, variant string) string {
