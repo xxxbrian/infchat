@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["InfchatMediaTransferModule"]
+  },
+  "android": {
+    "modules": ["app.infchat.mediatransfer.InfchatMediaTransferModule"]
+  }
+}

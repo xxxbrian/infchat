@@ -184,6 +184,10 @@ export type LocalMediaUploadSession = {
   width?: number | null;
 };
 
+export type CompletedMediaUploadSession = LocalMediaUploadSession & {
+  upload_session_id: string;
+};
+
 export type UpsertMediaUploadSessionInput = {
   attachmentId?: string | null;
   attachmentKind: LocalMediaAttachmentKind;
@@ -1123,6 +1127,22 @@ export async function listMediaUploadPartsForSession(
   return rows;
 }
 
+export async function listCompletedMediaUploadSessionsForMessage(
+  authId: string,
+  clientMessageId: string,
+): Promise<CompletedMediaUploadSession[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<LocalMediaUploadSession>(
+    `SELECT * FROM media_upload_sessions
+     WHERE auth_id = ? AND client_message_id = ? AND variant = 'original' AND state = 'completed' AND upload_session_id IS NOT NULL
+     ORDER BY client_attachment_id ASC`,
+    authId,
+    clientMessageId,
+  );
+
+  return rows.filter((row): row is CompletedMediaUploadSession => !!row.upload_session_id);
+}
+
 export async function markMediaOutboxState(
   authId: string,
   clientMessageId: string,
@@ -1182,6 +1202,56 @@ export async function markMediaAttachmentState(
       new Date().toISOString(),
       authId,
       clientAttachmentId,
+    ),
+  );
+}
+
+export async function markMediaUploadSessionState(
+  authId: string,
+  clientAttachmentId: string,
+  variant: LocalMediaVariant,
+  state: LocalMediaUploadSessionState,
+  error?: string,
+): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE media_upload_sessions
+       SET state = ?, last_error = ?, updated_at = ?
+       WHERE auth_id = ? AND client_attachment_id = ? AND variant = ?`,
+      state,
+      error ?? null,
+      new Date().toISOString(),
+      authId,
+      clientAttachmentId,
+      variant,
+    ),
+  );
+}
+
+export async function markMediaUploadPartState(
+  authId: string,
+  clientAttachmentId: string,
+  variant: LocalMediaVariant,
+  partNumber: number,
+  state: LocalMediaUploadPartState,
+  etag?: string | null,
+  error?: string,
+): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      `UPDATE media_upload_parts
+       SET state = ?, etag = COALESCE(?, etag), last_error = ?, updated_at = ?
+       WHERE auth_id = ? AND client_attachment_id = ? AND variant = ? AND part_number = ?`,
+      state,
+      etag ?? null,
+      error ?? null,
+      new Date().toISOString(),
+      authId,
+      clientAttachmentId,
+      variant,
+      partNumber,
     ),
   );
 }

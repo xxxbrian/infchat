@@ -1,12 +1,15 @@
 import {
   bootstrapChatSync,
+  completeMediaUpload,
   type ConversationMembershipRecord,
   type ConversationRecord,
+  type CompleteMediaUploadPartInput,
   deleteConversationMessages,
   getMediaUploadStatus,
   listConversationMessagesBeforeSeq,
   markConversationReadBySeq,
   type MediaUploadSessionResponse,
+  sendMediaMessageCommand,
   sendTextMessageCommand,
   signMediaUploadParts,
   startMediaUpload,
@@ -14,6 +17,8 @@ import {
 } from '@infchat/pocketbase';
 import type { QueryClient } from '@tanstack/react-query';
 import type PocketBase from 'pocketbase';
+
+import InfchatMediaTransfer from '../../modules/infchat-media-transfer';
 
 import {
   applyChatBootstrap,
@@ -27,13 +32,19 @@ import {
   getChatSyncCursor,
   type LocalMediaOutboxAttachment,
   type LocalMediaOutboxMessageWithAttachments,
+  type LocalMediaUploadPart,
+  type LocalMediaUploadSession,
   type LocalMediaUploadSessionState,
+  listCompletedMediaUploadSessionsForMessage,
+  listMediaUploadPartsForSession,
   listMediaUploadSessionsForMessage,
   listPendingMediaOutboxMessages,
   listPendingOutboxMessages,
   markMediaAttachmentState,
   markMediaOutboxRetry,
   markMediaOutboxState,
+  markMediaUploadPartState,
+  markMediaUploadSessionState,
   markOutboxRetry,
   markOutboxSending,
   markOutboxTerminalFailure,
@@ -342,7 +353,7 @@ export class ChatSyncService {
       });
       for (const pendingMessage of pendingMediaMessages) {
         try {
-          await this.prepareMediaUploadSessions(pendingMessage);
+          await this.processMediaOutboxMessage(pendingMessage, deviceId);
         } catch (error) {
           const errorMessage = getErrorMessage(error);
           const attemptCount = pendingMessage.attempt_count ?? 0;
@@ -518,6 +529,307 @@ export class ChatSyncService {
     );
   }
 
+  private async processMediaOutboxMessage(
+    message: LocalMediaOutboxMessageWithAttachments,
+    deviceId: string,
+  ) {
+    if (message.state === 'sending_create' || message.state === 'confirmed') {
+      return;
+    }
+
+    await this.prepareMediaUploadSessions(message);
+    const sessions = await listMediaUploadSessionsForMessage(
+      this.authId,
+      message.client_message_id,
+    );
+    const originalSessions = sessions.filter((session) => session.variant === 'original');
+    if (originalSessions.length !== message.attachments.length) {
+      throw new Error('Media upload sessions are incomplete.');
+    }
+
+    const attachmentById = new Map(
+      message.attachments.map((attachment) => [attachment.client_attachment_id, attachment]),
+    );
+    for (const session of originalSessions) {
+      const attachment = attachmentById.get(session.client_attachment_id);
+      if (!attachment) {
+        throw new Error('Media upload session does not match a local attachment.');
+      }
+      if (session.state !== 'completed') {
+        await this.uploadAndCompleteMediaSession(attachment, session);
+      }
+    }
+
+    await this.finalizeMediaOutboxMessage(message, deviceId);
+  }
+
+  private async uploadAndCompleteMediaSession(
+    attachment: LocalMediaOutboxAttachment,
+    session: LocalMediaUploadSession,
+  ) {
+    if (!session.upload_session_id) {
+      throw new Error('Media upload session is missing its server id.');
+    }
+    if (session.state === 'uploaded' || session.state === 'completed') {
+      await this.completeMediaSession(attachment, session);
+      return;
+    }
+    if (session.upload_mode === 'single') {
+      await this.uploadSingleMediaSession(attachment, session);
+      await this.completeMediaSession(attachment, session);
+      return;
+    }
+    if (session.upload_mode === 'multipart') {
+      await this.uploadMultipartMediaSession(attachment, session);
+      await this.completeMediaSession(attachment, session);
+      return;
+    }
+
+    throw new Error('Media upload mode is invalid.');
+  }
+
+  private async uploadSingleMediaSession(
+    attachment: LocalMediaOutboxAttachment,
+    session: LocalMediaUploadSession,
+  ) {
+    if (!session.presigned_url || isExpired(session.presigned_expires_at)) {
+      if (!session.upload_session_id) {
+        throw new Error('Media upload session is missing its server id.');
+      }
+      const refreshed = await startMediaUpload(this.pb, {
+        attachmentKind: attachment.kind,
+        blurhash: attachment.blurhash ?? undefined,
+        byteSize: attachment.byte_size,
+        clientAttachmentId: attachment.client_attachment_id,
+        clientMessageId: attachment.client_message_id,
+        conversationId: attachment.conversation_id,
+        durationMs: attachment.duration_ms ?? undefined,
+        height: attachment.height ?? undefined,
+        mimeType: attachment.mime_type,
+        ordinal: attachment.ordinal,
+        originalName: attachment.original_name,
+        sha256: attachment.sha256 ?? undefined,
+        variant: session.variant,
+        width: attachment.width ?? undefined,
+      });
+      await this.persistMediaUploadSessionResponse(attachment, refreshed);
+      session = {
+        ...session,
+        presigned_headers_json: refreshed.presigned
+          ? JSON.stringify(refreshed.presigned.headers)
+          : null,
+        presigned_method: refreshed.presigned?.method ?? null,
+        presigned_url: refreshed.presigned?.url ?? null,
+      };
+    }
+    if (!session.presigned_url) {
+      throw new Error('Media upload session is missing a presigned upload URL.');
+    }
+
+    await markMediaAttachmentState(this.authId, attachment.client_attachment_id, 'uploading');
+    await markMediaUploadSessionState(
+      this.authId,
+      attachment.client_attachment_id,
+      session.variant,
+      'uploading',
+    );
+    const result = await InfchatMediaTransfer.uploadFileAsync({
+      fileUri: attachment.local_uri,
+      headers: parseHeaderJSON(session.presigned_headers_json),
+      method: session.presigned_method ?? 'PUT',
+      url: session.presigned_url,
+    });
+    assertSuccessfulUpload(result.status);
+    await markMediaAttachmentState(this.authId, attachment.client_attachment_id, 'uploaded');
+    await markMediaUploadSessionState(
+      this.authId,
+      attachment.client_attachment_id,
+      session.variant,
+      'uploaded',
+    );
+  }
+
+  private async uploadMultipartMediaSession(
+    attachment: LocalMediaOutboxAttachment,
+    session: LocalMediaUploadSession,
+  ) {
+    const parts = await listMediaUploadPartsForSession(
+      this.authId,
+      session.client_attachment_id,
+      session.variant,
+    );
+    if (parts.length === 0) {
+      throw new Error('Multipart upload has no parts.');
+    }
+
+    await markMediaAttachmentState(this.authId, attachment.client_attachment_id, 'uploading');
+    await markMediaUploadSessionState(
+      this.authId,
+      attachment.client_attachment_id,
+      session.variant,
+      'uploading',
+    );
+    const unsignedPartNumbers = parts
+      .filter(
+        (part) =>
+          part.state !== 'uploaded' && (!part.signed_url || isExpired(part.signed_url_expires_at)),
+      )
+      .map((part) => part.part_number);
+    if (unsignedPartNumbers.length > 0 && session.upload_session_id) {
+      const signed = await signMediaUploadParts(
+        this.pb,
+        session.upload_session_id,
+        unsignedPartNumbers,
+      );
+      await this.persistMediaUploadSessionResponse(attachment, signed);
+    }
+    const refreshedParts = await listMediaUploadPartsForSession(
+      this.authId,
+      session.client_attachment_id,
+      session.variant,
+    );
+
+    for (const part of refreshedParts) {
+      if (part.state === 'uploaded') {
+        continue;
+      }
+      await this.uploadMediaPart(attachment, session, part);
+    }
+    await markMediaAttachmentState(this.authId, attachment.client_attachment_id, 'uploaded');
+    await markMediaUploadSessionState(
+      this.authId,
+      attachment.client_attachment_id,
+      session.variant,
+      'uploaded',
+    );
+  }
+
+  private async uploadMediaPart(
+    attachment: LocalMediaOutboxAttachment,
+    session: LocalMediaUploadSession,
+    part: LocalMediaUploadPart,
+  ) {
+    let signedPart = part;
+    if (
+      (!signedPart.signed_url || isExpired(signedPart.signed_url_expires_at)) &&
+      session.upload_session_id
+    ) {
+      const signed = await signMediaUploadParts(this.pb, session.upload_session_id, [
+        part.part_number,
+      ]);
+      await this.persistMediaUploadSessionResponse(attachment, signed);
+      const parts = await listMediaUploadPartsForSession(
+        this.authId,
+        session.client_attachment_id,
+        session.variant,
+      );
+      signedPart = parts.find((candidate) => candidate.part_number === part.part_number) ?? part;
+    }
+    if (!signedPart.signed_url) {
+      throw new Error('Multipart upload part is missing a presigned URL.');
+    }
+
+    await markMediaUploadPartState(
+      this.authId,
+      session.client_attachment_id,
+      session.variant,
+      part.part_number,
+      'uploading',
+    );
+    const result = await InfchatMediaTransfer.uploadFilePartAsync({
+      fileUri: attachment.local_uri,
+      headers: parseHeaderJSON(signedPart.signed_url_headers_json),
+      length: signedPart.byte_size,
+      method: signedPart.signed_url_method ?? 'PUT',
+      offset: signedPart.offset_bytes,
+      url: signedPart.signed_url,
+    });
+    assertSuccessfulUpload(result.status);
+    const etag = normalizeETag(result.etag || headerValue(result.headers, 'etag'));
+    if (!etag) {
+      throw new Error('Multipart upload part did not return an ETag.');
+    }
+    await markMediaUploadPartState(
+      this.authId,
+      session.client_attachment_id,
+      session.variant,
+      part.part_number,
+      'uploaded',
+      etag,
+    );
+  }
+
+  private async completeMediaSession(
+    attachment: LocalMediaOutboxAttachment,
+    session: LocalMediaUploadSession,
+  ) {
+    if (!session.upload_session_id) {
+      throw new Error('Media upload session is missing its server id.');
+    }
+    await markMediaUploadSessionState(
+      this.authId,
+      attachment.client_attachment_id,
+      session.variant,
+      'completing',
+    );
+    const parts =
+      session.upload_mode === 'multipart' ? await completedUploadParts(this.authId, session) : [];
+    const response = await completeMediaUpload(this.pb, session.upload_session_id, parts);
+    await this.persistMediaUploadSessionResponse(attachment, response);
+    if (response.session.state !== 'completed') {
+      throw new Error('Media upload session did not complete.');
+    }
+  }
+
+  private async finalizeMediaOutboxMessage(
+    message: LocalMediaOutboxMessageWithAttachments,
+    deviceId: string,
+  ) {
+    const completedSessions = await listCompletedMediaUploadSessionsForMessage(
+      this.authId,
+      message.client_message_id,
+    );
+    if (completedSessions.length !== message.attachments.length) {
+      throw new Error('Completed media upload sessions are incomplete.');
+    }
+    const sessionByAttachmentId = new Map(
+      completedSessions.map((session) => [session.client_attachment_id, session]),
+    );
+    const attachments = message.attachments.map((attachment) => {
+      const session = sessionByAttachmentId.get(attachment.client_attachment_id);
+      if (!session) {
+        throw new Error('Completed upload session was not found for attachment.');
+      }
+
+      return {
+        clientAttachmentId: attachment.client_attachment_id,
+        uploadSessionId: session.upload_session_id,
+      };
+    });
+
+    await markMediaOutboxState(this.authId, message.client_message_id, 'sending_create');
+    const response = await sendMediaMessageCommand(this.pb, {
+      attachments,
+      body: message.body,
+      clientMessageId: message.client_message_id,
+      conversationId: message.conversation_id,
+      deviceId,
+      kind: message.kind,
+    });
+    await applyLocalChatRecords(this.authId, {
+      attachmentVariants: response.attachmentVariants,
+      attachments: response.attachments,
+      conversation: response.conversation,
+      membership: response.membership,
+      message: response.message,
+    });
+    void logDebugEvent('info', 'media-outbox', 'Media outbox message sent', {
+      clientMessageId: message.client_message_id,
+      serverMessageId: response.message.id,
+    });
+    this.enqueueSync('outbox');
+  }
+
   private async persistMediaUploadSessionResponse(
     attachment: LocalMediaOutboxAttachment,
     response: MediaUploadSessionResponse,
@@ -671,6 +983,85 @@ function isUploadSessionReadyForTransfer(state: LocalMediaUploadSessionState) {
   return (
     state === 'pending' || state === 'uploading' || state === 'uploaded' || state === 'completed'
   );
+}
+
+async function completedUploadParts(
+  authId: string,
+  session: LocalMediaUploadSession,
+): Promise<CompleteMediaUploadPartInput[]> {
+  const parts = await listMediaUploadPartsForSession(
+    authId,
+    session.client_attachment_id,
+    session.variant,
+  );
+  const completedParts = parts
+    .map((part): CompleteMediaUploadPartInput | null => {
+      const etag = normalizeETag(part.etag);
+      if (!etag) {
+        return null;
+      }
+
+      return {
+        etag,
+        partNumber: part.part_number,
+      };
+    })
+    .filter((part): part is CompleteMediaUploadPartInput => !!part);
+
+  if (completedParts.length !== parts.length) {
+    throw new Error('Multipart upload parts are incomplete.');
+  }
+
+  return completedParts;
+}
+
+function parseHeaderJSON(value?: string | null): Record<string, string> {
+  if (!value) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {};
+    }
+
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] =>
+          typeof entry[0] === 'string' && typeof entry[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function assertSuccessfulUpload(status: number) {
+  if (status < 200 || status >= 300) {
+    throw new Error(`Media upload failed with HTTP ${status}.`);
+  }
+}
+
+function isExpired(value?: string | null) {
+  if (!value) {
+    return true;
+  }
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) {
+    return true;
+  }
+
+  return time <= Date.now() + 30_000;
+}
+
+function headerValue(headers: Record<string, string>, name: string) {
+  const match = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+
+  return match?.[1];
+}
+
+function normalizeETag(value?: string | null) {
+  return value?.trim().replace(/^"|"$/g, '') ?? '';
 }
 
 function getErrorStatus(error: unknown) {
