@@ -228,7 +228,7 @@ func sendMessagePushNotifications(app core.App, message *core.Record) {
 
 	senderId := message.GetString("sender")
 	senderName, _ := liveKitParticipantName(app, senderId)
-	body := strings.TrimSpace(getMessagePreview(message))
+	body := strings.TrimSpace(getMessagePreview(app, message))
 	if body == "" {
 		body = "New message"
 	}

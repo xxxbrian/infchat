@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/pocketbase/dbx"
@@ -24,6 +26,12 @@ const chatSyncMaxLimit = 500
 const defaultGroupLimit = 50
 
 var errIdempotentMessageReplay = errors.New("idempotent message replay")
+
+type preparedMediaAttachment struct {
+	objectInfo mediaStorageObjectInfo
+	ordinal    int
+	session    *core.Record
+}
 
 type startPrivateConversationRequest struct {
 	RecipientUserId string `json:"recipientUserId" form:"recipientUserId"`
@@ -46,11 +54,17 @@ type updateGroupRequest struct {
 }
 
 type sendMessageCommandRequest struct {
-	Body            string `json:"body" form:"body"`
-	ClientMessageId string `json:"clientMessageId" form:"clientMessageId"`
-	ConversationId  string `json:"conversationId" form:"conversationId"`
-	DeviceId        string `json:"deviceId" form:"deviceId"`
-	Kind            string `json:"kind" form:"kind"`
+	Attachments     []sendMessageAttachmentRequest `json:"attachments" form:"attachments"`
+	Body            string                         `json:"body" form:"body"`
+	ClientMessageId string                         `json:"clientMessageId" form:"clientMessageId"`
+	ConversationId  string                         `json:"conversationId" form:"conversationId"`
+	DeviceId        string                         `json:"deviceId" form:"deviceId"`
+	Kind            string                         `json:"kind" form:"kind"`
+}
+
+type sendMessageAttachmentRequest struct {
+	ClientAttachmentId string `json:"clientAttachmentId" form:"clientAttachmentId"`
+	UploadSessionId    string `json:"uploadSessionId" form:"uploadSessionId"`
 }
 
 type markConversationReadRequest struct {
@@ -62,11 +76,19 @@ type deleteMessagesRequest struct {
 }
 
 type conversationEventPayload struct {
-	Conversation *core.Record   `json:"conversation,omitempty"`
-	Membership   *core.Record   `json:"membership,omitempty"`
-	Memberships  []*core.Record `json:"memberships,omitempty"`
-	Message      *core.Record   `json:"message,omitempty"`
-	Removed      bool           `json:"removed,omitempty"`
+	AttachmentVariants []*core.Record `json:"attachmentVariants,omitempty"`
+	Attachments        []*core.Record `json:"attachments,omitempty"`
+	Conversation       *core.Record   `json:"conversation,omitempty"`
+	Membership         *core.Record   `json:"membership,omitempty"`
+	Memberships        []*core.Record `json:"memberships,omitempty"`
+	Message            *core.Record   `json:"message,omitempty"`
+	Removed            bool           `json:"removed,omitempty"`
+}
+
+type conversationMessagesResponse struct {
+	AttachmentVariants []*core.Record `json:"attachmentVariants"`
+	Attachments        []*core.Record `json:"attachments"`
+	Messages           []*core.Record `json:"messages"`
 }
 
 func bindChatSyncRoutes(app *pocketbase.PocketBase) {
@@ -74,6 +96,7 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 		group := se.Router.Group("/api/infchat")
 		group.Bind(apis.RequireAuth("users"))
 		bindMediaUploadRoutes(group)
+		bindMediaURLRoutes(group)
 
 		group.GET("/bootstrap", func(e *core.RequestEvent) error {
 			cursor, err := latestConversationEventCursor(e.App)
@@ -226,8 +249,12 @@ func bindChatSyncRoutes(app *pocketbase.PocketBase) {
 			if err != nil {
 				return err
 			}
+			response, err := conversationMessagesResponseForMessages(app, messages)
+			if err != nil {
+				return err
+			}
 
-			return e.JSON(http.StatusOK, map[string]any{"messages": messages})
+			return e.JSON(http.StatusOK, response)
 		})
 
 		group.POST("/messages/send", func(e *core.RequestEvent) error {
@@ -636,20 +663,31 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		return nil, router.NewBadRequestError("clientMessageId is required.", nil)
 	}
 
-	kind := strings.TrimSpace(data.Kind)
-	if kind == "" {
-		kind = "text"
-	}
-	if kind != "text" {
-		return nil, router.NewBadRequestError("Only text messages are supported by the command endpoint yet.", nil)
+	kind, err := normalizeSendMessageKind(data.Kind)
+	if err != nil {
+		return nil, err
 	}
 
 	body := strings.TrimSpace(data.Body)
-	if body == "" {
+	if kind == "text" && body == "" {
 		return nil, router.NewBadRequestError("Message text is required.", nil)
+	}
+	if kind == "text" && len(data.Attachments) > 0 {
+		return nil, router.NewBadRequestError("Text messages cannot include media upload sessions.", nil)
+	}
+
+	preparedAttachments := []preparedMediaAttachment{}
+	if kind != "text" {
+		preparedAttachments, err = prepareMediaMessageAttachments(context.Background(), app, userId, conversation.Id, clientMessageId, kind, data.Attachments)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	payloadHash := hashIdempotentMessagePayload(conversation.Id, kind, body)
+	if kind != "text" {
+		payloadHash = hashIdempotentMediaMessagePayload(conversation.Id, kind, body, preparedAttachments)
+	}
 	if existing, err := app.FindFirstRecordByFilter(
 		"idempotency_keys",
 		"user={:userId} && device_id={:deviceId} && client_message_id={:clientMessageId}",
@@ -667,8 +705,12 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		if err != nil {
 			return nil, err
 		}
+		attachments, variants, err := mediaRecordsForMessage(app, message.Id)
+		if err != nil {
+			return nil, err
+		}
 
-		return map[string]any{"conversation": conversation, "cursor": existing.GetInt("result_cursor"), "membership": membership, "message": message, "replayed": true}, nil
+		return map[string]any{"attachmentVariants": variants, "attachments": attachments, "conversation": conversation, "cursor": existing.GetInt("result_cursor"), "membership": membership, "message": message, "replayed": true}, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
@@ -706,6 +748,10 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		if err := txApp.Save(message); err != nil {
 			return err
 		}
+		attachments, variants, err := createMediaRecordsForMessage(txApp, message, userId, preparedAttachments)
+		if err != nil {
+			return err
+		}
 
 		conversation, err = updateConversationPreviewFromMessageWithCursor(txApp, message, message.GetString("created"), cursor)
 		if err != nil {
@@ -717,11 +763,11 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 			}
 			return err
 		}
-		if err := createConversationEvent(txApp, conversation, "message.created", userId, membership.Id, "", "", message.Id, cursor, conversationEventPayload{Conversation: conversation, Membership: membership, Message: message}); err != nil {
+		if err := createConversationEvent(txApp, conversation, "message.created", userId, membership.Id, "", "", message.Id, cursor, conversationEventPayload{AttachmentVariants: variants, Attachments: attachments, Conversation: conversation, Membership: membership, Message: message}); err != nil {
 			return err
 		}
 
-		result = map[string]any{"conversation": conversation, "cursor": cursor, "membership": membership, "message": message, "replayed": false}
+		result = map[string]any{"attachmentVariants": variants, "attachments": attachments, "conversation": conversation, "cursor": cursor, "membership": membership, "message": message, "replayed": false}
 		messageForPush = message
 		return nil
 	})
@@ -763,8 +809,244 @@ func replayIdempotentMessage(app core.App, userId string, deviceId string, clien
 	if err != nil {
 		return nil, err
 	}
+	attachments, variants, err := mediaRecordsForMessage(app, message.Id)
+	if err != nil {
+		return nil, err
+	}
 
-	return map[string]any{"conversation": conversation, "cursor": existing.GetInt("result_cursor"), "membership": membership, "message": message, "replayed": true}, nil
+	return map[string]any{"attachmentVariants": variants, "attachments": attachments, "conversation": conversation, "cursor": existing.GetInt("result_cursor"), "membership": membership, "message": message, "replayed": true}, nil
+}
+
+func normalizeSendMessageKind(kind string) (string, error) {
+	switch strings.TrimSpace(kind) {
+	case "", "text":
+		return "text", nil
+	case "media", "file", "voice":
+		return strings.TrimSpace(kind), nil
+	default:
+		return "", router.NewBadRequestError("Message kind is invalid.", nil)
+	}
+}
+
+func prepareMediaMessageAttachments(ctx context.Context, app core.App, userId string, conversationId string, clientMessageId string, messageKind string, requests []sendMessageAttachmentRequest) ([]preparedMediaAttachment, error) {
+	if len(requests) == 0 {
+		return nil, router.NewBadRequestError("Media messages require at least one upload session.", nil)
+	}
+	if messageKind == "file" || messageKind == "voice" {
+		if len(requests) != 1 {
+			return nil, router.NewBadRequestError("File and voice messages require exactly one attachment.", nil)
+		}
+	} else if len(requests) > mediaUploadMaxAttachmentCount {
+		return nil, router.NewBadRequestError("Too many attachments for one message.", nil)
+	}
+
+	storage, err := newMediaObjectStorageFromEnv(ctx)
+	if err != nil {
+		return nil, mediaStorageAPIError(err)
+	}
+	seen := map[string]struct{}{}
+	prepared := make([]preparedMediaAttachment, 0, len(requests))
+	for _, request := range requests {
+		clientAttachmentId := strings.TrimSpace(request.ClientAttachmentId)
+		sessionId := strings.TrimSpace(request.UploadSessionId)
+		if clientAttachmentId == "" && sessionId == "" {
+			return nil, router.NewBadRequestError("Attachment upload session is required.", nil)
+		}
+		key := sessionId
+		if key == "" {
+			key = clientAttachmentId
+		}
+		if _, ok := seen[key]; ok {
+			return nil, router.NewBadRequestError("Duplicate attachment upload session.", nil)
+		}
+		seen[key] = struct{}{}
+
+		session, err := findCompletedUploadSessionForMessage(app, userId, conversationId, clientMessageId, clientAttachmentId, sessionId)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateUploadSessionForMessageKind(session, messageKind); err != nil {
+			return nil, err
+		}
+		info, err := storage.HeadObject(ctx, session.GetString("object_key"))
+		if err != nil {
+			return nil, mediaStorageAPIError(err)
+		}
+		if !uploadObjectSizeMatches(session, info) {
+			return nil, router.NewBadRequestError("Uploaded object size does not match the upload session.", nil)
+		}
+		prepared = append(prepared, preparedMediaAttachment{objectInfo: info, ordinal: session.GetInt("ordinal"), session: session})
+	}
+	sort.SliceStable(prepared, func(i int, j int) bool {
+		if prepared[i].ordinal == prepared[j].ordinal {
+			return prepared[i].session.Id < prepared[j].session.Id
+		}
+
+		return prepared[i].ordinal < prepared[j].ordinal
+	})
+	for index, attachment := range prepared {
+		if attachment.ordinal < 0 {
+			return nil, router.NewBadRequestError("Attachment ordinal is invalid.", nil)
+		}
+		prepared[index].ordinal = index
+	}
+
+	return prepared, nil
+}
+
+func findCompletedUploadSessionForMessage(app core.App, userId string, conversationId string, clientMessageId string, clientAttachmentId string, sessionId string) (*core.Record, error) {
+	filter := "user={:user} && conversation={:conversation} && client_message_id={:clientMessageId} && variant='original' && state='completed'"
+	params := dbx.Params{"clientMessageId": strings.TrimSpace(clientMessageId), "conversation": conversationId, "user": userId}
+	if sessionId != "" {
+		filter += " && id={:sessionId}"
+		params["sessionId"] = sessionId
+	}
+	if clientAttachmentId != "" {
+		filter += " && client_attachment_id={:clientAttachmentId}"
+		params["clientAttachmentId"] = clientAttachmentId
+	}
+
+	session, err := app.FindFirstRecordByFilter("media_upload_sessions", filter, params)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, router.NewBadRequestError("Completed upload session was not found.", nil)
+		}
+		return nil, err
+	}
+
+	return session, nil
+}
+
+func validateUploadSessionForMessageKind(session *core.Record, messageKind string) error {
+	attachmentKind := session.GetString("attachment_kind")
+	switch messageKind {
+	case "media":
+		if attachmentKind != "image" && attachmentKind != "video" {
+			return router.NewBadRequestError("Media messages only support image and video attachments.", nil)
+		}
+	case "file":
+		if attachmentKind != "file" {
+			return router.NewBadRequestError("File messages require a file attachment.", nil)
+		}
+	case "voice":
+		if attachmentKind != "voice" {
+			return router.NewBadRequestError("Voice messages require a voice attachment.", nil)
+		}
+	}
+
+	return nil
+}
+
+func createMediaRecordsForMessage(app core.App, message *core.Record, senderId string, prepared []preparedMediaAttachment) ([]*core.Record, []*core.Record, error) {
+	if len(prepared) == 0 {
+		return nil, nil, nil
+	}
+	attachmentCollection, err := app.FindCollectionByNameOrId("message_attachments")
+	if err != nil {
+		return nil, nil, err
+	}
+	variantCollection, err := app.FindCollectionByNameOrId("attachment_variants")
+	if err != nil {
+		return nil, nil, err
+	}
+	attachments := make([]*core.Record, 0, len(prepared))
+	variants := make([]*core.Record, 0, len(prepared))
+	for _, preparedAttachment := range prepared {
+		session := preparedAttachment.session
+		attachment := core.NewRecord(attachmentCollection)
+		attachment.Set("id", session.GetString("attachment_id"))
+		attachment.Set("message", message.Id)
+		attachment.Set("conversation", message.GetString("conversation"))
+		attachment.Set("sender", senderId)
+		attachment.Set("ordinal", preparedAttachment.ordinal)
+		attachment.Set("kind", session.GetString("attachment_kind"))
+		attachment.Set("original_name", session.GetString("original_name"))
+		attachment.Set("mime_type", session.GetString("mime_type"))
+		attachment.Set("byte_size", recordInt64(session, "byte_size"))
+		attachment.Set("width", session.GetInt("width"))
+		attachment.Set("height", session.GetInt("height"))
+		attachment.Set("duration_ms", session.GetInt("duration_ms"))
+		attachment.Set("sha256", session.GetString("sha256"))
+		attachment.Set("blurhash", session.GetString("blurhash"))
+		attachment.Set("processing_status", "pending")
+		if err := app.Save(attachment); err != nil {
+			return nil, nil, err
+		}
+
+		variant := core.NewRecord(variantCollection)
+		variant.Set("attachment", attachment.Id)
+		variant.Set("message", message.Id)
+		variant.Set("conversation", message.GetString("conversation"))
+		variant.Set("storage_profile", session.GetString("storage_profile"))
+		variant.Set("variant", session.GetString("variant"))
+		variant.Set("object_key", session.GetString("object_key"))
+		variant.Set("mime_type", session.GetString("mime_type"))
+		variant.Set("byte_size", recordInt64(session, "byte_size"))
+		variant.Set("width", session.GetInt("width"))
+		variant.Set("height", session.GetInt("height"))
+		variant.Set("duration_ms", session.GetInt("duration_ms"))
+		variant.Set("sha256", session.GetString("sha256"))
+		variant.Set("etag", strings.Trim(preparedAttachment.objectInfo.ETag, "\""))
+		if err := app.Save(variant); err != nil {
+			return nil, nil, err
+		}
+
+		attachment.Set("processing_status", "ready")
+		if err := app.Save(attachment); err != nil {
+			return nil, nil, err
+		}
+		attachments = append(attachments, attachment)
+		variants = append(variants, variant)
+	}
+
+	return attachments, variants, nil
+}
+
+func mediaRecordsForMessage(app core.App, messageId string) ([]*core.Record, []*core.Record, error) {
+	attachments, err := app.FindRecordsByFilter("message_attachments", "message={:message}", "ordinal", 0, 0, dbx.Params{"message": messageId})
+	if err != nil {
+		return nil, nil, err
+	}
+	variants, err := app.FindRecordsByFilter("attachment_variants", "message={:message}", "attachment,variant", 0, 0, dbx.Params{"message": messageId})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return attachments, variants, nil
+}
+
+func conversationMessagesResponseForMessages(app core.App, messages []*core.Record) (conversationMessagesResponse, error) {
+	if len(messages) == 0 {
+		return conversationMessagesResponse{AttachmentVariants: []*core.Record{}, Attachments: []*core.Record{}, Messages: messages}, nil
+	}
+	messageIds := make([]string, 0, len(messages))
+	for _, message := range messages {
+		messageIds = append(messageIds, message.Id)
+	}
+	attachments, err := app.FindRecordsByFilter(
+		"message_attachments",
+		"message ?= {:messageIds}",
+		"message,ordinal",
+		0,
+		0,
+		dbx.Params{"messageIds": messageIds},
+	)
+	if err != nil {
+		return conversationMessagesResponse{}, err
+	}
+	variants, err := app.FindRecordsByFilter(
+		"attachment_variants",
+		"message ?= {:messageIds}",
+		"message,attachment,variant",
+		0,
+		0,
+		dbx.Params{"messageIds": messageIds},
+	)
+	if err != nil {
+		return conversationMessagesResponse{}, err
+	}
+
+	return conversationMessagesResponse{AttachmentVariants: variants, Attachments: attachments, Messages: messages}, nil
 }
 
 func markConversationReadCommand(app core.App, userId string, conversationId string, lastReadSeq int) (map[string]any, error) {
@@ -1155,6 +1437,31 @@ func createConversationEvent(app core.App, conversation *core.Record, eventType 
 func hashIdempotentMessagePayload(conversationId string, kind string, body string) string {
 	payload := fmt.Sprintf("%s\x00%s\x00%s", conversationId, kind, body)
 	sum := sha256.Sum256([]byte(payload))
+
+	return hex.EncodeToString(sum[:])
+}
+
+func hashIdempotentMediaMessagePayload(conversationId string, kind string, body string, attachments []preparedMediaAttachment) string {
+	parts := []string{conversationId, kind, body}
+	for _, attachment := range attachments {
+		session := attachment.session
+		parts = append(parts,
+			fmt.Sprintf("%d", attachment.ordinal),
+			session.Id,
+			session.GetString("client_attachment_id"),
+			session.GetString("attachment_id"),
+			session.GetString("attachment_kind"),
+			session.GetString("variant"),
+			session.GetString("object_key"),
+			session.GetString("mime_type"),
+			fmt.Sprintf("%d", recordInt64(session, "byte_size")),
+			fmt.Sprintf("%d", session.GetInt("width")),
+			fmt.Sprintf("%d", session.GetInt("height")),
+			fmt.Sprintf("%d", session.GetInt("duration_ms")),
+			session.GetString("sha256"),
+		)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 
 	return hex.EncodeToString(sum[:])
 }

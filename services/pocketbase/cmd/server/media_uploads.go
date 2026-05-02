@@ -708,7 +708,16 @@ func countExistingUploadSessionsForMessage(app core.App, userId string, conversa
 		return 0, err
 	}
 
-	return len(sessions), nil
+	attachmentIds := map[string]struct{}{}
+	for _, session := range sessions {
+		clientAttachmentId := strings.TrimSpace(session.GetString("client_attachment_id"))
+		if clientAttachmentId == "" {
+			clientAttachmentId = session.GetString("attachment_id")
+		}
+		attachmentIds[clientAttachmentId] = struct{}{}
+	}
+
+	return len(attachmentIds), nil
 }
 
 func findReusableMediaUploadSession(app core.App, userId string, conversationId string, clientMessageId string, clientAttachmentId string, variant string) (*core.Record, error) {

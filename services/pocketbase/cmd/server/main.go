@@ -1043,7 +1043,7 @@ func finishCallRoom(app core.App, callRoom *core.Record, status string) error {
 			return err
 		}
 		if message != nil && conversation.GetString("last_message_id") == message.Id {
-			conversation.Set("last_message_text", getMessagePreview(message))
+			conversation.Set("last_message_text", getMessagePreview(txApp, message))
 			conversation.Set("last_message_at", message.GetString("updated"))
 		}
 		cursor, err := nextConversationEventCursor(txApp)
@@ -1247,7 +1247,7 @@ func updateConversationPreviewFromMessageWithCursor(app core.App, message *core.
 	if messageSeq > 0 && messageSeq >= conversation.GetInt("last_message_seq") {
 		conversation.Set("last_message_id", message.Id)
 		conversation.Set("last_message_seq", messageSeq)
-		conversation.Set("last_message_text", getMessagePreview(message))
+		conversation.Set("last_message_text", getMessagePreview(app, message))
 		conversation.Set("last_message_at", timestamp)
 	}
 	if nextSeq := conversation.GetInt("next_message_seq"); messageSeq > 0 && nextSeq <= messageSeq {
@@ -1289,25 +1289,24 @@ func updateConversationPreviewAfterMessageDelete(app core.App, conversation *cor
 	message := messages[0]
 	conversation.Set("last_message_id", message.Id)
 	conversation.Set("last_message_seq", message.GetInt("message_seq"))
-	conversation.Set("last_message_text", getMessagePreview(message))
+	conversation.Set("last_message_text", getMessagePreview(app, message))
 	conversation.Set("last_message_at", message.GetString("created"))
 
 	return conversation, nil
 }
 
-func getMessagePreview(record *core.Record) string {
+func getMessagePreview(app core.App, record *core.Record) string {
 	body := strings.TrimSpace(record.GetString("body"))
 	if body != "" {
 		return body
 	}
 
 	switch record.GetString("kind") {
-	case "image":
-		return "Photo"
+	case "media":
+		return "Media"
 	case "file":
-		attachments := record.GetStringSlice("attachments")
-		if len(attachments) > 0 {
-			return formatStoredAttachmentName(attachments[0])
+		if attachmentName := firstMessageAttachmentName(app, record); attachmentName != "" {
+			return attachmentName
 		}
 
 		return "File"
@@ -1316,6 +1315,26 @@ func getMessagePreview(record *core.Record) string {
 	default:
 		return "Message"
 	}
+}
+
+func firstMessageAttachmentName(app core.App, record *core.Record) string {
+	attachments, err := app.FindRecordsByFilter(
+		"message_attachments",
+		"message={:message}",
+		"ordinal",
+		1,
+		0,
+		dbx.Params{"message": record.Id},
+	)
+	if err == nil && len(attachments) > 0 {
+		return strings.TrimSpace(attachments[0].GetString("original_name"))
+	}
+	legacyAttachments := record.GetStringSlice("attachments")
+	if len(legacyAttachments) > 0 {
+		return formatStoredAttachmentName(legacyAttachments[0])
+	}
+
+	return ""
 }
 
 func formatStoredAttachmentName(name string) string {
