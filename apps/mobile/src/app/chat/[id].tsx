@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
+  type AttachmentVariantRecord,
   type CallKind,
   type CallRoomRecord,
   type ConversationMembershipRecord,
@@ -7,8 +8,14 @@ import {
   getActiveCallForConversation,
   getMessageAttachmentUrl,
   getProfileAvatarUrl,
+  type MediaAttachmentKind,
+  type MediaUploadVariant,
+  type MessageAttachmentRecord,
   type MessageRecord,
   type ProfileRecord,
+  type SignedMediaURLItem,
+  type SignedMediaURLRequestItem,
+  signMediaURLs,
   startCall,
 } from '@infchat/pocketbase';
 import { useNetInfo } from '@react-native-community/netinfo';
@@ -52,7 +59,9 @@ import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   getEarliestLocalMessageSeq,
   getLocalConversation,
+  listLocalAttachmentVariants,
   type LocalMediaOutboxState,
+  listLocalMessageAttachments,
   type OutboxMessageState,
   listLocalMessagesFromSeq,
   listLocalMessagesBeforeSeq,
@@ -104,9 +113,24 @@ type ChatRenderItem =
   | { id: string; index: number; message: ChatMessage; type: 'message' };
 
 type MessageAttachment = {
+  attachmentId?: string;
+  byteSize?: number | null;
+  durationMs?: number | null;
+  height?: number | null;
+  kind?: MediaAttachmentKind;
+  mimeType?: string | null;
   name: string;
+  objectKey?: string;
+  ordinal?: number;
   thumbUrl?: string;
   url: string;
+  variantId?: string;
+  width?: number | null;
+};
+
+type LocalMediaReplica = {
+  attachments: MessageAttachmentRecord[];
+  variants: AttachmentVariantRecord[];
 };
 
 type FileDownloadState = 'idle' | 'checking' | 'downloading' | 'downloaded';
@@ -191,6 +215,26 @@ export default function ChatDetailScreen() {
         : listLocalMessagesFromSeq(authRecord.id, conversationId, messageWindowStartSeq),
     enabled: Boolean(conversationId),
   });
+  const localAttachmentsQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'attachments', conversationId],
+    queryFn: () => listLocalMessageAttachments(authRecord.id, conversationId),
+    enabled: Boolean(conversationId),
+  });
+  const localAttachmentVariantsQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'attachment-variants', conversationId],
+    queryFn: () => listLocalAttachmentVariants(authRecord.id, conversationId),
+    enabled: Boolean(conversationId),
+  });
+  const signedMediaUrlRequests = useMemo(
+    () => signedMediaURLRequests(localAttachmentVariantsQuery.data ?? [], messagesQuery.data ?? []),
+    [localAttachmentVariantsQuery.data, messagesQuery.data],
+  );
+  const signedMediaUrlsQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'signed-media-urls', conversationId, signedMediaUrlRequests],
+    queryFn: () => signMediaURLs(pb, signedMediaUrlRequests),
+    enabled: isOnline && signedMediaUrlRequests.length > 0,
+    staleTime: 1000 * 60 * 5,
+  });
   const outboxMessagesQuery = useQuery({
     queryKey: ['chat', authRecord.id, 'outbox', conversationId],
     queryFn: () => listOutboxMessagesForConversation(authRecord.id, conversationId),
@@ -252,6 +296,17 @@ export default function ChatDetailScreen() {
       profilesByUserId,
     ],
   );
+  const localMediaReplica = useMemo<LocalMediaReplica>(
+    () => ({
+      attachments: localAttachmentsQuery.data ?? [],
+      variants: localAttachmentVariantsQuery.data ?? [],
+    }),
+    [localAttachmentVariantsQuery.data, localAttachmentsQuery.data],
+  );
+  const signedMediaUrlsByVariantId = useMemo(
+    () => signedMediaURLByVariantId(signedMediaUrlsQuery.data?.items ?? []),
+    [signedMediaUrlsQuery.data],
+  );
   const messages = useMemo(() => {
     const readMessageId = getLastReadOwnMessageId(
       messagesQuery.data ?? [],
@@ -265,6 +320,8 @@ export default function ChatDetailScreen() {
         authRecord.id,
         fileTokenQuery.data,
         message.id === readMessageId ? 'Read' : undefined,
+        localMediaReplica,
+        signedMediaUrlsByVariantId,
       ),
     );
     const outboxMessages = (outboxMessagesQuery.data ?? []).map(
@@ -288,10 +345,18 @@ export default function ChatDetailScreen() {
         id: `media-outbox-${message.client_message_id}`,
         author: 'me' as const,
         attachments: message.attachments.map((attachment) => ({
+          attachmentId: attachment.client_attachment_id,
+          byteSize: attachment.byte_size,
+          durationMs: attachment.duration_ms,
+          height: attachment.height,
+          kind: attachment.kind,
+          mimeType: attachment.mime_type,
           name: attachment.original_name,
+          ordinal: attachment.ordinal,
           thumbUrl:
             attachment.thumbnail_local_uri ?? attachment.poster_local_uri ?? attachment.local_uri,
           url: attachment.local_uri,
+          width: attachment.width,
         })),
         created: message.client_created_at,
         deliveryStatus: toOutboxDeliveryStatus(message.state),
@@ -313,10 +378,12 @@ export default function ChatDetailScreen() {
     authRecord.id,
     failedOutgoingMessages,
     fileTokenQuery.data,
+    localMediaReplica,
     mediaOutboxMessagesQuery.data,
     messagesQuery.data,
     outboxMessagesQuery.data,
     profilesByUserId,
+    signedMediaUrlsByVariantId,
     conversationMemberships,
   ]);
   const activeCall = activeCallQuery.data;
@@ -1408,16 +1475,16 @@ function toChatMessage(
   currentUserId: string,
   fileToken?: string,
   readLabel?: string,
+  localMedia?: LocalMediaReplica,
+  signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
 ): ChatMessage {
   const senderProfile = profilesByUserId.get(message.sender);
-  const attachments = (message.attachments ?? []).map((attachment) => ({
-    name: attachment,
-    thumbUrl:
-      message.kind === 'media'
-        ? getMessageAttachmentUrl(pb, message, attachment, fileToken, '720x720')
-        : undefined,
-    url: getMessageAttachmentUrl(pb, message, attachment, fileToken),
-  }));
+  const attachments = toMessageAttachments(
+    message,
+    fileToken,
+    localMedia,
+    signedMediaUrlsByVariantId,
+  );
 
   return {
     id: message.id,
@@ -1432,6 +1499,166 @@ function toChatMessage(
     text: message.body,
     time: formatMessageTime(message.created),
   };
+}
+
+function toMessageAttachments(
+  message: MessageRecord,
+  fileToken?: string,
+  localMedia?: LocalMediaReplica,
+  signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
+): MessageAttachment[] {
+  const normalizedAttachments = (localMedia?.attachments ?? []).filter(
+    (attachment) => attachment.message === message.id,
+  );
+  if (normalizedAttachments.length > 0) {
+    const variantsByAttachmentId = variantsByAttachmentIdForMessage(
+      message.id,
+      localMedia?.variants ?? [],
+    );
+
+    return normalizedAttachments
+      .slice()
+      .sort(
+        (left, right) =>
+          (left.ordinal ?? 0) - (right.ordinal ?? 0) || left.id.localeCompare(right.id),
+      )
+      .map((attachment) =>
+        toNormalizedMessageAttachment(
+          attachment,
+          variantsByAttachmentId.get(attachment.id) ?? [],
+          signedMediaUrlsByVariantId,
+        ),
+      )
+      .filter((attachment): attachment is MessageAttachment => !!attachment);
+  }
+
+  return (message.attachments ?? []).map((attachment) => ({
+    name: attachment,
+    thumbUrl:
+      message.kind === 'media'
+        ? getMessageAttachmentUrl(pb, message, attachment, fileToken, '720x720')
+        : undefined,
+    url: getMessageAttachmentUrl(pb, message, attachment, fileToken),
+  }));
+}
+
+function toNormalizedMessageAttachment(
+  attachment: MessageAttachmentRecord,
+  variants: AttachmentVariantRecord[],
+  signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
+): MessageAttachment | null {
+  const originalVariant = chooseVariant(variants, ['original']);
+  const previewVariant = chooseVariant(variants, ['preview', 'poster', 'thumbnail', 'original']);
+  if (!originalVariant && !previewVariant) {
+    return null;
+  }
+
+  const primaryVariant = originalVariant ?? previewVariant;
+  if (!primaryVariant) {
+    return null;
+  }
+
+  const originalUrl = signedUrlForVariant(primaryVariant, signedMediaUrlsByVariantId);
+  const previewUrl = previewVariant
+    ? signedUrlForVariant(previewVariant, signedMediaUrlsByVariantId)
+    : originalUrl;
+
+  return {
+    attachmentId: attachment.id,
+    byteSize: attachment.byte_size ?? primaryVariant.byte_size ?? null,
+    durationMs: attachment.duration_ms ?? primaryVariant.duration_ms ?? null,
+    height: attachment.height ?? primaryVariant.height ?? null,
+    kind: attachment.kind,
+    mimeType: attachment.mime_type || primaryVariant.mime_type || null,
+    name: attachment.original_name || 'attachment',
+    objectKey: primaryVariant.object_key,
+    ordinal: attachment.ordinal,
+    thumbUrl: previewUrl ?? undefined,
+    url: originalUrl ?? previewUrl ?? '',
+    variantId: primaryVariant.id,
+    width: attachment.width ?? primaryVariant.width ?? null,
+  };
+}
+
+function variantsByAttachmentIdForMessage(
+  messageId: string,
+  variants: AttachmentVariantRecord[],
+): Map<string, AttachmentVariantRecord[]> {
+  const result = new Map<string, AttachmentVariantRecord[]>();
+  for (const variant of variants) {
+    if (variant.message !== messageId) {
+      continue;
+    }
+    const attachmentVariants = result.get(variant.attachment) ?? [];
+    attachmentVariants.push(variant);
+    result.set(variant.attachment, attachmentVariants);
+  }
+
+  return result;
+}
+
+function chooseVariant(
+  variants: AttachmentVariantRecord[],
+  preference: MediaUploadVariant[],
+): AttachmentVariantRecord | undefined {
+  for (const variantName of preference) {
+    const match = variants.find((variant) => variant.variant === variantName);
+    if (match) {
+      return match;
+    }
+  }
+
+  return undefined;
+}
+
+function signedUrlForVariant(
+  variant: AttachmentVariantRecord,
+  signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
+): string | null {
+  return signedMediaUrlsByVariantId?.get(variant.id)?.presigned.url ?? null;
+}
+
+function signedMediaURLByVariantId(items: SignedMediaURLItem[]): Map<string, SignedMediaURLItem> {
+  return new Map(items.map((item) => [item.variantId, item]));
+}
+
+function signedMediaURLRequests(
+  variants: AttachmentVariantRecord[],
+  messages: MessageRecord[],
+): SignedMediaURLRequestItem[] {
+  const visibleMessageIds = new Set(
+    messages.filter((message) => message.kind === 'media').map((message) => message.id),
+  );
+  const preferredVariantByAttachment = new Map<string, AttachmentVariantRecord>();
+  for (const variant of variants) {
+    if (!variant.message || !visibleMessageIds.has(variant.message)) {
+      continue;
+    }
+    const current = preferredVariantByAttachment.get(variant.attachment);
+    if (
+      !current ||
+      variantPreferenceRank(variant.variant) < variantPreferenceRank(current.variant)
+    ) {
+      preferredVariantByAttachment.set(variant.attachment, variant);
+    }
+  }
+
+  return [...preferredVariantByAttachment.values()].map((variant) => ({
+    variantId: variant.id,
+  }));
+}
+
+function variantPreferenceRank(variant: MediaUploadVariant): number {
+  switch (variant) {
+    case 'preview':
+      return 0;
+    case 'poster':
+      return 1;
+    case 'thumbnail':
+      return 2;
+    case 'original':
+      return 3;
+  }
 }
 
 function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: string): ChatMessage {
@@ -1611,6 +1838,19 @@ function getLocalMessageFileUri(messageId: string, fileName: string): string | n
   return `${directory}${messageId}-${sanitizeFileName(fileName)}`;
 }
 
+async function resolveFileDownloadUrl(attachment: MessageAttachment): Promise<string | null> {
+  if (attachment.url) {
+    return attachment.url;
+  }
+  if (!attachment.variantId) {
+    return null;
+  }
+
+  const response = await signMediaURLs(pb, [{ variantId: attachment.variantId }]);
+
+  return response.items[0]?.presigned.url ?? null;
+}
+
 function sanitizeFileName(name: string): string {
   const safeName = name
     .trim()
@@ -1708,8 +1948,9 @@ function MessageBubble({
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const imageAttachment = message.kind === 'media' ? message.attachments[0] : undefined;
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
+  const imageSourceUrl = imageAttachment?.thumbUrl || imageAttachment?.url;
   const cachedImageUrl = useCachedRemoteUri(
-    imageAttachment?.url,
+    imageSourceUrl,
     imageAttachment ? `message-image:${message.id}:${imageAttachment.name}` : undefined,
   );
   const isMine = message.author === 'me';
@@ -1812,10 +2053,14 @@ function MessageBubble({
       let uriToOpen = localFileUri;
 
       if (!info.exists) {
+        const fileUrl = await resolveFileDownloadUrl(fileAttachment);
+        if (!fileUrl) {
+          throw new Error('File URL is not available.');
+        }
         await FileSystem.makeDirectoryAsync(cacheDirectory, {
           intermediates: true,
         });
-        const download = await FileSystem.downloadAsync(fileAttachment.url, localFileUri);
+        const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
         uriToOpen = download.uri;
       }
 
@@ -1836,6 +2081,7 @@ function MessageBubble({
   };
 
   if (imageAttachment) {
+    const displayUrl = cachedImageUrl ?? imageSourceUrl;
     return (
       <View
         className={`mb-2 overflow-hidden rounded-[24px] bg-muted ${isMine ? 'self-end' : 'self-start'}`}
@@ -1844,11 +2090,20 @@ function MessageBubble({
           onLongPress={() => onLongPressMessage(message)}
           onPress={() => setIsImageViewerVisible(true)}
         >
-          <Image
-            resizeMode="cover"
-            source={{ uri: cachedImageUrl ?? imageAttachment.url }}
-            style={{ height: imageSize.height, width: imageSize.width }}
-          />
+          {displayUrl ? (
+            <Image
+              resizeMode="cover"
+              source={{ uri: displayUrl }}
+              style={{ height: imageSize.height, width: imageSize.width }}
+            />
+          ) : (
+            <View
+              className="items-center justify-center bg-muted"
+              style={{ height: imageSize.height, width: imageSize.width }}
+            >
+              <ActivityIndicator colorClassName="accent-foreground" size="small" />
+            </View>
+          )}
           <View className="absolute bottom-2 right-2 rounded-full bg-black/45 px-2 py-1">
             <Text className="text-[11px] font-semibold text-white/90">{message.time}</Text>
           </View>
@@ -1870,11 +2125,13 @@ function MessageBubble({
               className="flex-1 items-center justify-center"
               onPress={() => setIsImageViewerVisible(false)}
             >
-              <Image
-                resizeMode="contain"
-                source={{ uri: cachedImageUrl ?? imageAttachment.url }}
-                style={{ height: windowHeight, width: windowWidth }}
-              />
+              {displayUrl ? (
+                <Image
+                  resizeMode="contain"
+                  source={{ uri: displayUrl }}
+                  style={{ height: windowHeight, width: windowWidth }}
+                />
+              ) : null}
             </Pressable>
           </View>
         </Modal>
