@@ -8,7 +8,7 @@ export type MembershipRole = 'owner' | 'admin' | 'member';
 export type MembershipStatus = 'active' | 'left' | 'removed';
 export type MembershipJoinSource = 'created' | 'added_by_member' | 'invite_link';
 export type MembershipNotificationLevel = 'all' | 'mentions' | 'muted';
-export type MessageKind = 'text' | 'image' | 'file' | 'voice' | 'call';
+export type MessageKind = 'text' | 'media' | 'file' | 'voice' | 'call';
 
 export type MessageUploadFile = {
   uri: string;
@@ -17,6 +17,115 @@ export type MessageUploadFile = {
 };
 
 export type ConversationAvatarUploadFile = MessageUploadFile;
+
+export type MediaAttachmentKind = 'image' | 'video' | 'file' | 'voice';
+export type MediaUploadVariant = 'thumbnail' | 'preview' | 'original' | 'poster';
+export type MediaUploadMode = 'single' | 'multipart';
+export type MediaUploadSessionState =
+  | 'pending'
+  | 'uploading'
+  | 'uploaded'
+  | 'completing'
+  | 'completed'
+  | 'aborted'
+  | 'failed'
+  | 'expired';
+export type MediaUploadPartState = 'pending' | 'signed' | 'uploaded' | 'failed';
+
+export type MediaUploadSessionRecord = {
+  id: string;
+  conversation: string;
+  user: string;
+  client_message_id: string;
+  client_attachment_id: string;
+  attachment_id: string;
+  attachment_kind: MediaAttachmentKind;
+  variant: MediaUploadVariant;
+  ordinal?: number;
+  storage_profile?: string;
+  object_key: string;
+  upload_id?: string;
+  upload_mode: MediaUploadMode;
+  original_name?: string;
+  mime_type: string;
+  byte_size: number;
+  width?: number;
+  height?: number;
+  duration_ms?: number;
+  sha256?: string;
+  blurhash?: string;
+  part_size?: number;
+  part_count?: number;
+  state: MediaUploadSessionState;
+  expires_at?: string;
+  completed_at?: string;
+  last_error?: string;
+  created: string;
+  updated: string;
+};
+
+export type MediaPresignedRequest = {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  expires: number;
+};
+
+export type MediaUploadPartInfo = {
+  byteSize: number;
+  etag?: string;
+  offsetBytes: number;
+  partNumber: number;
+  presigned?: MediaPresignedRequest;
+  providerReportedSize?: number;
+  signedUrlExpiresAt?: string;
+  state: MediaUploadPartState;
+  uploadPartRecordId?: string;
+};
+
+export type MediaStorageProfileInfo = {
+  id: string;
+  driver: string;
+  multipartPartSizeBytes: number;
+  multipartThresholdBytes: number;
+  maxObjectSizeBytes: number;
+  presignTtlSeconds: number;
+  supportsListParts: boolean;
+  supportsMultipartUpload: boolean;
+  supportsPresignedDownloads: boolean;
+};
+
+export type MediaUploadSessionResponse = {
+  attachmentId: string;
+  objectKey: string;
+  parts?: MediaUploadPartInfo[];
+  presigned?: MediaPresignedRequest;
+  profile: MediaStorageProfileInfo;
+  session: MediaUploadSessionRecord;
+  uploadId?: string;
+};
+
+export type StartMediaUploadInput = {
+  attachmentKind: MediaAttachmentKind;
+  blurhash?: string;
+  byteSize: number;
+  clientAttachmentId: string;
+  clientMessageId: string;
+  conversationId: string;
+  durationMs?: number;
+  height?: number;
+  mimeType: string;
+  ordinal?: number;
+  originalName?: string;
+  sha256?: string;
+  variant?: MediaUploadVariant;
+  width?: number;
+};
+
+export type CompleteMediaUploadPartInput = {
+  etag: string;
+  partNumber: number;
+};
 
 export type ConversationRecord = {
   id: string;
@@ -395,6 +504,65 @@ export function sendTextMessageCommand(
   });
 }
 
+export function startMediaUpload(
+  pb: PocketBase,
+  input: StartMediaUploadInput,
+): Promise<MediaUploadSessionResponse> {
+  return pb.send('/api/infchat/media/uploads/start', {
+    body: input,
+    method: 'POST',
+  });
+}
+
+export function signMediaUploadParts(
+  pb: PocketBase,
+  uploadSessionId: string,
+  partNumbers: number[],
+): Promise<MediaUploadSessionResponse> {
+  return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/sign-parts`, {
+    body: { partNumbers },
+    method: 'POST',
+  });
+}
+
+export function listMediaUploadParts(
+  pb: PocketBase,
+  uploadSessionId: string,
+): Promise<MediaUploadSessionResponse> {
+  return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/parts`, {
+    method: 'GET',
+  });
+}
+
+export function getMediaUploadStatus(
+  pb: PocketBase,
+  uploadSessionId: string,
+): Promise<MediaUploadSessionResponse> {
+  return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/status`, {
+    method: 'GET',
+  });
+}
+
+export function completeMediaUpload(
+  pb: PocketBase,
+  uploadSessionId: string,
+  parts: CompleteMediaUploadPartInput[],
+): Promise<MediaUploadSessionResponse> {
+  return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/complete`, {
+    body: { parts },
+    method: 'POST',
+  });
+}
+
+export function abortMediaUpload(
+  pb: PocketBase,
+  uploadSessionId: string,
+): Promise<MediaUploadSessionResponse> {
+  return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/abort`, {
+    method: 'POST',
+  });
+}
+
 export function markConversationReadBySeq(
   pb: PocketBase,
   conversationId: string,
@@ -440,7 +608,7 @@ export function sendImageMessage(
   file: MessageUploadFile,
   caption = '',
 ) {
-  return sendAttachmentMessage(pb, conversationId, 'image', file, caption);
+  return sendAttachmentMessage(pb, conversationId, 'media', file, caption);
 }
 
 export function sendFileMessage(
@@ -468,7 +636,7 @@ export function getMessageAttachmentUrl(
 function sendAttachmentMessage(
   pb: PocketBase,
   conversationId: string,
-  kind: Extract<MessageKind, 'image' | 'file'>,
+  kind: Extract<MessageKind, 'media' | 'file'>,
   file: MessageUploadFile,
   caption: string,
 ) {

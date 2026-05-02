@@ -50,9 +50,12 @@ import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   getEarliestLocalMessageSeq,
   getLocalConversation,
+  type LocalMediaOutboxState,
+  type OutboxMessageState,
   listLocalMessagesFromSeq,
   listLocalMessagesBeforeSeq,
   listLocalMembershipsForConversation,
+  listMediaOutboxMessagesForConversation,
   listOutboxMessagesForConversation,
   listRecentLocalMessages,
 } from '../../lib/chat-sync-store';
@@ -186,6 +189,11 @@ export default function ChatDetailScreen() {
     queryFn: () => listOutboxMessagesForConversation(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
   });
+  const mediaOutboxMessagesQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'media-outbox', conversationId],
+    queryFn: () => listMediaOutboxMessagesForConversation(authRecord.id, conversationId),
+    enabled: Boolean(conversationId),
+  });
   const activeCallQuery = useQuery({
     queryKey: ['active-call', conversationId],
     queryFn: () => getActiveCallForConversation(pb, conversationId),
@@ -268,15 +276,37 @@ export default function ChatDetailScreen() {
         time: formatMessageTime(message.client_created_at),
       }),
     );
+    const mediaOutboxMessages = (mediaOutboxMessagesQuery.data ?? []).map(
+      (message): ChatMessage => ({
+        id: `media-outbox-${message.client_message_id}`,
+        author: 'me' as const,
+        attachments: message.attachments.map((attachment) => ({
+          name: attachment.original_name,
+          thumbUrl:
+            attachment.thumbnail_local_uri ?? attachment.poster_local_uri ?? attachment.local_uri,
+          url: attachment.local_uri,
+        })),
+        created: message.client_created_at,
+        deliveryStatus: toOutboxDeliveryStatus(message.state),
+        failedMessageId:
+          message.state === 'failed_terminal' ? message.client_message_id : undefined,
+        kind: message.kind,
+        localOnly: true,
+        senderId: authRecord.id,
+        text: message.body,
+        time: formatMessageTime(message.client_created_at),
+      }),
+    );
     const failedMessages = failedOutgoingMessages.map((message) =>
       toFailedChatMessage(message, authRecord.id),
     );
 
-    return [...cachedMessages, ...outboxMessages, ...failedMessages];
+    return [...cachedMessages, ...outboxMessages, ...mediaOutboxMessages, ...failedMessages];
   }, [
     authRecord.id,
     failedOutgoingMessages,
     fileTokenQuery.data,
+    mediaOutboxMessagesQuery.data,
     messagesQuery.data,
     outboxMessagesQuery.data,
     profilesByUserId,
@@ -1311,7 +1341,7 @@ function toChatMessage(
   const attachments = (message.attachments ?? []).map((attachment) => ({
     name: attachment,
     thumbUrl:
-      message.kind === 'image'
+      message.kind === 'media'
         ? getMessageAttachmentUrl(pb, message, attachment, fileToken, '720x720')
         : undefined,
     url: getMessageAttachmentUrl(pb, message, attachment, fileToken),
@@ -1348,11 +1378,14 @@ function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: stri
 }
 
 function toOutboxDeliveryStatus(
-  state: 'queued' | 'sending_create' | 'confirmed' | 'retry_wait' | 'failed_terminal' | 'canceled',
+  state: LocalMediaOutboxState | OutboxMessageState,
 ): ChatMessage['deliveryStatus'] {
   switch (state) {
     case 'queued':
+    case 'starting_uploads':
       return 'pending';
+    case 'uploading':
+    case 'ready_to_send':
     case 'sending_create':
       return 'sending';
     case 'retry_wait':
@@ -1601,7 +1634,7 @@ function MessageBubble({
   onRetryFailedMessage: (messageId: string) => void;
 }) {
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
-  const imageAttachment = message.kind === 'image' ? message.attachments[0] : undefined;
+  const imageAttachment = message.kind === 'media' ? message.attachments[0] : undefined;
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
   const cachedImageUrl = useCachedRemoteUri(
     imageAttachment?.url,

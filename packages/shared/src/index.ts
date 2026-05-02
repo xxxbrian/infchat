@@ -2,7 +2,7 @@ export * from './cn';
 
 import { z } from 'zod';
 
-export const MESSAGE_KINDS = ['text', 'image', 'file', 'voice', 'call'] as const;
+export const MESSAGE_KINDS = ['text', 'media', 'file', 'voice', 'call'] as const;
 export type MessageKind = (typeof MESSAGE_KINDS)[number];
 
 export const CALL_ROOM_STATUSES = [

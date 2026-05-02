@@ -17,9 +17,13 @@ import {
   applyConversationHistory,
   applyLocalChatRecords,
   cancelOutboxMessage,
+  enqueueMediaOutboxMessage,
+  type EnqueueMediaOutboxMessageInput,
   enqueueTextOutboxMessage,
   getChatSyncCursor,
+  listPendingMediaOutboxMessages,
   listPendingOutboxMessages,
+  markMediaOutboxState,
   markOutboxRetry,
   markOutboxSending,
   markOutboxTerminalFailure,
@@ -104,6 +108,20 @@ export class ChatSyncService {
       conversationId,
     });
     this.invalidateChatQueries(conversationId);
+    void this.pumpOutbox();
+
+    return message;
+  }
+
+  async enqueueMediaMessage(input: EnqueueMediaOutboxMessageInput) {
+    const message = await enqueueMediaOutboxMessage(this.authId, input);
+    void logDebugEvent('info', 'chat-sync', 'Enqueued local media message', {
+      attachmentCount: message.attachments.length,
+      clientMessageId: message.client_message_id,
+      conversationId: message.conversation_id,
+      kind: message.kind,
+    });
+    this.invalidateChatQueries(message.conversation_id);
     void this.pumpOutbox();
 
     return message;
@@ -299,9 +317,32 @@ export class ChatSyncService {
     try {
       const deviceId = await getDeviceId();
       const pendingMessages = await listPendingOutboxMessages(this.authId);
+      const pendingMediaMessages = await listPendingMediaOutboxMessages(this.authId);
       void logDebugEvent('debug', 'outbox', 'Outbox pump started', {
+        pendingMediaCount: pendingMediaMessages.length,
         pendingCount: pendingMessages.length,
       });
+      for (const pendingMessage of pendingMediaMessages) {
+        if (pendingMessage.state === 'queued') {
+          await markMediaOutboxState(
+            this.authId,
+            pendingMessage.client_message_id,
+            'starting_uploads',
+          );
+          this.invalidateChatQueries(pendingMessage.conversation_id);
+        }
+        void logDebugEvent(
+          'debug',
+          'media-outbox',
+          'Media outbox message is waiting for upload engine',
+          {
+            attachmentCount: pendingMessage.attachments.length,
+            clientMessageId: pendingMessage.client_message_id,
+            conversationId: pendingMessage.conversation_id,
+            state: pendingMessage.state,
+          },
+        );
+      }
       for (const pendingMessage of pendingMessages) {
         await markOutboxSending(this.authId, pendingMessage.client_message_id);
         this.invalidateChatQueries(pendingMessage.conversation_id);
@@ -396,6 +437,9 @@ export class ChatSyncService {
       });
       void this.queryClient.invalidateQueries({
         queryKey: ['chat', this.authId, 'outbox', conversationId],
+      });
+      void this.queryClient.invalidateQueries({
+        queryKey: ['chat', this.authId, 'media-outbox', conversationId],
       });
       void this.queryClient.invalidateQueries({
         queryKey: ['chat', this.authId, 'memberships'],
