@@ -3,9 +3,13 @@ import {
   type ConversationMembershipRecord,
   type ConversationRecord,
   deleteConversationMessages,
+  getMediaUploadStatus,
   listConversationMessagesBeforeSeq,
   markConversationReadBySeq,
+  type MediaUploadSessionResponse,
   sendTextMessageCommand,
+  signMediaUploadParts,
+  startMediaUpload,
   syncChatEvents,
 } from '@infchat/pocketbase';
 import type { QueryClient } from '@tanstack/react-query';
@@ -21,14 +25,22 @@ import {
   type EnqueueMediaOutboxMessageInput,
   enqueueTextOutboxMessage,
   getChatSyncCursor,
+  type LocalMediaOutboxAttachment,
+  type LocalMediaOutboxMessageWithAttachments,
+  type LocalMediaUploadSessionState,
+  listMediaUploadSessionsForMessage,
   listPendingMediaOutboxMessages,
   listPendingOutboxMessages,
+  markMediaAttachmentState,
+  markMediaOutboxRetry,
   markMediaOutboxState,
   markOutboxRetry,
   markOutboxSending,
   markOutboxTerminalFailure,
   removeLocalMessages,
   resetOutboxMessageForRetry,
+  upsertMediaUploadPart,
+  upsertMediaUploadSession,
   writeSyncJournal,
 } from './chat-sync-store';
 import { logDebugEvent } from './debug-log';
@@ -44,6 +56,7 @@ export type ChatSyncTrigger =
   | 'outbox';
 
 const OUTBOX_RETRY_DELAYS_MS = [2000, 5000] as const;
+const MEDIA_UPLOAD_SESSION_RETRY_DELAYS_MS = [2000, 5000, 15000] as const;
 
 type ChatSyncServiceOptions = {
   authId: string;
@@ -323,25 +336,45 @@ export class ChatSyncService {
         pendingCount: pendingMessages.length,
       });
       for (const pendingMessage of pendingMediaMessages) {
-        if (pendingMessage.state === 'queued') {
-          await markMediaOutboxState(
-            this.authId,
-            pendingMessage.client_message_id,
-            'starting_uploads',
-          );
-          this.invalidateChatQueries(pendingMessage.conversation_id);
+        try {
+          await this.prepareMediaUploadSessions(pendingMessage);
+        } catch (error) {
+          const errorMessage = getErrorMessage(error);
+          const attemptCount = pendingMessage.attempt_count ?? 0;
+          const retryDelayMs = MEDIA_UPLOAD_SESSION_RETRY_DELAYS_MS[attemptCount];
+          if (isPermanentCommandError(error) || retryDelayMs === undefined) {
+            void logDebugEvent('error', 'media-outbox', 'Media outbox failed terminally', {
+              attemptCount,
+              clientMessageId: pendingMessage.client_message_id,
+              conversationId: pendingMessage.conversation_id,
+              error: errorMessage,
+              status: getErrorStatus(error),
+            });
+            await markMediaOutboxState(
+              this.authId,
+              pendingMessage.client_message_id,
+              'failed_terminal',
+              errorMessage,
+            );
+          } else {
+            void logDebugEvent('warn', 'media-outbox', 'Media outbox will retry', {
+              attemptCount,
+              clientMessageId: pendingMessage.client_message_id,
+              conversationId: pendingMessage.conversation_id,
+              error: errorMessage,
+              retryDelayMs,
+              status: getErrorStatus(error),
+            });
+            await markMediaOutboxRetry(
+              this.authId,
+              pendingMessage.client_message_id,
+              errorMessage,
+              retryDelayMs,
+            );
+            this.scheduleOutboxRetry(retryDelayMs);
+          }
         }
-        void logDebugEvent(
-          'debug',
-          'media-outbox',
-          'Media outbox message is waiting for upload engine',
-          {
-            attachmentCount: pendingMessage.attachments.length,
-            clientMessageId: pendingMessage.client_message_id,
-            conversationId: pendingMessage.conversation_id,
-            state: pendingMessage.state,
-          },
-        );
+        this.invalidateChatQueries(pendingMessage.conversation_id);
       }
       for (const pendingMessage of pendingMessages) {
         await markOutboxSending(this.authId, pendingMessage.client_message_id);
@@ -410,6 +443,149 @@ export class ChatSyncService {
     }
   }
 
+  private async prepareMediaUploadSessions(message: LocalMediaOutboxMessageWithAttachments) {
+    if (message.state === 'sending_create' || message.state === 'confirmed') {
+      return;
+    }
+
+    await markMediaOutboxState(this.authId, message.client_message_id, 'starting_uploads');
+    void logDebugEvent('info', 'media-outbox', 'Preparing media upload sessions', {
+      attachmentCount: message.attachments.length,
+      clientMessageId: message.client_message_id,
+      conversationId: message.conversation_id,
+    });
+
+    const sessions = await listMediaUploadSessionsForMessage(
+      this.authId,
+      message.client_message_id,
+    );
+    const originalSessionsByAttachmentId = new Map(
+      sessions
+        .filter((session) => session.variant === 'original')
+        .map((session) => [session.client_attachment_id, session]),
+    );
+
+    let isReadyToUpload = true;
+    for (const attachment of message.attachments) {
+      const existing = originalSessionsByAttachmentId.get(attachment.client_attachment_id);
+      if (existing?.upload_session_id) {
+        const status = await getMediaUploadStatus(this.pb, existing.upload_session_id);
+        await this.persistMediaUploadSessionResponse(attachment, status);
+        isReadyToUpload &&= isUploadSessionReadyForTransfer(
+          toLocalSessionState(status.session.state),
+        );
+        continue;
+      }
+
+      const response = await startMediaUpload(this.pb, {
+        attachmentKind: attachment.kind,
+        blurhash: attachment.blurhash ?? undefined,
+        byteSize: attachment.byte_size,
+        clientAttachmentId: attachment.client_attachment_id,
+        clientMessageId: message.client_message_id,
+        conversationId: message.conversation_id,
+        durationMs: attachment.duration_ms ?? undefined,
+        height: attachment.height ?? undefined,
+        mimeType: attachment.mime_type,
+        ordinal: attachment.ordinal,
+        originalName: attachment.original_name,
+        sha256: attachment.sha256 ?? undefined,
+        variant: 'original',
+        width: attachment.width ?? undefined,
+      });
+      await this.persistMediaUploadSessionResponse(attachment, response);
+      await markMediaAttachmentState(
+        this.authId,
+        attachment.client_attachment_id,
+        'session_started',
+      );
+      isReadyToUpload &&= isUploadSessionReadyForTransfer(
+        toLocalSessionState(response.session.state),
+      );
+    }
+
+    await markMediaOutboxState(
+      this.authId,
+      message.client_message_id,
+      isReadyToUpload ? 'uploading' : 'starting_uploads',
+    );
+  }
+
+  private async persistMediaUploadSessionResponse(
+    attachment: LocalMediaOutboxAttachment,
+    response: MediaUploadSessionResponse,
+  ) {
+    const session = response.session;
+    const state = toLocalSessionState(session.state);
+    await upsertMediaUploadSession(this.authId, {
+      attachmentId: response.attachmentId || session.attachment_id,
+      attachmentKind: session.attachment_kind,
+      blurhash: session.blurhash || attachment.blurhash || null,
+      byteSize: session.byte_size,
+      clientAttachmentId: session.client_attachment_id,
+      clientMessageId: session.client_message_id,
+      completedAt: session.completed_at ?? null,
+      conversationId: session.conversation,
+      durationMs: session.duration_ms ?? null,
+      expiresAt: session.expires_at ?? null,
+      height: session.height ?? null,
+      lastError: session.last_error ?? null,
+      localUri: attachment.local_uri,
+      mimeType: session.mime_type,
+      objectKey: response.objectKey || session.object_key,
+      originalName: session.original_name || attachment.original_name,
+      partCount: session.part_count ?? null,
+      partSize: session.part_size ?? null,
+      presignedExpiresAt: response.presigned
+        ? new Date(Date.now() + response.presigned.expires * 1000).toISOString()
+        : null,
+      presignedHeadersJson: response.presigned ? JSON.stringify(response.presigned.headers) : null,
+      presignedMethod: response.presigned?.method ?? null,
+      presignedUrl: response.presigned?.url ?? null,
+      profileJson: JSON.stringify(response.profile),
+      sha256: session.sha256 || attachment.sha256 || null,
+      state,
+      storageProfileId: session.storage_profile ?? response.profile.id,
+      uploadId: response.uploadId || session.upload_id || null,
+      uploadMode: session.upload_mode,
+      uploadSessionId: session.id,
+      variant: session.variant,
+      width: session.width ?? null,
+    });
+
+    if (session.upload_mode === 'multipart') {
+      const parts = response.parts ?? [];
+      const unsignedPartNumbers = parts
+        .filter((part) => !part.presigned && part.state !== 'uploaded')
+        .map((part) => part.partNumber);
+      const partsResponse =
+        unsignedPartNumbers.length > 0
+          ? await signMediaUploadParts(this.pb, session.id, unsignedPartNumbers)
+          : response;
+      for (const part of partsResponse.parts ?? response.parts ?? []) {
+        await upsertMediaUploadPart(this.authId, {
+          byteSize: part.byteSize,
+          clientAttachmentId: session.client_attachment_id,
+          clientMessageId: session.client_message_id,
+          etag: part.etag ?? null,
+          offsetBytes: part.offsetBytes,
+          partNumber: part.partNumber,
+          signedUrl: part.presigned?.url ?? null,
+          signedUrlExpiresAt:
+            part.signedUrlExpiresAt ||
+            (part.presigned
+              ? new Date(Date.now() + part.presigned.expires * 1000).toISOString()
+              : null),
+          signedUrlHeadersJson: part.presigned ? JSON.stringify(part.presigned.headers) : null,
+          signedUrlMethod: part.presigned?.method ?? null,
+          state: toLocalPartState(part.state),
+          uploadSessionId: session.id,
+          variant: session.variant,
+        });
+      }
+    }
+  }
+
   private scheduleOutboxRetry(delayMs: number) {
     if (this.outboxRetryTimer) {
       return;
@@ -455,6 +631,39 @@ function isPermanentCommandError(error: unknown) {
   const status = getErrorStatus(error);
 
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+function toLocalSessionState(state: string): LocalMediaUploadSessionState {
+  switch (state) {
+    case 'pending':
+    case 'uploading':
+    case 'uploaded':
+    case 'completing':
+    case 'completed':
+    case 'failed':
+    case 'aborted':
+    case 'expired':
+      return state;
+    default:
+      return 'pending';
+  }
+}
+
+function toLocalPartState(state: string) {
+  switch (state) {
+    case 'signed':
+    case 'uploaded':
+    case 'failed':
+      return state;
+    default:
+      return 'pending';
+  }
+}
+
+function isUploadSessionReadyForTransfer(state: LocalMediaUploadSessionState) {
+  return (
+    state === 'pending' || state === 'uploading' || state === 'uploaded' || state === 'completed'
+  );
 }
 
 function getErrorStatus(error: unknown) {

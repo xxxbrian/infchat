@@ -1075,7 +1075,7 @@ export async function markMediaOutboxState(
   await enqueueDbWrite(() =>
     db.runAsync(
       `UPDATE media_outbox_messages
-       SET state = ?, last_error = ?, updated_at = ?
+       SET state = ?, last_error = ?, next_attempt_at = NULL, updated_at = ?
        WHERE auth_id = ? AND client_message_id = ?`,
       state,
       error ?? null,
