@@ -127,6 +127,86 @@ export type CompleteMediaUploadPartInput = {
   partNumber: number;
 };
 
+export type MessageAttachmentRecord = {
+  id: string;
+  message: string;
+  conversation: string;
+  sender: string;
+  ordinal: number;
+  kind: MediaAttachmentKind;
+  original_name?: string;
+  mime_type?: string;
+  byte_size?: number;
+  width?: number;
+  height?: number;
+  duration_ms?: number;
+  sha256?: string;
+  blurhash?: string;
+  waveform_json?: unknown;
+  processing_status: 'pending' | 'ready' | 'failed';
+  processing_error?: string;
+  created: string;
+  updated: string;
+};
+
+export type AttachmentVariantRecord = {
+  id: string;
+  attachment: string;
+  message?: string;
+  conversation?: string;
+  storage_profile?: string;
+  variant: MediaUploadVariant;
+  object_key: string;
+  mime_type?: string;
+  byte_size?: number;
+  width?: number;
+  height?: number;
+  duration_ms?: number;
+  sha256?: string;
+  etag?: string;
+  created: string;
+  updated: string;
+};
+
+export type ConversationMessagesResponse = {
+  attachmentVariants: AttachmentVariantRecord[];
+  attachments: MessageAttachmentRecord[];
+  messages: MessageRecord[];
+};
+
+export type SendMediaMessageAttachmentInput = {
+  clientAttachmentId?: string;
+  uploadSessionId?: string;
+};
+
+export type SendMediaMessageCommandInput = {
+  attachments: SendMediaMessageAttachmentInput[];
+  body?: string;
+  clientMessageId: string;
+  conversationId: string;
+  deviceId: string;
+  kind: Extract<MessageKind, 'media' | 'file' | 'voice'>;
+};
+
+export type SignedMediaURLRequestItem = {
+  attachmentId?: string;
+  variant?: MediaUploadVariant;
+  variantId?: string;
+};
+
+export type SignedMediaURLItem = {
+  attachmentId: string;
+  expiresAt: string;
+  objectKey: string;
+  presigned: MediaPresignedRequest;
+  variant: MediaUploadVariant;
+  variantId: string;
+};
+
+export type SignedMediaURLsResponse = {
+  items: SignedMediaURLItem[];
+};
+
 export type ConversationRecord = {
   id: string;
   kind: ConversationKind;
@@ -209,6 +289,8 @@ export type ConversationEventType =
   | 'call.ended';
 
 export type ConversationEventPayload = {
+  attachmentVariants?: AttachmentVariantRecord[];
+  attachments?: MessageAttachmentRecord[];
   conversation?: ConversationRecord;
   membership?: ConversationMembershipRecord;
   memberships?: ConversationMembershipRecord[];
@@ -284,6 +366,8 @@ export type SendTextMessageCommandInput = {
 };
 
 export type SendMessageCommandResponse = {
+  attachmentVariants?: AttachmentVariantRecord[];
+  attachments?: MessageAttachmentRecord[];
   conversation: ConversationRecord;
   cursor: number;
   membership: ConversationMembershipRecord;
@@ -472,7 +556,7 @@ export function listConversationMessagesBeforeSeq(
   conversationId: string,
   beforeSeq?: number,
   limit?: number,
-): Promise<{ messages: MessageRecord[] }> {
+): Promise<ConversationMessagesResponse> {
   const params = new URLSearchParams();
   if (beforeSeq) {
     params.set('beforeSeq', String(beforeSeq));
@@ -499,6 +583,23 @@ export function sendTextMessageCommand(
       conversationId: input.conversationId,
       deviceId: input.deviceId,
       kind: 'text',
+    },
+    method: 'POST',
+  });
+}
+
+export function sendMediaMessageCommand(
+  pb: PocketBase,
+  input: SendMediaMessageCommandInput,
+): Promise<SendMessageCommandResponse> {
+  return pb.send('/api/infchat/messages/send', {
+    body: {
+      attachments: input.attachments,
+      body: input.body ?? '',
+      clientMessageId: input.clientMessageId,
+      conversationId: input.conversationId,
+      deviceId: input.deviceId,
+      kind: input.kind,
     },
     method: 'POST',
   });
@@ -559,6 +660,16 @@ export function abortMediaUpload(
   uploadSessionId: string,
 ): Promise<MediaUploadSessionResponse> {
   return pb.send(`/api/infchat/media/uploads/${uploadSessionId}/abort`, {
+    method: 'POST',
+  });
+}
+
+export function signMediaURLs(
+  pb: PocketBase,
+  items: SignedMediaURLRequestItem[],
+): Promise<SignedMediaURLsResponse> {
+  return pb.send('/api/infchat/media/urls', {
+    body: { items },
     method: 'POST',
   });
 }

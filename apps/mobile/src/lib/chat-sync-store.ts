@@ -3,6 +3,8 @@ import {
   type ConversationEventRecord,
   type ConversationMembershipRecord,
   type ConversationRecord,
+  type AttachmentVariantRecord,
+  type MessageAttachmentRecord,
   type MessageRecord,
 } from '@infchat/pocketbase';
 import * as SQLite from 'expo-sqlite';
@@ -295,7 +297,7 @@ export type UpsertMediaCacheEntryInput = {
   width?: number | null;
 };
 
-const CHAT_SYNC_SCHEMA_VERSION = 4;
+const CHAT_SYNC_SCHEMA_VERSION = 5;
 const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v4.db');
 let schemaPromise: Promise<void> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -370,6 +372,43 @@ async function getDb() {
 
     CREATE INDEX IF NOT EXISTS local_messages_client_message_idx
       ON local_messages (auth_id, conversation_id, client_message_id);
+
+    CREATE TABLE IF NOT EXISTS local_message_attachments (
+      auth_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      ordinal INTEGER NOT NULL DEFAULT 0,
+      kind TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (auth_id, id)
+    );
+
+    CREATE INDEX IF NOT EXISTS local_message_attachments_message_idx
+      ON local_message_attachments (auth_id, message_id, ordinal);
+
+    CREATE INDEX IF NOT EXISTS local_message_attachments_conversation_idx
+      ON local_message_attachments (auth_id, conversation_id, kind);
+
+    CREATE TABLE IF NOT EXISTS local_attachment_variants (
+      auth_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      attachment_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      value TEXT NOT NULL,
+      variant TEXT NOT NULL,
+      object_key TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (auth_id, id)
+    );
+
+    CREATE INDEX IF NOT EXISTS local_attachment_variants_attachment_idx
+      ON local_attachment_variants (auth_id, attachment_id, variant);
+
+    CREATE INDEX IF NOT EXISTS local_attachment_variants_message_idx
+      ON local_attachment_variants (auth_id, message_id, variant);
 
     CREATE TABLE IF NOT EXISTS outbox_messages (
       auth_id TEXT NOT NULL,
@@ -584,6 +623,8 @@ async function getDb() {
           await txn.runAsync('DELETE FROM local_conversations');
           await txn.runAsync('DELETE FROM local_memberships');
           await txn.runAsync('DELETE FROM local_messages');
+          await txn.runAsync('DELETE FROM local_message_attachments');
+          await txn.runAsync('DELETE FROM local_attachment_variants');
           await txn.runAsync('DELETE FROM outbox_messages');
           await txn.runAsync('DELETE FROM media_outbox_messages');
           await txn.runAsync('DELETE FROM media_outbox_attachments');
@@ -706,6 +747,12 @@ export async function applyChatSyncEvents(
             await removeMessageRow(txn, authId, payload.message.id);
           } else {
             await writeMessageRow(txn, authId, payload.message);
+            await writeMediaReplicaRows(
+              txn,
+              authId,
+              payload.attachments ?? [],
+              payload.attachmentVariants ?? [],
+            );
             await confirmOutboxMessage(txn, authId, payload.message);
             await confirmMediaOutboxMessage(txn, authId, payload.message);
           }
@@ -719,8 +766,10 @@ export async function applyChatSyncEvents(
 export async function applyConversationHistory(
   authId: string,
   messages: MessageRecord[],
+  attachments: MessageAttachmentRecord[] = [],
+  attachmentVariants: AttachmentVariantRecord[] = [],
 ): Promise<void> {
-  if (messages.length === 0) {
+  if (messages.length === 0 && attachments.length === 0 && attachmentVariants.length === 0) {
     return;
   }
 
@@ -733,6 +782,7 @@ export async function applyConversationHistory(
         await confirmOutboxMessage(txn, authId, message);
         await confirmMediaOutboxMessage(txn, authId, message);
       }
+      await writeMediaReplicaRows(txn, authId, attachments, attachmentVariants);
     }),
   );
 }
@@ -740,6 +790,8 @@ export async function applyConversationHistory(
 export async function applyLocalChatRecords(
   authId: string,
   records: {
+    attachmentVariants?: AttachmentVariantRecord[];
+    attachments?: MessageAttachmentRecord[];
     conversation?: ConversationRecord;
     membership?: ConversationMembershipRecord;
     message?: MessageRecord;
@@ -757,6 +809,12 @@ export async function applyLocalChatRecords(
       }
       if (records.message) {
         await writeMessageRow(txn, authId, records.message);
+        await writeMediaReplicaRows(
+          txn,
+          authId,
+          records.attachments ?? [],
+          records.attachmentVariants ?? [],
+        );
         await confirmOutboxMessage(txn, authId, records.message);
         await confirmMediaOutboxMessage(txn, authId, records.message);
       }
@@ -1378,6 +1436,38 @@ export async function listLocalMessages(
   return rows.map((row) => JSON.parse(row.value) as MessageRecord);
 }
 
+export async function listLocalMessageAttachments(
+  authId: string,
+  conversationId: string,
+): Promise<MessageAttachmentRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM local_message_attachments
+     WHERE auth_id = ? AND conversation_id = ?
+     ORDER BY message_id ASC, ordinal ASC, id ASC`,
+    authId,
+    conversationId,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as MessageAttachmentRecord);
+}
+
+export async function listLocalAttachmentVariants(
+  authId: string,
+  conversationId: string,
+): Promise<AttachmentVariantRecord[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<JsonRow>(
+    `SELECT value FROM local_attachment_variants
+     WHERE auth_id = ? AND conversation_id = ?
+     ORDER BY message_id ASC, attachment_id ASC, variant ASC, id ASC`,
+    authId,
+    conversationId,
+  );
+
+  return rows.map((row) => JSON.parse(row.value) as AttachmentVariantRecord);
+}
+
 export async function listRecentLocalMessages(
   authId: string,
   conversationId: string,
@@ -1734,11 +1824,76 @@ async function writeMessageRow(db: SqliteWriter, authId: string, message: Messag
   );
 }
 
+async function writeMediaReplicaRows(
+  db: SqliteWriter,
+  authId: string,
+  attachments: MessageAttachmentRecord[],
+  attachmentVariants: AttachmentVariantRecord[],
+) {
+  for (const attachment of attachments) {
+    await db.runAsync(
+      `INSERT OR REPLACE INTO local_message_attachments
+        (auth_id, conversation_id, message_id, id, value, ordinal, kind, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      authId,
+      attachment.conversation,
+      attachment.message,
+      attachment.id,
+      JSON.stringify(attachment),
+      attachment.ordinal ?? 0,
+      attachment.kind,
+      attachment.updated,
+    );
+  }
+
+  for (const variant of attachmentVariants) {
+    const messageId = variant.message;
+    const conversationId = variant.conversation;
+    if (!messageId || !conversationId) {
+      continue;
+    }
+    await db.runAsync(
+      `INSERT OR REPLACE INTO local_attachment_variants
+        (auth_id, conversation_id, message_id, attachment_id, id, value, variant, object_key, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      authId,
+      conversationId,
+      messageId,
+      variant.attachment,
+      variant.id,
+      JSON.stringify(variant),
+      variant.variant,
+      variant.object_key,
+      variant.updated,
+    );
+  }
+}
+
 async function removeMessageRow(db: SqliteWriter, authId: string, messageId: string) {
+  await db.runAsync(
+    'DELETE FROM local_attachment_variants WHERE auth_id = ? AND message_id = ?',
+    authId,
+    messageId,
+  );
+  await db.runAsync(
+    'DELETE FROM local_message_attachments WHERE auth_id = ? AND message_id = ?',
+    authId,
+    messageId,
+  );
   await db.runAsync('DELETE FROM local_messages WHERE auth_id = ? AND id = ?', authId, messageId);
 }
 
 async function removeConversationReplica(db: SqliteWriter, authId: string, conversationId: string) {
+  await db.runAsync(
+    'DELETE FROM local_attachment_variants WHERE auth_id = ? AND conversation_id = ?',
+    authId,
+    conversationId,
+  );
+  await db.runAsync(
+    'DELETE FROM local_message_attachments WHERE auth_id = ? AND conversation_id = ?',
+    authId,
+    conversationId,
+  );
   await db.runAsync(
     'DELETE FROM local_messages WHERE auth_id = ? AND conversation_id = ?',
     authId,

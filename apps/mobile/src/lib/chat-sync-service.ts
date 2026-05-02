@@ -206,7 +206,12 @@ export class ChatSyncService {
       beforeSeq,
       100,
     );
-    await applyConversationHistory(this.authId, response.messages);
+    await applyConversationHistory(
+      this.authId,
+      response.messages,
+      response.attachments,
+      response.attachmentVariants,
+    );
     this.invalidateChatQueries(conversationId);
   }
 
@@ -392,6 +397,8 @@ export class ChatSyncService {
             deviceId,
           });
           await applyLocalChatRecords(this.authId, {
+            attachmentVariants: response.attachmentVariants,
+            attachments: response.attachments,
             conversation: response.conversation,
             membership: response.membership,
             message: response.message,
