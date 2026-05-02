@@ -26,6 +26,7 @@ import {
   applyConversationHistory,
   applyLocalChatRecords,
   cancelOutboxMessage,
+  cancelMediaOutboxMessage,
   enqueueMediaOutboxMessage,
   type EnqueueMediaOutboxMessageInput,
   enqueueTextOutboxMessage,
@@ -50,6 +51,7 @@ import {
   markOutboxTerminalFailure,
   removeLocalMessages,
   resetOutboxMessageForRetry,
+  resetMediaOutboxMessageForRetry,
   upsertMediaUploadPart,
   upsertMediaUploadSession,
   writeSyncJournal,
@@ -161,12 +163,31 @@ export class ChatSyncService {
     await this.pumpOutbox();
   }
 
+  async retryMediaOutboxMessage(conversationId: string, clientMessageId: string) {
+    void logDebugEvent('info', 'media-outbox', 'Manual media outbox retry requested', {
+      clientMessageId,
+      conversationId,
+    });
+    await resetMediaOutboxMessageForRetry(this.authId, clientMessageId);
+    this.invalidateChatQueries(conversationId);
+    await this.pumpOutbox();
+  }
+
   async cancelFailedOutboxMessage(conversationId: string, clientMessageId: string) {
     void logDebugEvent('info', 'chat-sync', 'Cancel failed outbox message requested', {
       clientMessageId,
       conversationId,
     });
     await cancelOutboxMessage(this.authId, clientMessageId);
+    this.invalidateChatQueries(conversationId);
+  }
+
+  async cancelFailedMediaOutboxMessage(conversationId: string, clientMessageId: string) {
+    void logDebugEvent('info', 'media-outbox', 'Cancel failed media outbox message requested', {
+      clientMessageId,
+      conversationId,
+    });
+    await cancelMediaOutboxMessage(this.authId, clientMessageId);
     this.invalidateChatQueries(conversationId);
   }
 

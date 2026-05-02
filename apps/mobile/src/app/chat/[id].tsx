@@ -992,6 +992,27 @@ export default function ChatDetailScreen() {
       return;
     }
 
+    const failedMediaOutboxMessage = mediaOutboxMessagesQuery.data?.find(
+      (message) => message.client_message_id === messageId && message.state === 'failed_terminal',
+    );
+    if (failedMediaOutboxMessage) {
+      if (!isOnline) {
+        Alert.alert('Still offline', 'Reconnect, then tap the red alert to resend.');
+        return;
+      }
+
+      try {
+        await chatSyncService.retryMediaOutboxMessage(
+          conversationId,
+          failedMediaOutboxMessage.client_message_id,
+        );
+        didScrollToEnd.current = false;
+      } catch {
+        Alert.alert('Could not resend', 'Check your connection and tap the alert again.');
+      }
+      return;
+    }
+
     const failedMessage = failedOutgoingMessages.find((message) => message.id === messageId);
     if (!failedMessage) {
       return;
@@ -1015,6 +1036,17 @@ export default function ChatDetailScreen() {
     setMessageActionTarget(null);
     if (message.localOnly) {
       if (!message.failedMessageId) {
+        return;
+      }
+
+      const failedMediaOutboxMessage = mediaOutboxMessagesQuery.data?.find(
+        (mediaMessage) => mediaMessage.client_message_id === message.failedMessageId,
+      );
+      if (failedMediaOutboxMessage) {
+        await chatSyncService.cancelFailedMediaOutboxMessage(
+          conversationId,
+          message.failedMessageId,
+        );
         return;
       }
 
