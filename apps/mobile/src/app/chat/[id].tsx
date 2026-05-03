@@ -26,6 +26,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
+import { useVideoPlayer, VideoView, type VideoSource } from 'expo-video';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -69,6 +70,8 @@ import {
   listMediaOutboxMessagesForConversation,
   listOutboxMessagesForConversation,
   listRecentLocalMessages,
+  touchMediaCacheEntry,
+  upsertMediaCacheEntry,
 } from '../../lib/chat-sync-store';
 import { logDebugEvent } from '../../lib/debug-log';
 import { getDeviceId } from '../../lib/device-id';
@@ -108,6 +111,11 @@ type ChatMessage = {
   time: string;
 };
 
+type MediaViewerState = {
+  index: number;
+  visible: boolean;
+};
+
 type ChatRenderItem =
   | { id: string; label: string; type: 'date' }
   | { id: string; index: number; message: ChatMessage; type: 'message' };
@@ -115,13 +123,17 @@ type ChatRenderItem =
 type MessageAttachment = {
   attachmentId?: string;
   byteSize?: number | null;
+  cacheVariant?: MediaUploadVariant | 'file' | 'voice';
+  conversationId?: string;
   durationMs?: number | null;
   height?: number | null;
   kind?: MediaAttachmentKind;
+  messageId?: string;
   mimeType?: string | null;
   name: string;
   objectKey?: string;
   ordinal?: number;
+  sha256?: string | null;
   thumbUrl?: string;
   url: string;
   variantId?: string;
@@ -134,6 +146,21 @@ type LocalMediaReplica = {
 };
 
 type FileDownloadState = 'idle' | 'checking' | 'downloading' | 'downloaded';
+
+type MediaTileFrame = {
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+};
+
+type MediaAlbumLayout = {
+  height: number;
+  overflowCount: number;
+  tiles: MediaTileFrame[];
+  visibleCount: number;
+  width: number;
+};
 
 type FailedOutgoingMessage = {
   body: string;
@@ -226,8 +253,13 @@ export default function ChatDetailScreen() {
     enabled: Boolean(conversationId),
   });
   const signedMediaUrlRequests = useMemo(
-    () => signedMediaURLRequests(localAttachmentVariantsQuery.data ?? [], messagesQuery.data ?? []),
-    [localAttachmentVariantsQuery.data, messagesQuery.data],
+    () =>
+      signedMediaURLRequests(
+        localAttachmentVariantsQuery.data ?? [],
+        messagesQuery.data ?? [],
+        localAttachmentsQuery.data ?? [],
+      ),
+    [localAttachmentVariantsQuery.data, localAttachmentsQuery.data, messagesQuery.data],
   );
   const signedMediaUrlsQuery = useQuery({
     queryKey: ['chat', authRecord.id, 'signed-media-urls', conversationId, signedMediaUrlRequests],
@@ -872,6 +904,7 @@ export default function ChatDetailScreen() {
 
     return (
       <MessageBubble
+        authId={authRecord.id}
         conversation={conversation}
         message={item.message}
         onLongPressMessage={setMessageActionTarget}
@@ -1580,7 +1613,7 @@ function toNormalizedMessageAttachment(
   signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
 ): MessageAttachment | null {
   const originalVariant = chooseVariant(variants, ['original']);
-  const previewVariant = chooseVariant(variants, ['preview', 'poster', 'thumbnail', 'original']);
+  const previewVariant = choosePreviewVariantForAttachment(attachment, variants);
   if (!originalVariant && !previewVariant) {
     return null;
   }
@@ -1590,26 +1623,50 @@ function toNormalizedMessageAttachment(
     return null;
   }
 
-  const originalUrl = signedUrlForVariant(primaryVariant, signedMediaUrlsByVariantId);
+  const originalUrl =
+    primaryVariant.variant === 'original'
+      ? signedUrlForVariant(primaryVariant, signedMediaUrlsByVariantId)
+      : null;
   const previewUrl = previewVariant
     ? signedUrlForVariant(previewVariant, signedMediaUrlsByVariantId)
     : originalUrl;
+  const displayVariant = previewVariant ?? primaryVariant;
+  const displayUrl = displayVariant.id === primaryVariant.id ? originalUrl : previewUrl;
 
   return {
     attachmentId: attachment.id,
-    byteSize: attachment.byte_size ?? primaryVariant.byte_size ?? null,
-    durationMs: attachment.duration_ms ?? primaryVariant.duration_ms ?? null,
-    height: attachment.height ?? primaryVariant.height ?? null,
+    byteSize: attachment.byte_size ?? displayVariant.byte_size ?? primaryVariant.byte_size ?? null,
+    cacheVariant: displayVariant.variant,
+    conversationId: attachment.conversation,
+    durationMs:
+      attachment.duration_ms ?? displayVariant.duration_ms ?? primaryVariant.duration_ms ?? null,
+    height: attachment.height ?? displayVariant.height ?? primaryVariant.height ?? null,
     kind: attachment.kind,
-    mimeType: attachment.mime_type || primaryVariant.mime_type || null,
+    messageId: attachment.message,
+    mimeType: attachment.mime_type || displayVariant.mime_type || primaryVariant.mime_type || null,
     name: attachment.original_name || 'attachment',
-    objectKey: primaryVariant.object_key,
+    objectKey: displayVariant.object_key,
     ordinal: attachment.ordinal,
-    thumbUrl: previewUrl ?? undefined,
-    url: originalUrl ?? previewUrl ?? '',
+    sha256: attachment.sha256 || displayVariant.sha256 || primaryVariant.sha256 || null,
+    thumbUrl: displayUrl ?? undefined,
+    url: originalUrl ?? displayUrl ?? '',
     variantId: primaryVariant.id,
-    width: attachment.width ?? primaryVariant.width ?? null,
+    width: attachment.width ?? displayVariant.width ?? primaryVariant.width ?? null,
   };
+}
+
+function choosePreviewVariantForAttachment(
+  attachment: MessageAttachmentRecord,
+  variants: AttachmentVariantRecord[],
+): AttachmentVariantRecord | undefined {
+  switch (attachment.kind) {
+    case 'video':
+      return chooseVariant(variants, ['poster', 'thumbnail', 'preview']);
+    case 'image':
+      return chooseVariant(variants, ['preview', 'thumbnail', 'original']);
+    default:
+      return chooseVariant(variants, ['original']);
+  }
 }
 
 function variantsByAttachmentIdForMessage(
@@ -1657,19 +1714,28 @@ function signedMediaURLByVariantId(items: SignedMediaURLItem[]): Map<string, Sig
 function signedMediaURLRequests(
   variants: AttachmentVariantRecord[],
   messages: MessageRecord[],
+  attachments: MessageAttachmentRecord[],
 ): SignedMediaURLRequestItem[] {
   const visibleMessageIds = new Set(
-    messages.filter((message) => message.kind === 'media').map((message) => message.id),
+    messages
+      .filter((message) => message.kind === 'media' || message.kind === 'file')
+      .map((message) => message.id),
   );
+  const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
   const preferredVariantByAttachment = new Map<string, AttachmentVariantRecord>();
   for (const variant of variants) {
     if (!variant.message || !visibleMessageIds.has(variant.message)) {
       continue;
     }
+    const attachment = attachmentById.get(variant.attachment);
+    if (attachment?.kind === 'video' && variant.variant === 'original') {
+      continue;
+    }
     const current = preferredVariantByAttachment.get(variant.attachment);
     if (
       !current ||
-      variantPreferenceRank(variant.variant) < variantPreferenceRank(current.variant)
+      variantPreferenceRank(variant.variant, attachment?.kind) <
+        variantPreferenceRank(current.variant, attachment?.kind)
     ) {
       preferredVariantByAttachment.set(variant.attachment, variant);
     }
@@ -1680,13 +1746,26 @@ function signedMediaURLRequests(
   }));
 }
 
-function variantPreferenceRank(variant: MediaUploadVariant): number {
+function variantPreferenceRank(variant: MediaUploadVariant, kind?: MediaAttachmentKind): number {
+  if (kind === 'video') {
+    switch (variant) {
+      case 'poster':
+        return 0;
+      case 'thumbnail':
+        return 1;
+      case 'preview':
+        return 2;
+      case 'original':
+        return 3;
+    }
+  }
+
   switch (variant) {
     case 'preview':
       return 0;
-    case 'poster':
-      return 1;
     case 'thumbnail':
+      return 1;
+    case 'poster':
       return 2;
     case 'original':
       return 3;
@@ -1870,19 +1949,6 @@ function getLocalMessageFileUri(messageId: string, fileName: string): string | n
   return `${directory}${messageId}-${sanitizeFileName(fileName)}`;
 }
 
-async function resolveFileDownloadUrl(attachment: MessageAttachment): Promise<string | null> {
-  if (attachment.url) {
-    return attachment.url;
-  }
-  if (!attachment.variantId) {
-    return null;
-  }
-
-  const response = await signMediaURLs(pb, [{ variantId: attachment.variantId }]);
-
-  return response.items[0]?.presigned.url ?? null;
-}
-
 function sanitizeFileName(name: string): string {
   const safeName = name
     .trim()
@@ -1893,15 +1959,248 @@ function sanitizeFileName(name: string): string {
   return safeName || 'file';
 }
 
-function fitImageSize(width: number, height: number, windowWidth: number) {
-  const maxWidth = Math.min(windowWidth * 0.74, 300);
-  const maxHeight = 380;
-  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+function getAlbumLayout(attachments: MessageAttachment[], windowWidth: number): MediaAlbumLayout {
+  const width = Math.round(Math.min(windowWidth * 0.78, 328));
+  const gap = 2;
+  const visibleCount = Math.min(attachments.length, 5);
+  const overflowCount = Math.max(0, attachments.length - visibleCount);
+
+  if (visibleCount <= 1) {
+    const attachment = attachments[0];
+    const aspectWidth = attachment?.width && attachment.width > 0 ? attachment.width : 4;
+    const aspectHeight = attachment?.height && attachment.height > 0 ? attachment.height : 3;
+    const ratio = Math.max(0.62, Math.min(1.35, aspectHeight / aspectWidth));
+    const height = Math.round(Math.min(380, Math.max(190, width * ratio)));
+
+    return {
+      height,
+      overflowCount,
+      tiles: [{ height, left: 0, top: 0, width }],
+      visibleCount,
+      width,
+    };
+  }
+
+  if (visibleCount === 2) {
+    const tileWidth = Math.floor((width - gap) / 2);
+    const height = Math.round(tileWidth * 1.18);
+
+    return {
+      height,
+      overflowCount,
+      tiles: [
+        { height, left: 0, top: 0, width: tileWidth },
+        {
+          height,
+          left: tileWidth + gap,
+          top: 0,
+          width: width - tileWidth - gap,
+        },
+      ],
+      visibleCount,
+      width,
+    };
+  }
+
+  if (visibleCount === 3) {
+    const largeWidth = Math.floor(width * 0.63);
+    const smallWidth = width - largeWidth - gap;
+    const height = Math.round(width * 0.78);
+    const smallHeight = Math.floor((height - gap) / 2);
+
+    return {
+      height,
+      overflowCount,
+      tiles: [
+        { height, left: 0, top: 0, width: largeWidth },
+        {
+          height: smallHeight,
+          left: largeWidth + gap,
+          top: 0,
+          width: smallWidth,
+        },
+        {
+          height: height - smallHeight - gap,
+          left: largeWidth + gap,
+          top: smallHeight + gap,
+          width: smallWidth,
+        },
+      ],
+      visibleCount,
+      width,
+    };
+  }
+
+  const tileWidth = Math.floor((width - gap) / 2);
+  const height = visibleCount === 4 ? width : Math.round(width * 1.12);
+  const rowHeight = Math.floor((height - gap) / 2);
+  const bottomColumns = visibleCount === 5 ? 3 : 2;
+  const bottomGapTotal = gap * (bottomColumns - 1);
+  const bottomTileWidth = Math.floor((width - bottomGapTotal) / bottomColumns);
+  const tiles: MediaTileFrame[] = [
+    { height: rowHeight, left: 0, top: 0, width: tileWidth },
+    {
+      height: rowHeight,
+      left: tileWidth + gap,
+      top: 0,
+      width: width - tileWidth - gap,
+    },
+  ];
+
+  for (let index = 0; index < bottomColumns && tiles.length < visibleCount; index += 1) {
+    const left = index * (bottomTileWidth + gap);
+    const isLast = index === bottomColumns - 1;
+    tiles.push({
+      height: height - rowHeight - gap,
+      left,
+      top: rowHeight + gap,
+      width: isLast ? width - left : bottomTileWidth,
+    });
+  }
+
+  return { height, overflowCount, tiles, visibleCount, width };
+}
+
+function getMediaTileImageUrl(attachment: MessageAttachment): string | undefined {
+  if (attachment.kind === 'video') {
+    return attachment.thumbUrl;
+  }
+
+  return attachment.thumbUrl || attachment.url || undefined;
+}
+
+function mediaDisplayCacheKey(
+  messageId: string,
+  attachment: MessageAttachment,
+): string | undefined {
+  const keyPart = attachment.attachmentId ?? attachment.name;
+  if (!keyPart) {
+    return undefined;
+  }
+
+  return `message-media:${messageId}:${keyPart}:${attachment.cacheVariant ?? 'preview'}`;
+}
+
+function fileCacheKey(messageId: string, attachment: MessageAttachment): string {
+  return `message-file:${messageId}:${attachment.attachmentId ?? attachment.name}`;
+}
+
+function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) {
+  if (
+    !attachment.attachmentId ||
+    !attachment.conversationId ||
+    !attachment.messageId ||
+    !attachment.objectKey
+  ) {
+    return undefined;
+  }
 
   return {
-    height: Math.max(1, Math.round(height * ratio)),
-    width: Math.max(1, Math.round(width * ratio)),
+    attachmentId: attachment.attachmentId,
+    authId,
+    byteSize: attachment.byteSize,
+    conversationId: attachment.conversationId,
+    durationMs: attachment.durationMs,
+    height: attachment.height,
+    messageId: attachment.messageId,
+    mimeType: attachment.mimeType,
+    protectedReason: attachment.kind === 'video' ? 'visible-video-poster' : 'visible-media-preview',
+    remoteObjectKey: attachment.objectKey,
+    sha256: attachment.sha256,
+    variant: attachment.cacheVariant ?? (attachment.kind === 'video' ? 'poster' : 'preview'),
+    width: attachment.width,
   };
+}
+
+async function persistDownloadedAttachment(
+  authId: string,
+  attachment: MessageAttachment,
+  localUri: string,
+  cacheKey: string,
+) {
+  if (
+    !attachment.attachmentId ||
+    !attachment.conversationId ||
+    !attachment.messageId ||
+    !attachment.objectKey
+  ) {
+    return;
+  }
+
+  await upsertMediaCacheEntry(authId, {
+    attachmentId: attachment.attachmentId,
+    byteSize: attachment.byteSize,
+    cacheKey,
+    conversationId: attachment.conversationId,
+    durationMs: attachment.durationMs,
+    height: attachment.height,
+    localUri,
+    messageId: attachment.messageId,
+    mimeType: attachment.mimeType,
+    pinned: true,
+    protectedReason: attachment.kind === 'file' ? 'downloaded-file' : 'downloaded-media',
+    remoteObjectKey: attachment.objectKey,
+    sha256: attachment.sha256,
+    state: 'available',
+    variant: attachment.cacheVariant ?? (attachment.kind === 'file' ? 'file' : 'original'),
+    width: attachment.width,
+  });
+  await touchMediaCacheEntry(authId, cacheKey);
+}
+
+async function resolveAttachmentOriginalUrl(attachment: MessageAttachment): Promise<string | null> {
+  if (attachment.url && (attachment.kind !== 'video' || attachment.cacheVariant === 'original')) {
+    return attachment.url;
+  }
+  const request: SignedMediaURLRequestItem | null = attachment.attachmentId
+    ? { attachmentId: attachment.attachmentId, variant: 'original' }
+    : attachment.variantId
+      ? { variantId: attachment.variantId }
+      : null;
+  if (!request) {
+    return null;
+  }
+
+  const response = await signMediaURLs(pb, [request]);
+
+  return response.items[0]?.presigned.url ?? null;
+}
+
+function isLocalFileUri(uri?: string | null): boolean {
+  return Boolean(uri && uri.startsWith('file://'));
+}
+
+function formatDuration(durationMs: number | null | undefined): string {
+  if (!durationMs || durationMs <= 0) {
+    return '';
+  }
+
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+function formatFileSize(byteSize: number | null | undefined): string {
+  if (!byteSize || byteSize <= 0) {
+    return '';
+  }
+
+  const units = ['B', 'KB', 'MB', 'GB'] as const;
+  let size = byteSize;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const precision = unitIndex === 0 || size >= 10 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
 }
 
 function ConversationIdentity({ conversation }: { conversation: ConversationView }) {
@@ -1967,75 +2266,23 @@ function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJo
 }
 
 function MessageBubble({
+  authId,
   conversation,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
 }: {
+  authId: string;
   conversation: ConversationView;
   message: ChatMessage;
   onLongPressMessage: (message: ChatMessage) => void;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
-  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
-  const imageAttachment = message.kind === 'media' ? message.attachments[0] : undefined;
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
-  const imageSourceUrl = imageAttachment?.thumbUrl || imageAttachment?.url;
-  const cachedImageUrl = useCachedRemoteUri(
-    imageSourceUrl,
-    imageAttachment ? `message-image:${message.id}:${imageAttachment.name}` : undefined,
-  );
   const isMine = message.author === 'me';
   const hasText = message.text.trim().length > 0;
   const isFailed = message.deliveryStatus === 'failed';
   const deliveryLabel = getDeliveryLabel(message.deliveryStatus);
-  const fileName = fileAttachment ? message.text || formatAttachmentName(fileAttachment.name) : '';
-  const localFileUri = fileAttachment ? getLocalMessageFileUri(message.id, fileName) : null;
-  const [imageSize, setImageSize] = useState({ height: 210, width: 250 });
-  const [isImageViewerVisible, setIsImageViewerVisible] = useState(false);
-  const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
-  const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>('idle');
-
-  useEffect(() => {
-    const uri = cachedImageUrl;
-    if (!uri) {
-      return;
-    }
-
-    Image.getSize(
-      uri,
-      (width, height) => setImageSize(fitImageSize(width, height, windowWidth)),
-      () => setImageSize(fitImageSize(250, 210, windowWidth)),
-    );
-  }, [cachedImageUrl, windowWidth]);
-
-  useEffect(() => {
-    if (!localFileUri) {
-      setFileDownloadState('idle');
-      return;
-    }
-
-    let isMounted = true;
-    setFileDownloadState('checking');
-
-    FileSystem.getInfoAsync(localFileUri)
-      .then((info) => {
-        if (!isMounted) {
-          return;
-        }
-
-        setFileDownloadState(info.exists ? 'downloaded' : 'idle');
-      })
-      .catch(() => {
-        if (isMounted) {
-          setFileDownloadState('idle');
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [localFileUri]);
 
   if (message.kind === 'call') {
     const isVideo = message.text.toLowerCase().includes('video');
@@ -2066,214 +2313,77 @@ function MessageBubble({
     );
   }
 
-  const handleOpenFile = async () => {
-    if (!fileAttachment || !localFileUri) {
-      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
-      return;
-    }
-
-    const cacheDirectory = getMessageFileCacheDirectory();
-    if (!cacheDirectory) {
-      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
-      return;
-    }
-
-    try {
-      setFileDownloadState('downloading');
-
-      const info = await FileSystem.getInfoAsync(localFileUri);
-      let uriToOpen = localFileUri;
-
-      if (!info.exists) {
-        const fileUrl = await resolveFileDownloadUrl(fileAttachment);
-        if (!fileUrl) {
-          throw new Error('File URL is not available.');
-        }
-        await FileSystem.makeDirectoryAsync(cacheDirectory, {
-          intermediates: true,
-        });
-        const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
-        uriToOpen = download.uri;
-      }
-
-      setFileDownloadState('downloaded');
-
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) {
-        Alert.alert('File downloaded', 'This device cannot open local files from InfChat yet.');
-        return;
-      }
-
-      await Sharing.shareAsync(uriToOpen, { dialogTitle: fileName });
-      setIsFilePreviewVisible(false);
-    } catch {
-      setFileDownloadState('idle');
-      Alert.alert('Could not open file', 'The file could not be downloaded. Try again later.');
-    }
-  };
-
-  if (imageAttachment) {
-    const displayUrl = cachedImageUrl ?? imageSourceUrl;
+  if (message.kind === 'media' && message.attachments.length > 0) {
     return (
-      <View
-        className={`mb-2 overflow-hidden rounded-[24px] bg-muted ${isMine ? 'self-end' : 'self-start'}`}
-      >
-        <Pressable
-          onLongPress={() => onLongPressMessage(message)}
-          onPress={() => setIsImageViewerVisible(true)}
-        >
-          {displayUrl ? (
-            <Image
-              resizeMode="cover"
-              source={{ uri: displayUrl }}
-              style={{ height: imageSize.height, width: imageSize.width }}
-            />
-          ) : (
-            <View
-              className="items-center justify-center bg-muted"
-              style={{ height: imageSize.height, width: imageSize.width }}
-            >
-              <ActivityIndicator colorClassName="accent-foreground" size="small" />
-            </View>
-          )}
-          <View className="absolute bottom-2 right-2 rounded-full bg-black/45 px-2 py-1">
-            <Text className="text-[11px] font-semibold text-white/90">{message.time}</Text>
-          </View>
-        </Pressable>
-        <Modal
-          animationType="fade"
-          onRequestClose={() => setIsImageViewerVisible(false)}
-          transparent
-          visible={isImageViewerVisible}
-        >
-          <View className="flex-1 bg-black">
-            <Pressable
-              className="absolute right-5 top-14 z-10 h-11 w-11 items-center justify-center rounded-full bg-white/10"
-              onPress={() => setIsImageViewerVisible(false)}
-            >
-              <Ionicons color="#fff" name="close" size={24} />
-            </Pressable>
-            <Pressable
-              className="flex-1 items-center justify-center"
-              onPress={() => setIsImageViewerVisible(false)}
-            >
-              {displayUrl ? (
-                <Image
-                  resizeMode="contain"
-                  source={{ uri: displayUrl }}
-                  style={{ height: windowHeight, width: windowWidth }}
-                />
-              ) : null}
-            </Pressable>
-          </View>
-        </Modal>
-      </View>
+      <MediaAlbumBubble
+        authId={authId}
+        conversation={conversation}
+        deliveryLabel={deliveryLabel}
+        isFailed={isFailed}
+        isMine={isMine}
+        message={message}
+        onLongPressMessage={onLongPressMessage}
+        onRetryFailedMessage={onRetryFailedMessage}
+      />
     );
   }
 
   if (fileAttachment) {
-    const isFileActionBusy =
-      fileDownloadState === 'checking' || fileDownloadState === 'downloading';
-    const fileActionLabel =
-      fileDownloadState === 'downloading'
-        ? 'Downloading...'
-        : fileDownloadState === 'downloaded'
-          ? 'Open downloaded file'
-          : 'Download file';
-    const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
-
     return (
-      <View
-        className={`mb-2 max-w-[78%] overflow-hidden rounded-[24px] ${isMine ? 'self-end bg-foreground' : 'self-start bg-muted'}`}
-      >
-        <Pressable
-          className="flex-row items-center gap-3 px-3 py-2.5"
-          onLongPress={() => onLongPressMessage(message)}
-          onPress={() => setIsFilePreviewVisible(true)}
-        >
-          <View
-            className={`h-11 w-11 items-center justify-center rounded-[16px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
-          >
-            <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="document-text" size={21} />
-          </View>
-          <View className="min-w-0 flex-1 pr-2">
-            <Text
-              className={`text-[15px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
-              numberOfLines={2}
-            >
-              {fileName}
-            </Text>
-            <Text
-              className={`mt-0.5 text-[11px] font-semibold ${isMine ? 'text-background/55' : 'text-muted-foreground'}`}
-            >
-              {fileStatusLabel} · {message.time}
-            </Text>
-          </View>
-          <View
-            className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
-          >
-            <Ionicons
-              color={isMine ? '#080b12' : '#f8fafc'}
-              name={fileDownloadState === 'downloaded' ? 'open-outline' : 'download-outline'}
-              size={17}
-            />
-          </View>
-        </Pressable>
-        <Modal
-          animationType="fade"
-          onRequestClose={() => setIsFilePreviewVisible(false)}
-          transparent
-          visible={isFilePreviewVisible}
-        >
-          <View className="flex-1 justify-end bg-black/70">
-            <Pressable className="flex-1" onPress={() => setIsFilePreviewVisible(false)} />
-            <View className="rounded-t-[34px] bg-background px-5 pb-8 pt-5">
-              <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
-              <View className="items-center">
-                <View className="h-16 w-16 items-center justify-center rounded-[24px] bg-muted">
-                  <Ionicons color="#f8fafc" name="document-text" size={30} />
-                </View>
-                <Text
-                  className="mt-4 text-center text-xl font-bold text-foreground"
-                  numberOfLines={3}
-                >
-                  {fileName}
-                </Text>
-                <Text className="mt-2 text-sm font-semibold text-muted-foreground">
-                  File preview is not available yet.
-                </Text>
-              </View>
-              <Pressable
-                className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-foreground/65' : 'bg-foreground'}`}
-                disabled={isFileActionBusy}
-                onPress={handleOpenFile}
-              >
-                <Text className="text-base font-bold text-background">{fileActionLabel}</Text>
-              </Pressable>
-              <Pressable
-                className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
-                onPress={() => setIsFilePreviewVisible(false)}
-              >
-                <Text className="text-base font-bold text-foreground">Close</Text>
-              </Pressable>
-            </View>
-          </View>
-        </Modal>
-      </View>
+      <FileMessageBubble
+        authId={authId}
+        deliveryLabel={deliveryLabel}
+        fileAttachment={fileAttachment}
+        isFailed={isFailed}
+        isMine={isMine}
+        message={message}
+        onLongPressMessage={onLongPressMessage}
+        onRetryFailedMessage={onRetryFailedMessage}
+      />
     );
   }
 
   return (
+    <TextMessageBubble
+      conversation={conversation}
+      deliveryLabel={deliveryLabel}
+      hasText={hasText}
+      isFailed={isFailed}
+      isMine={isMine}
+      message={message}
+      onLongPressMessage={onLongPressMessage}
+      onRetryFailedMessage={onRetryFailedMessage}
+    />
+  );
+}
+
+function TextMessageBubble({
+  conversation,
+  deliveryLabel,
+  hasText,
+  isFailed,
+  isMine,
+  message,
+  onLongPressMessage,
+  onRetryFailedMessage,
+}: {
+  conversation: ConversationView;
+  deliveryLabel?: string;
+  hasText: boolean;
+  isFailed: boolean;
+  isMine: boolean;
+  message: ChatMessage;
+  onLongPressMessage: (message: ChatMessage) => void;
+  onRetryFailedMessage: (messageId: string) => void;
+}) {
+  return (
     <View>
       <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
-        {isFailed && message.failedMessageId ? (
-          <Pressable
-            className="mb-1 h-7 w-7 items-center justify-center rounded-full bg-red-500"
-            onPress={() => onRetryFailedMessage(message.failedMessageId ?? '')}
-          >
-            <Ionicons color="#fff" name="alert" size={16} />
-          </Pressable>
-        ) : null}
+        <FailedRetryButton
+          failedMessageId={message.failedMessageId}
+          isFailed={isFailed}
+          onRetryFailedMessage={onRetryFailedMessage}
+        />
         <Pressable className="max-w-[82%]" onLongPress={() => onLongPressMessage(message)}>
           <View
             className={`rounded-[24px] px-4 py-3 ${isFailed ? 'bg-foreground/80' : isMine ? 'bg-foreground' : 'bg-muted'}`}
@@ -2300,14 +2410,596 @@ function MessageBubble({
               {message.time}
             </Text>
           </View>
-          {message.readLabel || deliveryLabel ? (
-            <Text className="mt-1 self-end text-[11px] font-semibold text-muted-foreground">
-              {deliveryLabel ?? message.readLabel}
-            </Text>
-          ) : null}
+          <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
         </Pressable>
       </View>
     </View>
+  );
+}
+
+function MediaAlbumBubble({
+  authId,
+  conversation,
+  deliveryLabel,
+  isFailed,
+  isMine,
+  message,
+  onLongPressMessage,
+  onRetryFailedMessage,
+}: {
+  authId: string;
+  conversation: ConversationView;
+  deliveryLabel?: string;
+  isFailed: boolean;
+  isMine: boolean;
+  message: ChatMessage;
+  onLongPressMessage: (message: ChatMessage) => void;
+  onRetryFailedMessage: (messageId: string) => void;
+}) {
+  const { width: windowWidth } = useWindowDimensions();
+  const [viewer, setViewer] = useState<MediaViewerState>({
+    index: 0,
+    visible: false,
+  });
+  const hasText = message.text.trim().length > 0;
+  const layout = getAlbumLayout(message.attachments, windowWidth);
+
+  return (
+    <View>
+      <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
+        <FailedRetryButton
+          failedMessageId={message.failedMessageId}
+          isFailed={isFailed}
+          onRetryFailedMessage={onRetryFailedMessage}
+        />
+        <View
+          className={`overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+          style={[styles.bubble, { width: layout.width }]}
+        >
+          <Pressable onLongPress={() => onLongPressMessage(message)}>
+            {!isMine && conversation.kind === 'group' && message.sender ? (
+              <Text className="px-3 pt-2 text-xs font-bold text-primary">{message.sender}</Text>
+            ) : null}
+          </Pressable>
+          <View style={{ height: layout.height, width: layout.width }}>
+            {message.attachments.slice(0, layout.visibleCount).map((attachment, index) => {
+              const frame = layout.tiles[index];
+              if (!frame) {
+                return null;
+              }
+
+              return (
+                <MediaAlbumTile
+                  attachment={attachment}
+                  authId={authId}
+                  frame={frame}
+                  key={attachment.attachmentId ?? `${message.id}-${index}`}
+                  messageId={message.id}
+                  onPress={() => setViewer({ index, visible: true })}
+                  overflowCount={index === layout.visibleCount - 1 ? layout.overflowCount : 0}
+                />
+              );
+            })}
+            {!hasText ? (
+              <View className="absolute bottom-2 right-2 rounded-full bg-black/55 px-2 py-1">
+                <Text className="text-[11px] font-semibold text-white/90">{message.time}</Text>
+              </View>
+            ) : null}
+          </View>
+          {hasText ? (
+            <Pressable
+              className="px-3 py-2"
+              onLongPress={() => onLongPressMessage(message)}
+              onPress={() => setViewer({ index: 0, visible: true })}
+            >
+              <Text
+                className={`text-[15px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+              >
+                {message.text}
+                <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
+              </Text>
+              <Text
+                className={`absolute bottom-2 right-3 text-[11px] font-medium ${
+                  isMine ? 'text-background/55' : 'text-muted-foreground'
+                }`}
+              >
+                {message.time}
+              </Text>
+            </Pressable>
+          ) : null}
+          <MediaGalleryModal
+            attachments={message.attachments}
+            initialIndex={viewer.index}
+            onClose={() => setViewer((current) => ({ ...current, visible: false }))}
+            visible={viewer.visible}
+          />
+        </View>
+      </View>
+      <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
+    </View>
+  );
+}
+
+function MediaAlbumTile({
+  attachment,
+  authId,
+  frame,
+  messageId,
+  onPress,
+  overflowCount,
+}: {
+  attachment: MessageAttachment;
+  authId: string;
+  frame: MediaTileFrame;
+  messageId: string;
+  onPress: () => void;
+  overflowCount: number;
+}) {
+  const sourceUrl = getMediaTileImageUrl(attachment);
+  const cachedUri = useCachedRemoteUri(
+    sourceUrl,
+    sourceUrl ? mediaDisplayCacheKey(messageId, attachment) : undefined,
+    sourceUrl ? mediaDisplayCacheRecord(authId, attachment) : undefined,
+  );
+  const isVideo = attachment.kind === 'video';
+  const hasPreview = Boolean(cachedUri && sourceUrl);
+
+  return (
+    <Pressable
+      className="overflow-hidden bg-background/55"
+      onPress={onPress}
+      style={{
+        height: frame.height,
+        left: frame.left,
+        position: 'absolute',
+        top: frame.top,
+        width: frame.width,
+      }}
+    >
+      {hasPreview ? (
+        <Image
+          resizeMode="cover"
+          source={{ uri: cachedUri ?? sourceUrl }}
+          style={{ height: frame.height, width: frame.width }}
+        />
+      ) : (
+        <View className="h-full w-full items-center justify-center bg-muted">
+          <Ionicons color="#94a3b8" name={isVideo ? 'videocam' : 'image'} size={26} />
+          {isVideo ? (
+            <Text className="mt-2 text-xs font-bold text-muted-foreground">Video</Text>
+          ) : null}
+        </View>
+      )}
+      {isVideo ? (
+        <View className="absolute inset-0 items-center justify-center bg-black/12">
+          <View className="h-12 w-12 items-center justify-center rounded-full bg-black/55">
+            <Ionicons color="#fff" name="play" size={22} />
+          </View>
+          {attachment.durationMs ? (
+            <View className="absolute bottom-2 left-2 rounded-full bg-black/55 px-2 py-1">
+              <Text className="text-[11px] font-bold text-white/90">
+                {formatDuration(attachment.durationMs)}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+      {overflowCount > 0 ? (
+        <View className="absolute inset-0 items-center justify-center bg-black/55">
+          <Text className="text-3xl font-black text-white">+{overflowCount}</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function MediaGalleryModal({
+  attachments,
+  initialIndex,
+  onClose,
+  visible,
+}: {
+  attachments: MessageAttachment[];
+  initialIndex: number;
+  onClose: () => void;
+  visible: boolean;
+}) {
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const selected = attachments[currentIndex] ?? attachments[0] ?? null;
+
+  useEffect(() => {
+    if (visible) {
+      setCurrentIndex(initialIndex);
+    }
+  }, [initialIndex, visible]);
+
+  useEffect(() => {
+    if (!visible || !selected) {
+      setResolvedUrl(null);
+      return;
+    }
+
+    let isMounted = true;
+    setResolvedUrl(null);
+    resolveAttachmentOriginalUrl(selected)
+      .then((url) => {
+        if (isMounted) {
+          setResolvedUrl(url);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setResolvedUrl(selected.url || selected.thumbUrl || null);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [selected, visible]);
+
+  if (!visible || !selected) {
+    return null;
+  }
+
+  const canGoBack = attachments.length > 1 && currentIndex > 0;
+  const canGoForward = attachments.length > 1 && currentIndex < attachments.length - 1;
+
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <View className="flex-1 bg-black">
+        <View className="absolute left-5 right-5 top-14 z-10 flex-row items-center justify-between">
+          <View className="rounded-full bg-white/10 px-3 py-2">
+            <Text className="text-sm font-bold text-white">
+              {currentIndex + 1} / {attachments.length}
+            </Text>
+          </View>
+          <Pressable
+            className="h-11 w-11 items-center justify-center rounded-full bg-white/10"
+            onPress={onClose}
+          >
+            <Ionicons color="#fff" name="close" size={24} />
+          </Pressable>
+        </View>
+        <View className="flex-1 items-center justify-center">
+          {resolvedUrl ? (
+            selected.kind === 'video' ? (
+              <GalleryVideo attachment={selected} uri={resolvedUrl} />
+            ) : (
+              <Image
+                resizeMode="contain"
+                source={{ uri: resolvedUrl }}
+                style={{ height: windowHeight, width: windowWidth }}
+              />
+            )
+          ) : (
+            <ActivityIndicator colorClassName="accent-white" size="large" />
+          )}
+        </View>
+        {canGoBack ? (
+          <Pressable
+            className="absolute left-4 top-1/2 h-12 w-12 items-center justify-center rounded-full bg-white/10"
+            onPress={() => setCurrentIndex((index) => Math.max(0, index - 1))}
+          >
+            <Ionicons color="#fff" name="chevron-back" size={26} />
+          </Pressable>
+        ) : null}
+        {canGoForward ? (
+          <Pressable
+            className="absolute right-4 top-1/2 h-12 w-12 items-center justify-center rounded-full bg-white/10"
+            onPress={() => setCurrentIndex((index) => Math.min(attachments.length - 1, index + 1))}
+          >
+            <Ionicons color="#fff" name="chevron-forward" size={26} />
+          </Pressable>
+        ) : null}
+        <View className="absolute bottom-10 left-5 right-5 items-center">
+          <Text className="text-center text-sm font-semibold text-white/80" numberOfLines={2}>
+            {selected.kind === 'video' && selected.durationMs
+              ? `${selected.name} · ${formatDuration(selected.durationMs)}`
+              : selected.name}
+          </Text>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri: string }) {
+  const source = useMemo<VideoSource>(
+    () => ({
+      metadata: {
+        title: attachment.name,
+      },
+      uri,
+      useCaching: false,
+    }),
+    [attachment.name, uri],
+  );
+  const sourceKey = JSON.stringify(source);
+  const player = useVideoPlayer(source, (createdPlayer) => {
+    createdPlayer.loop = false;
+    createdPlayer.muted = false;
+    createdPlayer.staysActiveInBackground = false;
+  });
+
+  useEffect(() => {
+    void player.replaceAsync(source).catch(() => {});
+    player.play();
+
+    return () => {
+      player.pause();
+    };
+  }, [player, source, sourceKey]);
+
+  return (
+    <VideoView
+      allowsPictureInPicture={false}
+      contentFit="contain"
+      fullscreenOptions={{ enable: true }}
+      nativeControls
+      player={player}
+      style={{ height: '100%', width: '100%' }}
+    />
+  );
+}
+
+function FileMessageBubble({
+  authId,
+  deliveryLabel,
+  fileAttachment,
+  isFailed,
+  isMine,
+  message,
+  onLongPressMessage,
+  onRetryFailedMessage,
+}: {
+  authId: string;
+  deliveryLabel?: string;
+  fileAttachment: MessageAttachment;
+  isFailed: boolean;
+  isMine: boolean;
+  message: ChatMessage;
+  onLongPressMessage: (message: ChatMessage) => void;
+  onRetryFailedMessage: (messageId: string) => void;
+}) {
+  const fileName = formatAttachmentName(fileAttachment.name) || 'File';
+  const localFileUri = getLocalMessageFileUri(message.id, fileName);
+  const sourceLocalUri = isLocalFileUri(fileAttachment.url) ? fileAttachment.url : localFileUri;
+  const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
+  const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>('idle');
+
+  useEffect(() => {
+    if (!sourceLocalUri) {
+      setFileDownloadState('idle');
+      return;
+    }
+
+    let isMounted = true;
+    setFileDownloadState('checking');
+
+    FileSystem.getInfoAsync(sourceLocalUri)
+      .then((info) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setFileDownloadState(info.exists ? 'downloaded' : 'idle');
+      })
+      .catch(() => {
+        if (isMounted) {
+          setFileDownloadState('idle');
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [sourceLocalUri]);
+
+  const handleOpenFile = async () => {
+    if (!localFileUri && !sourceLocalUri) {
+      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
+      return;
+    }
+
+    const cacheDirectory = getMessageFileCacheDirectory();
+    if (!cacheDirectory && !isLocalFileUri(fileAttachment.url)) {
+      Alert.alert('Could not download file', 'Local file storage is not available on this device.');
+      return;
+    }
+
+    try {
+      setFileDownloadState('downloading');
+
+      let uriToOpen = sourceLocalUri ?? localFileUri ?? '';
+      const info = uriToOpen ? await FileSystem.getInfoAsync(uriToOpen) : null;
+
+      if (!info?.exists) {
+        const fileUrl = await resolveAttachmentOriginalUrl(fileAttachment);
+        if (!fileUrl || !localFileUri || !cacheDirectory) {
+          throw new Error('File URL is not available.');
+        }
+        await FileSystem.makeDirectoryAsync(cacheDirectory, {
+          intermediates: true,
+        });
+        const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
+        uriToOpen = download.uri;
+        await persistDownloadedAttachment(
+          authId,
+          fileAttachment,
+          uriToOpen,
+          fileCacheKey(message.id, fileAttachment),
+        );
+      }
+
+      setFileDownloadState('downloaded');
+
+      const canShare = await Sharing.isAvailableAsync();
+      if (!canShare) {
+        Alert.alert('File downloaded', 'This device cannot open local files from InfChat yet.');
+        return;
+      }
+
+      await Sharing.shareAsync(uriToOpen, { dialogTitle: fileName });
+      setIsFilePreviewVisible(false);
+    } catch {
+      setFileDownloadState('idle');
+      Alert.alert('Could not open file', 'The file could not be downloaded. Try again later.');
+    }
+  };
+
+  const isFileActionBusy = fileDownloadState === 'checking' || fileDownloadState === 'downloading';
+  const fileActionLabel =
+    fileDownloadState === 'downloading'
+      ? 'Downloading...'
+      : fileDownloadState === 'downloaded'
+        ? 'Open file'
+        : 'Download file';
+  const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
+  const fileMetaLabel = [formatFileSize(fileAttachment.byteSize), fileStatusLabel, message.time]
+    .filter(Boolean)
+    .join(' · ');
+  const caption = message.text.trim();
+
+  return (
+    <View>
+      <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
+        <FailedRetryButton
+          failedMessageId={message.failedMessageId}
+          isFailed={isFailed}
+          onRetryFailedMessage={onRetryFailedMessage}
+        />
+        <View
+          className={`max-w-[82%] overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+          style={styles.bubble}
+        >
+          <Pressable
+            className="flex-row items-center gap-3 px-3 py-2.5"
+            onLongPress={() => onLongPressMessage(message)}
+            onPress={() => setIsFilePreviewVisible(true)}
+          >
+            <View
+              className={`h-11 w-11 items-center justify-center rounded-[16px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+            >
+              <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="document-text" size={21} />
+            </View>
+            <View className="min-w-0 flex-1 pr-2">
+              <Text
+                className={`text-[15px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+                numberOfLines={2}
+              >
+                {fileName}
+              </Text>
+              <Text
+                className={`mt-0.5 text-[11px] font-semibold ${isMine ? 'text-background/55' : 'text-muted-foreground'}`}
+              >
+                {fileMetaLabel}
+              </Text>
+            </View>
+            <View
+              className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+            >
+              <Ionicons
+                color={isMine ? '#080b12' : '#f8fafc'}
+                name={fileDownloadState === 'downloaded' ? 'open-outline' : 'download-outline'}
+                size={17}
+              />
+            </View>
+          </Pressable>
+          {caption ? (
+            <Text
+              className={`px-4 pb-3 text-[15px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+            >
+              {caption}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+      <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
+      <Modal
+        animationType="fade"
+        onRequestClose={() => setIsFilePreviewVisible(false)}
+        transparent
+        visible={isFilePreviewVisible}
+      >
+        <View className="flex-1 justify-end bg-black/70">
+          <Pressable className="flex-1" onPress={() => setIsFilePreviewVisible(false)} />
+          <View className="rounded-t-[34px] bg-background px-5 pb-8 pt-5">
+            <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
+            <View className="items-center">
+              <View className="h-16 w-16 items-center justify-center rounded-[24px] bg-muted">
+                <Ionicons color="#f8fafc" name="document-text" size={30} />
+              </View>
+              <Text
+                className="mt-4 text-center text-xl font-bold text-foreground"
+                numberOfLines={3}
+              >
+                {fileName}
+              </Text>
+              <Text className="mt-2 text-sm font-semibold text-muted-foreground">
+                {formatFileSize(fileAttachment.byteSize) || 'Document'}
+              </Text>
+            </View>
+            <Pressable
+              className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-foreground/65' : 'bg-foreground'}`}
+              disabled={isFileActionBusy}
+              onPress={handleOpenFile}
+            >
+              <Text className="text-base font-bold text-background">{fileActionLabel}</Text>
+            </Pressable>
+            <Pressable
+              className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
+              onPress={() => setIsFilePreviewVisible(false)}
+            >
+              <Text className="text-base font-bold text-foreground">Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function FailedRetryButton({
+  failedMessageId,
+  isFailed,
+  onRetryFailedMessage,
+}: {
+  failedMessageId?: string;
+  isFailed: boolean;
+  onRetryFailedMessage: (messageId: string) => void;
+}) {
+  if (!isFailed || !failedMessageId) {
+    return null;
+  }
+
+  return (
+    <Pressable
+      className="mb-1 h-7 w-7 items-center justify-center rounded-full bg-red-500"
+      onPress={() => onRetryFailedMessage(failedMessageId)}
+    >
+      <Ionicons color="#fff" name="alert" size={16} />
+    </Pressable>
+  );
+}
+
+function BubbleDeliveryLabel({
+  deliveryLabel,
+  message,
+}: {
+  deliveryLabel?: string;
+  message: ChatMessage;
+}) {
+  if (!message.readLabel && !deliveryLabel) {
+    return null;
+  }
+
+  return (
+    <Text className="mt-1 self-end text-[11px] font-semibold text-muted-foreground">
+      {deliveryLabel ?? message.readLabel}
+    </Text>
   );
 }
 

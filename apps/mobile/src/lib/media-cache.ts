@@ -1,16 +1,36 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useState } from 'react';
 
+import {
+  touchMediaCacheEntry,
+  type UpsertMediaCacheEntryInput,
+  upsertMediaCacheEntry,
+} from './chat-sync-store';
+
 const MEDIA_CACHE_DIRECTORY = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}infchat-media/`
   : null;
 
-export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string): string | null {
+type MediaCacheRecordInput = Omit<UpsertMediaCacheEntryInput, 'cacheKey' | 'localUri'> & {
+  authId: string;
+};
+
+export function useCachedRemoteUri(
+  remoteUri?: string | null,
+  cacheKey?: string,
+  cacheRecord?: MediaCacheRecordInput,
+): string | null {
   const [localUri, setLocalUri] = useState<string | null>(null);
+  const cacheRecordKey = cacheRecord ? stableCacheRecordKey(cacheRecord) : '';
 
   useEffect(() => {
     if (!remoteUri || !cacheKey || !MEDIA_CACHE_DIRECTORY) {
       setLocalUri(null);
+      return;
+    }
+
+    if (!isDownloadableRemoteUri(remoteUri)) {
+      setLocalUri(remoteUri);
       return;
     }
 
@@ -25,6 +45,7 @@ export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string)
 
         if (info.exists) {
           setLocalUri(targetUri);
+          await persistCacheRecord(cacheKey, targetUri, cacheRecord);
           return;
         }
 
@@ -32,6 +53,7 @@ export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string)
           intermediates: true,
         });
         await FileSystem.downloadAsync(remoteUri, targetUri);
+        await persistCacheRecord(cacheKey, targetUri, cacheRecord);
 
         if (isMounted) {
           setLocalUri(targetUri);
@@ -46,7 +68,7 @@ export function useCachedRemoteUri(remoteUri?: string | null, cacheKey?: string)
     return () => {
       isMounted = false;
     };
-  }, [cacheKey, remoteUri]);
+  }, [cacheKey, cacheRecordKey, remoteUri]);
 
   return localUri ?? remoteUri ?? null;
 }
@@ -86,4 +108,46 @@ function getUriExtension(uri: string): string {
   const match = /\.([a-zA-Z0-9]{2,5})$/.exec(path);
 
   return match ? `.${match[1].toLowerCase()}` : '';
+}
+
+function isDownloadableRemoteUri(uri: string): boolean {
+  return /^https?:\/\//i.test(uri);
+}
+
+async function persistCacheRecord(
+  cacheKey: string,
+  localUri: string,
+  cacheRecord?: MediaCacheRecordInput,
+) {
+  if (!cacheRecord) {
+    return;
+  }
+
+  const { authId, ...entry } = cacheRecord;
+  await upsertMediaCacheEntry(authId, {
+    ...entry,
+    cacheKey,
+    localUri,
+    state: entry.state ?? 'available',
+  });
+  await touchMediaCacheEntry(authId, cacheKey);
+}
+
+function stableCacheRecordKey(cacheRecord: MediaCacheRecordInput): string {
+  return [
+    cacheRecord.authId,
+    cacheRecord.conversationId,
+    cacheRecord.messageId,
+    cacheRecord.attachmentId,
+    cacheRecord.variant,
+    cacheRecord.remoteObjectKey,
+    cacheRecord.mimeType ?? '',
+    cacheRecord.byteSize ?? '',
+    cacheRecord.sha256 ?? '',
+    cacheRecord.width ?? '',
+    cacheRecord.height ?? '',
+    cacheRecord.durationMs ?? '',
+    cacheRecord.pinned ? '1' : '0',
+    cacheRecord.protectedReason ?? '',
+  ].join('|');
 }

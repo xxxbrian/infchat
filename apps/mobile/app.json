@@ -89,7 +89,8 @@
           "microphonePermission": "InfChat uses the microphone for voice and video calls."
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true
