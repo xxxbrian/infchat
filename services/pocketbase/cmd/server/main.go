@@ -46,6 +46,7 @@ func main() {
 	bindCallRoutes(app)
 	bindChatSyncRoutes(app)
 	bindFriendSuggestionRoutes(app)
+	bindPresenceRoutes(app)
 	bindPushRoutes(app)
 
 	if err := app.Start(); err != nil {
@@ -1712,6 +1713,7 @@ func ensurePrivacySettings(app core.App, userId string) error {
 	settings.Set("user", userId)
 	settings.Set("show_in_public_suggestions", false)
 	settings.Set("show_in_mutual_suggestions", true)
+	settings.Set("presence_visibility", "contacts_and_shared_chats")
 
 	return app.Save(settings)
 }

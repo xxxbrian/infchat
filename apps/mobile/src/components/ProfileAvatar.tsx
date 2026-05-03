@@ -5,6 +5,7 @@ import { useCachedRemoteUri } from '../lib/media-cache';
 
 export type AvatarProfile = {
   avatarUrl?: string | null;
+  isOnline?: boolean;
   name?: string;
   userId: string;
   username: string;
@@ -12,18 +13,19 @@ export type AvatarProfile = {
 
 export function ProfileAvatar({
   avatarUrl,
+  isOnline,
   name,
   size,
   userId,
   username,
 }: {
   avatarUrl?: string | null;
+  isOnline?: boolean;
   name?: string;
   size: number;
   userId: string;
   username: string;
 }) {
-  const initial = getAvatarInitial(name, username);
   const cachedAvatarUrl = useCachedRemoteUri(
     avatarUrl,
     avatarUrl ? `avatar:${userId || username}:${avatarUrl.split('?')[0]}` : undefined,
@@ -34,6 +36,7 @@ export function ProfileAvatar({
       avatarUrl={cachedAvatarUrl}
       name={name}
       seed={userId || username}
+      showOnlineDot={isOnline}
       size={size}
       username={username}
     />
@@ -46,6 +49,7 @@ export function AvatarCircle({
   borderWidth = 0,
   name,
   seed,
+  showOnlineDot,
   size,
   username,
 }: {
@@ -54,35 +58,53 @@ export function AvatarCircle({
   borderWidth?: number;
   name?: string;
   seed: string;
+  showOnlineDot?: boolean;
   size: number;
   username: string;
 }) {
   const initial = getAvatarInitial(name, username);
 
   return (
-    <View
-      className="items-center justify-center overflow-hidden rounded-full"
-      style={{
-        backgroundColor: getAvatarColor(seed || username),
-        borderColor,
-        borderWidth,
-        height: size,
-        width: size,
-      }}
-    >
-      {avatarUrl ? (
-        <Image
-          source={{ uri: avatarUrl }}
+    <View style={{ height: size, width: size }}>
+      <View
+        className="items-center justify-center overflow-hidden rounded-full"
+        style={{
+          backgroundColor: getAvatarColor(seed || username),
+          borderColor,
+          borderWidth,
+          height: size,
+          width: size,
+        }}
+      >
+        {avatarUrl ? (
+          <Image
+            source={{ uri: avatarUrl }}
+            style={{
+              height: size,
+              width: size,
+            }}
+          />
+        ) : (
+          <Text
+            className="font-bold text-background"
+            style={{ fontSize: Math.max(13, size * 0.38) }}
+          >
+            {initial}
+          </Text>
+        )}
+      </View>
+      {showOnlineDot ? (
+        <View
+          className="absolute rounded-full border-background bg-emerald-400"
           style={{
-            height: size,
-            width: size,
+            borderWidth: Math.max(2, size * 0.055),
+            bottom: 0,
+            height: Math.max(12, size * 0.28),
+            right: 0,
+            width: Math.max(12, size * 0.28),
           }}
         />
-      ) : (
-        <Text className="font-bold text-background" style={{ fontSize: Math.max(13, size * 0.38) }}>
-          {initial}
-        </Text>
-      )}
+      ) : null}
     </View>
   );
 }

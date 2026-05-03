@@ -12,6 +12,7 @@ import {
   type MediaUploadVariant,
   type MessageAttachmentRecord,
   type MessageRecord,
+  type PresenceRecord,
   type ProfileRecord,
   type SignedMediaURLItem,
   type SignedMediaURLRequestItem,
@@ -90,6 +91,7 @@ import {
   preparePickedMediaAttachments,
 } from '../../lib/media-outbox-files';
 import { pb } from '../../lib/pocketbase';
+import { formatPresenceLabel, usePresence } from '../../lib/presence';
 
 type ConversationView = {
   id: string;
@@ -100,6 +102,7 @@ type ConversationView = {
   avatarUrl?: string | null;
   avatarUserId: string;
   avatarUsername: string;
+  isOnline?: boolean;
 };
 
 type ChatMessage = {
@@ -346,6 +349,7 @@ export default function ChatDetailScreen() {
 
     return profiles;
   }, [profilesQuery.data]);
+  const presenceQuery = usePresence(memberIds);
   const conversation = useMemo(
     () =>
       toConversationView(
@@ -354,12 +358,14 @@ export default function ChatDetailScreen() {
         authRecord.id,
         fileTokenQuery.data,
         conversationMemberships,
+        presenceQuery.byUserId,
       ),
     [
       authRecord.id,
       conversationMemberships,
       conversationQuery.data,
       fileTokenQuery.data,
+      presenceQuery.byUserId,
       profilesByUserId,
     ],
   );
@@ -1517,6 +1523,7 @@ function toConversationView(
   currentUserId: string,
   fileToken?: string,
   memberships: ConversationMembershipRecord[] = [],
+  presenceByUserId = new Map<string, PresenceRecord>(),
 ): ConversationView {
   if (!conversation) {
     return {
@@ -1538,6 +1545,7 @@ function toConversationView(
     .map((memberId) => profilesByUserId.get(memberId))
     .filter((profile): profile is ProfileRecord => Boolean(profile));
   const firstProfile = otherProfiles[0];
+  const firstPresence = firstProfile ? presenceByUserId.get(firstProfile.user) : undefined;
   const name =
     conversation.kind === 'group'
       ? conversation.title ||
@@ -1553,10 +1561,11 @@ function toConversationView(
     subtitle:
       conversation.kind === 'group'
         ? `${conversation.member_count ?? activeMemberIds.length} members`
-        : 'friend',
+        : formatPresenceLabel(firstPresence) || 'friend',
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken, 'thumb') : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
+    isOnline: firstPresence?.isOnline,
   };
 }
 
@@ -3314,6 +3323,7 @@ function AvatarStack({
       name={conversation.name}
       privateProfile={{
         avatarUrl: conversation.avatarUrl,
+        isOnline: conversation.isOnline,
         name: conversation.name,
         userId: conversation.avatarUserId,
         username: conversation.avatarUsername,

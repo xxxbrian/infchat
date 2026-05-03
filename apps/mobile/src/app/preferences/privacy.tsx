@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
   getPrivacySettings,
+  type PresenceVisibility,
   updatePrivacySettings,
   type PrivacySettingsRecord,
 } from '@infchat/pocketbase';
@@ -12,7 +13,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../lib/auth-context';
 import { pb } from '../../lib/pocketbase';
 
-type PrivacyField = 'mutual' | 'public';
+type PrivacyField = 'mutual' | 'presence' | 'public';
+
+const presenceOptions: Array<{ label: string; value: PresenceVisibility }> = [
+  { label: 'Everybody', value: 'everybody' },
+  { label: 'Friends and shared chats', value: 'contacts_and_shared_chats' },
+  { label: 'Nobody', value: 'nobody' },
+];
 
 export default function PrivacySettingsScreen() {
   const { authRecord } = useAuth();
@@ -26,14 +33,24 @@ export default function PrivacySettingsScreen() {
   });
   const settings = settingsQuery.data;
   const updateMutation = useMutation({
-    mutationFn: ({ field, value }: { field: PrivacyField; value: boolean }) => {
+    mutationFn: ({
+      field,
+      value,
+    }: {
+      field: PrivacyField;
+      value: boolean | PresenceVisibility;
+    }) => {
       if (!settings) {
         throw new Error('Privacy settings are not loaded');
       }
 
       return updatePrivacySettings(pb, settings.id, {
-        showInMutualSuggestions: field === 'mutual' ? value : settings.show_in_mutual_suggestions,
-        showInPublicSuggestions: field === 'public' ? value : settings.show_in_public_suggestions,
+        presenceVisibility:
+          field === 'presence' ? (value as PresenceVisibility) : settings.presence_visibility,
+        showInMutualSuggestions:
+          field === 'mutual' ? Boolean(value) : settings.show_in_mutual_suggestions,
+        showInPublicSuggestions:
+          field === 'public' ? Boolean(value) : settings.show_in_public_suggestions,
       });
     },
     onMutate: async ({ field, value }) => {
@@ -44,8 +61,9 @@ export default function PrivacySettingsScreen() {
       if (previousSettings) {
         queryClient.setQueryData<PrivacySettingsRecord>(privacySettingsQueryKey, {
           ...previousSettings,
-          ...(field === 'mutual' ? { show_in_mutual_suggestions: value } : {}),
-          ...(field === 'public' ? { show_in_public_suggestions: value } : {}),
+          ...(field === 'mutual' ? { show_in_mutual_suggestions: Boolean(value) } : {}),
+          ...(field === 'presence' ? { presence_visibility: value as PresenceVisibility } : {}),
+          ...(field === 'public' ? { show_in_public_suggestions: Boolean(value) } : {}),
         });
       }
 
@@ -55,6 +73,9 @@ export default function PrivacySettingsScreen() {
       queryClient.setQueryData(privacySettingsQueryKey, nextSettings);
       void queryClient.invalidateQueries({
         queryKey: ['friend-suggestions', authRecord.id],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ['presence'],
       });
     },
     onError: (_error, _variables, context) => {
@@ -96,6 +117,11 @@ export default function PrivacySettingsScreen() {
               onValueChange={(value) => updateMutation.mutate({ field: 'mutual', value })}
               value={settings?.show_in_mutual_suggestions ?? true}
             />
+            <PresenceVisibilityRow
+              disabled={isMutating}
+              onValueChange={(value) => updateMutation.mutate({ field: 'presence', value })}
+              value={settings?.presence_visibility ?? 'contacts_and_shared_chats'}
+            />
             <PrivacySwitchRow
               disabled={isMutating}
               label="Public suggestions"
@@ -105,6 +131,48 @@ export default function PrivacySettingsScreen() {
           </View>
         </View>
       </ScrollView>
+    </View>
+  );
+}
+
+function PresenceVisibilityRow({
+  disabled,
+  onValueChange,
+  value,
+}: {
+  disabled?: boolean;
+  onValueChange: (value: PresenceVisibility) => void;
+  value: PresenceVisibility;
+}) {
+  return (
+    <View className="border-b border-border/70 px-5 py-4">
+      <Text className="text-[16px] font-semibold text-foreground">Last Seen & Online</Text>
+      <View className="mt-3 gap-2">
+        {presenceOptions.map((option) => {
+          const isSelected = option.value === value;
+
+          return (
+            <Pressable
+              className={`min-h-11 flex-row items-center justify-between rounded-2xl border px-4 ${
+                isSelected ? 'border-primary bg-primary/15' : 'border-border/60 bg-background/35'
+              }`}
+              disabled={disabled}
+              key={option.value}
+              onPress={() => onValueChange(option.value)}
+            >
+              <Text
+                className={`min-w-0 flex-1 text-[15px] font-semibold ${
+                  isSelected ? 'text-primary' : 'text-foreground'
+                }`}
+                numberOfLines={1}
+              >
+                {option.label}
+              </Text>
+              {isSelected ? <Ionicons color="#60a5fa" name="checkmark" size={18} /> : null}
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }

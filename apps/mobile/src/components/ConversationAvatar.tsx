@@ -25,6 +25,7 @@ export function ConversationAvatar({
     return (
       <ProfileAvatar
         avatarUrl={profile?.avatarUrl}
+        isOnline={profile?.isOnline}
         name={profile?.name || name}
         size={size}
         userId={profile?.userId || conversation.id}

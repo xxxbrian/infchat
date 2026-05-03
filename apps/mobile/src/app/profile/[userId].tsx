@@ -32,6 +32,7 @@ import { getDeviceId } from '../../lib/device-id';
 import { getCachedProfileByUserId, refreshCachedProfileByUserId } from '../../lib/local-cache';
 import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
+import { formatPresenceLabel, usePresence } from '../../lib/presence';
 
 const HEADER_SIDE_PADDING = 20;
 const TOP_BAR_HEIGHT = 48;
@@ -67,6 +68,9 @@ export default function ProfileScreen() {
     staleTime: 1000 * 60 * 5,
   });
   const profile = profileQuery.data;
+  const presenceQuery = usePresence(profileUserId ? [profileUserId] : []);
+  const presence = presenceQuery.byUserId.get(profileUserId);
+  const presenceLabel = formatPresenceLabel(presence);
   const canContactProfile = Boolean(profileUserId && profileUserId !== authRecord.id && profile);
   const displayName = profile?.display_name || profile?.username || 'Profile';
   const username = profile?.username || 'unknown';
@@ -298,6 +302,9 @@ export default function ProfileScreen() {
                   {initial}
                 </Animated.Text>
               )}
+              {presence?.isOnline ? (
+                <View className="absolute bottom-1 right-1 h-6 w-6 rounded-full border-[4px] border-background bg-emerald-400" />
+              ) : null}
               <Animated.View
                 className="absolute bottom-0 left-0 right-0 overflow-hidden"
                 style={{ height: 156, opacity: pulledIdentityOpacity }}
@@ -326,6 +333,11 @@ export default function ProfileScreen() {
                   <Text className="mt-1 text-base font-semibold text-foreground/75">
                     @{username}
                   </Text>
+                  {presenceLabel ? (
+                    <Text className="mt-1 text-sm font-semibold text-emerald-200/90">
+                      {presenceLabel}
+                    </Text>
+                  ) : null}
                 </View>
               </Animated.View>
             </Animated.View>
@@ -343,6 +355,14 @@ export default function ProfileScreen() {
               >
                 @{username}
               </Text>
+              {presenceLabel ? (
+                <Text
+                  className={`mt-1 text-sm font-semibold ${presence?.isOnline ? 'text-emerald-300' : 'text-muted-foreground'}`}
+                  numberOfLines={1}
+                >
+                  {presenceLabel}
+                </Text>
+              ) : null}
             </Animated.View>
           </View>
         </Animated.View>
