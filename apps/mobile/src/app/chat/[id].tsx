@@ -3023,8 +3023,14 @@ function MediaAlbumBubble({
                   frame={frame}
                   key={attachment.attachmentId ?? `${message.id}-${index}`}
                   messageId={message.id}
+                  onLongPress={
+                    isPreview
+                      ? undefined
+                      : () => measureMessageActionFrame(bubbleRef, message, onLongPressMessage)
+                  }
                   onPress={isPreview ? undefined : () => setViewer({ index, visible: true })}
                   overflowCount={index === layout.visibleCount - 1 ? layout.overflowCount : 0}
+                  showVideoDownloadBadge={!isPreview}
                 />
               );
             })}
@@ -3190,15 +3196,19 @@ function MediaAlbumTile({
   authId,
   frame,
   messageId,
+  onLongPress,
   onPress,
   overflowCount,
+  showVideoDownloadBadge = true,
 }: {
   attachment: MessageAttachment;
   authId: string;
   frame: MediaTileFrame;
   messageId: string;
+  onLongPress?: () => void;
   onPress?: () => void;
   overflowCount: number;
+  showVideoDownloadBadge?: boolean;
 }) {
   const videoDownload = useVideoOriginalDownload(
     authId,
@@ -3245,6 +3255,7 @@ function MediaAlbumTile({
     <Pressable
       className="overflow-hidden bg-background/55"
       disabled={!onPress}
+      onLongPress={onLongPress}
       onPress={onPress}
       style={{
         height: frame.height,
@@ -3293,12 +3304,14 @@ function MediaAlbumTile({
               </Text>
             </View>
           ) : null}
-          <VideoDownloadBadge
-            byteSize={attachment.originalByteSize ?? attachment.byteSize}
-            onPress={videoDownload.downloadOriginal}
-            progress={videoDownload.progress}
-            status={videoDownload.status}
-          />
+          {showVideoDownloadBadge ? (
+            <VideoDownloadBadge
+              byteSize={attachment.originalByteSize ?? attachment.byteSize}
+              onPress={videoDownload.downloadOriginal}
+              progress={videoDownload.progress}
+              status={videoDownload.status}
+            />
+          ) : null}
         </View>
       ) : null}
       {overflowCount > 0 ? (
@@ -3749,6 +3762,9 @@ function FileMessageBubble({
   }, [sourceLocalUri]);
 
   const handleOpenFile = async () => {
+    if (fileDownloadState === 'checking' || fileDownloadState === 'downloading') {
+      return;
+    }
     if (!localFileUri && !sourceLocalUri) {
       Alert.alert('Could not download file', 'Local file storage is not available on this device.');
       return;
@@ -3826,7 +3842,7 @@ function FileMessageBubble({
         <Pressable
           ref={bubbleRef}
           className={`${isPreview ? 'w-full' : 'max-w-[82%]'} overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
-          disabled={isFileActionBusy || isPreview}
+          disabled={isPreview}
           onLongPress={
             isPreview
               ? undefined
