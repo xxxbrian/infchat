@@ -35,6 +35,8 @@ export type MediaCacheUsageSummary = {
 
 export type MediaCacheClearOptions = {
   conversationId?: string;
+  includePinned?: boolean;
+  includeProtected?: boolean;
   type?: keyof MediaCacheUsageSummary['byType'];
 };
 
@@ -204,7 +206,10 @@ export async function clearManagedMediaCache(
   };
 
   for (const entry of entries) {
-    if (entry.pinned || entry.protected_reason) {
+    if (!options.includePinned && entry.pinned) {
+      continue;
+    }
+    if (!options.includeProtected && entry.protected_reason) {
       continue;
     }
     if (options.conversationId && entry.conversation_id !== options.conversationId) {

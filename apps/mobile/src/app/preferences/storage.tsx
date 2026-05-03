@@ -32,7 +32,12 @@ export default function StorageSettingsScreen() {
     networkMode: 'always',
   });
   const clearMutation = useMutation({
-    mutationFn: (type?: CacheType) => clearManagedMediaCache(authRecord.id, type ? { type } : {}),
+    mutationFn: (type?: CacheType) =>
+      clearManagedMediaCache(authRecord.id, {
+        includePinned: true,
+        includeProtected: true,
+        ...(type ? { type } : {}),
+      }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });
       await queryClient.invalidateQueries({
@@ -80,8 +85,8 @@ export default function StorageSettingsScreen() {
       >
         <View className="px-5 pt-5">
           <Text className="px-2 text-sm font-medium leading-5 text-muted-foreground">
-            Manage InfChat media files stored on this device. Pending uploads and protected files
-            are preserved.
+            Manage InfChat media files stored on this device. Pending uploads are preserved; cached
+            previews, originals, and downloaded files can be cleared here.
           </Text>
 
           <View className="mt-5 overflow-hidden rounded-[28px] bg-muted" style={styles.group}>
