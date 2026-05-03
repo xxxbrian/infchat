@@ -23,6 +23,7 @@ import { FlashList, type FlashListRef, type ListRenderItemInfo } from '@shopify/
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
@@ -33,7 +34,6 @@ import {
   Alert,
   Animated,
   Easing,
-  Image,
   Keyboard,
   KeyboardAvoidingView,
   Modal,
@@ -130,6 +130,7 @@ type ChatRenderItem =
 
 type MessageAttachment = {
   attachmentId?: string;
+  blurhash?: string | null;
   byteSize?: number | null;
   cacheVariant?: MediaUploadVariant | 'file' | 'voice';
   conversationId?: string;
@@ -151,6 +152,12 @@ type MessageAttachment = {
   variantId?: string;
   variantObjectKey?: string;
   width?: number | null;
+};
+
+type MediaPlaceholder = {
+  blurhash: string;
+  height: number;
+  width: number;
 };
 
 type LocalMediaReplica = {
@@ -477,6 +484,7 @@ export default function ChatDetailScreen() {
     () => ({
       animateAutoScrollToBottom: false,
       autoscrollToBottomThreshold: 0.2,
+      startRenderingFromBottom: true,
     }),
     [],
   );
@@ -1640,6 +1648,7 @@ function toOutboxMessageAttachment(
 
   return {
     attachmentId: attachment.client_attachment_id,
+    blurhash: attachment.blurhash,
     byteSize: attachment.byte_size,
     cacheVariant: 'original',
     conversationId: attachment.conversation_id,
@@ -1700,6 +1709,7 @@ function toNormalizedMessageAttachment(
 
   return {
     attachmentId: attachment.id,
+    blurhash: attachment.blurhash,
     byteSize: attachment.byte_size ?? displayVariant.byte_size ?? primaryVariant.byte_size ?? null,
     cacheVariant: displayCacheVariant,
     conversationId: attachment.conversation,
@@ -2179,6 +2189,14 @@ function getMediaTileImageUrl(attachment: MessageAttachment): string | undefined
   return attachment.thumbUrl || attachment.url || undefined;
 }
 
+function dominantMediaPlaceholder(attachment: MessageAttachment): MediaPlaceholder {
+  return {
+    blurhash: attachment.blurhash ?? 'L25OQ+xu00oL~qofD%j[4nay?bof',
+    height: 16,
+    width: 16,
+  };
+}
+
 function mediaDisplayCacheKey(
   messageId: string,
   attachment: MessageAttachment,
@@ -2228,6 +2246,7 @@ function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) 
     conversationId: attachment.conversationId,
     durationMs: attachment.durationMs,
     height: attachment.height,
+    fileName: attachment.name,
     messageId: attachment.messageId,
     mimeType: attachment.mimeType,
     protectedReason: attachment.kind === 'video' ? 'visible-video-poster' : 'visible-media-preview',
@@ -2258,6 +2277,7 @@ function originalCacheRecord(
     conversationId: attachment.conversationId,
     durationMs: attachment.durationMs,
     height: attachment.height,
+    fileName: attachment.name,
     messageId: attachment.messageId,
     mimeType: attachment.mimeType,
     pinned: attachment.kind === 'file',
@@ -2748,10 +2768,17 @@ function MediaAlbumTile({
       }}
     >
       {hasPreview ? (
-        <Image
-          resizeMode="cover"
+        <ExpoImage
+          cachePolicy="memory-disk"
+          contentFit="cover"
+          enforceEarlyResizing
+          placeholder={dominantMediaPlaceholder(attachment)}
+          placeholderContentFit="cover"
+          priority={attachment.previewLocalUri ? 'high' : 'normal'}
+          recyclingKey={attachment.previewLocalUri ?? cachedUri ?? sourceUrl}
           source={{ uri: cachedUri ?? sourceUrl }}
           style={{ height: frame.height, width: frame.width }}
+          transition={attachment.previewLocalUri ? 0 : 120}
         />
       ) : (
         <View className="h-full w-full items-center justify-center bg-muted">
@@ -2865,10 +2892,16 @@ function MediaGalleryModal({
                 uri={resolvedUrl}
               />
             ) : (
-              <Image
-                resizeMode="contain"
+              <ExpoImage
+                cachePolicy="memory-disk"
+                contentFit="contain"
+                placeholder={dominantMediaPlaceholder(selected)}
+                placeholderContentFit="contain"
+                priority="high"
+                recyclingKey={resolvedUrl}
                 source={{ uri: resolvedUrl }}
                 style={{ height: windowHeight, width: windowWidth }}
+                transition={80}
               />
             )
           ) : (
@@ -2906,6 +2939,7 @@ function MediaGalleryModal({
 function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri: string }) {
   const source = useMemo<VideoSource>(
     () => ({
+      contentType: 'progressive',
       metadata: {
         title: attachment.name,
       },

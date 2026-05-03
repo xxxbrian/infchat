@@ -985,6 +985,7 @@ export class ChatSyncService {
           durationMs:
             attachment.duration_ms ?? variant.duration_ms ?? outboxAttachment.duration_ms ?? null,
           height: attachment.height ?? variant.height ?? outboxAttachment.height ?? null,
+          fileName: attachment.original_name || outboxAttachment.original_name || null,
           messageId: attachment.message,
           mimeType: attachment.mime_type || variant.mime_type || outboxAttachment.mime_type || null,
           protectedReason: 'sent-original',

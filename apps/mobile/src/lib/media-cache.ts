@@ -13,6 +13,7 @@ const MEDIA_CACHE_DIRECTORY = FileSystem.documentDirectory
 
 type MediaCacheRecordInput = Omit<UpsertMediaCacheEntryInput, 'cacheKey' | 'localUri'> & {
   authId: string;
+  fileName?: string | null;
 };
 
 export type ManagedMediaCacheRecordInput = MediaCacheRecordInput;
@@ -93,7 +94,11 @@ export async function cacheLocalMediaFile(
     return null;
   }
 
-  const targetUri = targetMediaCacheUri(cacheKey, sourceUri);
+  const targetUri = targetMediaCacheUri(
+    cacheKey,
+    cacheRecord.fileName ?? sourceUri,
+    cacheRecord.mimeType,
+  );
   const targetInfo = await FileSystem.getInfoAsync(targetUri);
   if (!targetInfo.exists) {
     const sourceInfo = await FileSystem.getInfoAsync(sourceUri);
@@ -120,7 +125,11 @@ export async function cacheRemoteMediaFile(
     return null;
   }
 
-  const targetUri = targetMediaCacheUri(cacheKey, remoteUri);
+  const targetUri = targetMediaCacheUri(
+    cacheKey,
+    cacheRecord.fileName ?? remoteUri,
+    cacheRecord.mimeType,
+  );
   const targetInfo = await FileSystem.getInfoAsync(targetUri);
   if (!targetInfo.exists) {
     await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
@@ -164,19 +173,52 @@ function hashCacheKey(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-function targetMediaCacheUri(cacheKey: string, sourceUri: string): string {
+function targetMediaCacheUri(
+  cacheKey: string,
+  sourceUri: string,
+  mimeType?: string | null,
+): string {
   if (!MEDIA_CACHE_DIRECTORY) {
     throw new Error('Media cache directory is not available.');
   }
 
-  return `${MEDIA_CACHE_DIRECTORY}${hashCacheKey(cacheKey)}${getUriExtension(sourceUri)}`;
+  return `${MEDIA_CACHE_DIRECTORY}${hashCacheKey(cacheKey)}${getUriExtension(sourceUri, mimeType)}`;
 }
 
-function getUriExtension(uri: string): string {
+function getUriExtension(uri: string, mimeType?: string | null): string {
   const path = uri.split('?')[0] ?? '';
   const match = /\.([a-zA-Z0-9]{2,5})$/.exec(path);
 
-  return match ? `.${match[1].toLowerCase()}` : '';
+  if (match) {
+    return `.${match[1].toLowerCase()}`;
+  }
+
+  return extensionForMimeType(mimeType);
+}
+
+function extensionForMimeType(mimeType?: string | null): string {
+  switch (mimeType?.toLowerCase()) {
+    case 'image/jpeg':
+      return '.jpg';
+    case 'image/png':
+      return '.png';
+    case 'image/webp':
+      return '.webp';
+    case 'image/heic':
+      return '.heic';
+    case 'image/heif':
+      return '.heif';
+    case 'video/mp4':
+      return '.mp4';
+    case 'video/quicktime':
+      return '.mov';
+    case 'video/webm':
+      return '.webm';
+    case 'video/x-m4v':
+      return '.m4v';
+    default:
+      return '';
+  }
 }
 
 function isDownloadableRemoteUri(uri: string): boolean {
@@ -210,6 +252,7 @@ function stableCacheRecordKey(cacheRecord: MediaCacheRecordInput): string {
     cacheRecord.attachmentId,
     cacheRecord.variant,
     cacheRecord.remoteObjectKey,
+    cacheRecord.fileName ?? '',
     cacheRecord.mimeType ?? '',
     cacheRecord.byteSize ?? '',
     cacheRecord.sha256 ?? '',
