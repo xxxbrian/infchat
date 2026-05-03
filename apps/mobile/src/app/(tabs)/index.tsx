@@ -178,17 +178,19 @@ export default function ChatTab() {
   }, [profilesQuery.data]);
   const conversationViews = useMemo(
     () =>
-      conversations.map((conversation) =>
-        toConversationView(
-          conversation,
-          profilesByUserId,
-          authRecord.id,
-          fileTokenQuery.data,
-          activeCallByConversation.get(conversation.id),
-          unreadCounts[conversation.id] ?? 0,
-          membershipsByConversation.get(conversation.id) ?? [],
-        ),
-      ),
+      conversations
+        .map((conversation) =>
+          toConversationView(
+            conversation,
+            profilesByUserId,
+            authRecord.id,
+            fileTokenQuery.data,
+            activeCallByConversation.get(conversation.id),
+            unreadCounts[conversation.id] ?? 0,
+            membershipsByConversation.get(conversation.id) ?? [],
+          ),
+        )
+        .sort(compareConversationViewsByRecency),
     [
       authRecord.id,
       activeCallByConversation,
@@ -840,6 +842,32 @@ function toConversationView(
     avatarUsername: firstProfile?.username || name,
     activeCall,
   };
+}
+
+function compareConversationViewsByRecency(
+  left: ConversationView,
+  right: ConversationView,
+): number {
+  const rightTime = conversationSortTimestamp(right.conversation);
+  const leftTime = conversationSortTimestamp(left.conversation);
+  if (rightTime !== leftTime) {
+    return rightTime - leftTime;
+  }
+
+  const rightSeq = right.conversation.last_message_seq ?? 0;
+  const leftSeq = left.conversation.last_message_seq ?? 0;
+  if (rightSeq !== leftSeq) {
+    return rightSeq - leftSeq;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function conversationSortTimestamp(conversation: ConversationRecord): number {
+  const value = conversation.last_message_at || conversation.updated || conversation.created;
+  const time = Date.parse(value);
+
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function getAcceptedFriendUserIds(

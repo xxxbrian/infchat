@@ -301,7 +301,7 @@ export type UpsertMediaCacheEntryInput = {
   width?: number | null;
 };
 
-const CHAT_SYNC_SCHEMA_VERSION = 5;
+const CHAT_SYNC_SCHEMA_VERSION = 6;
 const dbPromise = SQLite.openDatabaseAsync('infchat-chat-sync-v4.db');
 let schemaPromise: Promise<void> | null = null;
 let writeQueue: Promise<unknown> = Promise.resolve();
@@ -331,13 +331,14 @@ async function getDb() {
       id TEXT NOT NULL,
       value TEXT NOT NULL,
       last_message_seq INTEGER NOT NULL DEFAULT 0,
+      last_message_at TEXT,
       latest_event_cursor INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (auth_id, id)
     );
 
     CREATE INDEX IF NOT EXISTS local_conversations_sort_idx
-      ON local_conversations (auth_id, last_message_seq DESC, updated_at DESC);
+      ON local_conversations (auth_id, last_message_at DESC, last_message_seq DESC, updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS local_memberships (
       auth_id TEXT NOT NULL,
@@ -602,6 +603,7 @@ async function getDb() {
     )
     .then(async () => {
       await ensureColumn(db, 'outbox_messages', 'attempt_count', 'INTEGER NOT NULL DEFAULT 0');
+      await ensureColumn(db, 'local_conversations', 'last_message_at', 'TEXT');
 
       const row = await db.getFirstAsync<JsonRow>(
         'SELECT value FROM chat_meta WHERE key = ?',
@@ -1418,7 +1420,7 @@ export async function listLocalConversations(authId: string): Promise<Conversati
   const rows = await db.getAllAsync<JsonRow>(
     `SELECT value FROM local_conversations
      WHERE auth_id = ?
-     ORDER BY last_message_seq DESC, updated_at DESC`,
+      ORDER BY COALESCE(last_message_at, updated_at) DESC, last_message_seq DESC, updated_at DESC, id ASC`,
     authId,
   );
 
@@ -1845,12 +1847,13 @@ async function writeConversationRow(
 ) {
   await db.runAsync(
     `INSERT OR REPLACE INTO local_conversations
-      (auth_id, id, value, last_message_seq, latest_event_cursor, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+      (auth_id, id, value, last_message_seq, last_message_at, latest_event_cursor, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     authId,
     conversation.id,
     JSON.stringify(conversation),
     conversation.last_message_seq ?? 0,
+    conversation.last_message_at || conversation.updated,
     conversation.latest_event_cursor ?? 0,
     conversation.updated,
   );
