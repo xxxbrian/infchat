@@ -40,6 +40,12 @@ export type MediaCacheClearOptions = {
   type?: keyof MediaCacheUsageSummary['byType'];
 };
 
+export type MediaCacheDownloadProgress = {
+  bytesExpected: number | null;
+  bytesWritten: number;
+  progress: number | null;
+};
+
 export function useCachedRemoteUri(
   remoteUri?: string | null,
   cacheKey?: string,
@@ -163,6 +169,15 @@ export async function cacheRemoteMediaFile(
   cacheKey: string,
   cacheRecord: MediaCacheRecordInput,
 ): Promise<string | null> {
+  return downloadRemoteMediaFile(remoteUri, cacheKey, cacheRecord);
+}
+
+export async function downloadRemoteMediaFile(
+  remoteUri: string,
+  cacheKey: string,
+  cacheRecord: MediaCacheRecordInput,
+  onProgress?: (progress: MediaCacheDownloadProgress) => void,
+): Promise<string | null> {
   if (!MEDIA_CACHE_DIRECTORY || !isDownloadableRemoteUri(remoteUri)) {
     return null;
   }
@@ -173,11 +188,39 @@ export async function cacheRemoteMediaFile(
     cacheRecord.mimeType,
   );
   const targetInfo = await FileSystem.getInfoAsync(targetUri);
-  if (!targetInfo.exists) {
+  if (!targetInfo.exists || targetInfo.isDirectory) {
+    if (targetInfo.isDirectory) {
+      await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
+    }
     await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
       intermediates: true,
     });
-    await FileSystem.downloadAsync(remoteUri, targetUri);
+    const download = FileSystem.createDownloadResumable(remoteUri, targetUri, {}, (data) => {
+      const bytesExpected =
+        data.totalBytesExpectedToWrite > 0
+          ? data.totalBytesExpectedToWrite
+          : (cacheRecord.byteSize ?? null);
+      onProgress?.({
+        bytesExpected,
+        bytesWritten: data.totalBytesWritten,
+        progress: bytesExpected ? data.totalBytesWritten / bytesExpected : null,
+      });
+    });
+    const result = await download.downloadAsync().catch(async (error) => {
+      await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
+      throw error;
+    });
+    if (!result?.uri) {
+      await FileSystem.deleteAsync(targetUri, { idempotent: true }).catch(() => {});
+      return null;
+    }
+  } else {
+    const bytesExpected = targetInfo.size || cacheRecord.byteSize || null;
+    onProgress?.({
+      bytesExpected,
+      bytesWritten: bytesExpected ?? 0,
+      progress: bytesExpected ? 1 : null,
+    });
   }
 
   await persistCacheRecord(cacheKey, targetUri, cacheRecord);

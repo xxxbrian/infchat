@@ -83,7 +83,9 @@ import { getDeviceId } from '../../lib/device-id';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import {
   cacheRemoteMediaFile,
+  downloadRemoteMediaFile,
   type ManagedMediaCacheRecordInput,
+  type MediaCacheDownloadProgress,
   useCachedRemoteUri,
 } from '../../lib/media-cache';
 import InfchatMediaTransfer from '../../../modules/infchat-media-transfer';
@@ -145,9 +147,15 @@ type MessageAttachment = {
   mimeType?: string | null;
   name: string;
   objectKey?: string;
+  originalByteSize?: number | null;
   originalCacheKey?: string;
+  originalDurationMs?: number | null;
+  originalHeight?: number | null;
   originalLocalUri?: string;
+  originalMimeType?: string | null;
+  originalSha256?: string | null;
   originalVariantId?: string;
+  originalWidth?: number | null;
   ordinal?: number;
   posterCacheKey?: string;
   posterLocalUri?: string;
@@ -181,6 +189,12 @@ type LocalMediaReplica = {
 };
 
 type FileDownloadState = 'idle' | 'checking' | 'downloading' | 'downloaded';
+
+type VideoDownloadState = {
+  localUri: string | null;
+  progress: MediaCacheDownloadProgress | null;
+  status: 'idle' | 'checking' | 'downloading' | 'downloaded';
+};
 
 type MediaTileFrame = {
   height: number;
@@ -1681,8 +1695,14 @@ function toOutboxMessageAttachment(
     messageId: clientMessageId,
     mimeType: attachment.mime_type,
     name: attachment.original_name,
+    originalByteSize: attachment.byte_size,
     originalCacheKey,
+    originalDurationMs: attachment.duration_ms,
+    originalHeight: attachment.height,
     originalLocalUri: attachment.local_uri,
+    originalMimeType: attachment.mime_type,
+    originalSha256: attachment.sha256,
+    originalWidth: attachment.width,
     ordinal: attachment.ordinal,
     posterCacheKey:
       attachment.kind === 'video'
@@ -1782,11 +1802,17 @@ function toNormalizedMessageAttachment(
     mimeType: displayMimeType,
     name: attachment.original_name || 'attachment',
     objectKey: originalVariant?.object_key ?? displayVariant.object_key,
+    originalByteSize: originalVariant?.byte_size ?? attachment.byte_size ?? null,
     originalCacheKey: originalVariant
       ? mediaCacheKeyForVariant(attachment.message, attachment.id, originalCacheVariant)
       : undefined,
+    originalDurationMs: originalVariant?.duration_ms ?? attachment.duration_ms ?? null,
+    originalHeight: originalVariant?.height ?? attachment.height ?? null,
     originalLocalUri: originalCacheEntry?.local_uri,
+    originalMimeType: originalVariant?.mime_type || attachment.mime_type || null,
+    originalSha256: originalVariant?.sha256 || attachment.sha256 || null,
     originalVariantId: originalVariant?.id,
+    originalWidth: originalVariant?.width ?? attachment.width ?? null,
     ordinal: attachment.ordinal,
     posterCacheKey: posterVariant
       ? mediaCacheKeyForVariant(attachment.message, attachment.id, 'poster')
@@ -2346,18 +2372,18 @@ function originalMediaCacheRecord(
   return {
     attachmentId: attachment.attachmentId,
     authId,
-    byteSize: attachment.byteSize,
+    byteSize: attachment.originalByteSize ?? attachment.byteSize,
     conversationId: attachment.conversationId,
-    durationMs: attachment.durationMs,
-    height: attachment.height,
+    durationMs: attachment.originalDurationMs ?? attachment.durationMs,
+    height: attachment.originalHeight ?? attachment.height,
     fileName: attachment.name,
     messageId: attachment.messageId,
-    mimeType: attachment.mimeType,
+    mimeType: attachment.originalMimeType ?? attachment.mimeType,
     protectedReason: 'opened-original',
     remoteObjectKey: attachment.objectKey,
-    sha256: attachment.sha256,
+    sha256: attachment.originalSha256 ?? attachment.sha256,
     variant: 'original',
-    width: attachment.width,
+    width: attachment.originalWidth ?? attachment.width,
   };
 }
 
@@ -2367,6 +2393,7 @@ async function persistDownloadedAttachment(
   localUri: string,
   cacheKey: string,
   localByteSize?: number,
+  variant?: MediaUploadVariant | 'file' | 'voice',
 ) {
   if (
     !attachment.attachmentId ||
@@ -2377,25 +2404,167 @@ async function persistDownloadedAttachment(
     return;
   }
 
+  const cacheVariant =
+    variant ?? attachment.cacheVariant ?? (attachment.kind === 'file' ? 'file' : 'original');
+
   await upsertMediaCacheEntry(authId, {
     attachmentId: attachment.attachmentId,
-    byteSize: attachment.byteSize ?? localByteSize,
+    byteSize:
+      cacheVariant === 'original'
+        ? (attachment.originalByteSize ?? attachment.byteSize ?? localByteSize)
+        : (attachment.byteSize ?? localByteSize),
     cacheKey,
     conversationId: attachment.conversationId,
-    durationMs: attachment.durationMs,
-    height: attachment.height,
+    durationMs:
+      cacheVariant === 'original'
+        ? (attachment.originalDurationMs ?? attachment.durationMs)
+        : attachment.durationMs,
+    height:
+      cacheVariant === 'original'
+        ? (attachment.originalHeight ?? attachment.height)
+        : attachment.height,
     localUri,
     messageId: attachment.messageId,
-    mimeType: attachment.mimeType,
+    mimeType:
+      cacheVariant === 'original'
+        ? (attachment.originalMimeType ?? attachment.mimeType)
+        : attachment.mimeType,
     pinned: true,
     protectedReason: attachment.kind === 'file' ? 'downloaded-file' : 'downloaded-media',
     remoteObjectKey: attachment.objectKey,
-    sha256: attachment.sha256,
+    sha256:
+      cacheVariant === 'original'
+        ? (attachment.originalSha256 ?? attachment.sha256)
+        : attachment.sha256,
     state: 'available',
-    variant: attachment.cacheVariant ?? (attachment.kind === 'file' ? 'file' : 'original'),
-    width: attachment.width,
+    variant: cacheVariant,
+    width:
+      cacheVariant === 'original'
+        ? (attachment.originalWidth ?? attachment.width)
+        : attachment.width,
   });
   await touchMediaCacheEntry(authId, cacheKey);
+}
+
+async function resolveLocalAttachmentOriginalUri(
+  authId: string,
+  attachment: MessageAttachment,
+): Promise<string | null> {
+  if (attachment.originalLocalUri && (await localFileExists(attachment.originalLocalUri))) {
+    return attachment.originalLocalUri;
+  }
+  if (attachment.attachmentId) {
+    const cachedOriginal = await getPreferredMediaCacheEntryForAttachment(
+      authId,
+      attachment.attachmentId,
+      [attachment.kind === 'file' ? 'file' : 'original'],
+    );
+    if (cachedOriginal?.local_uri && (await localFileExists(cachedOriginal.local_uri))) {
+      await touchMediaCacheEntry(authId, cachedOriginal.cache_key);
+      return cachedOriginal.local_uri;
+    }
+  }
+  if (
+    isLocalFileUri(attachment.url) &&
+    attachmentUrlMayBeOriginal(attachment) &&
+    (await localFileExists(attachment.url))
+  ) {
+    return attachment.url;
+  }
+
+  return null;
+}
+
+function attachmentUrlMayBeOriginal(attachment: MessageAttachment): boolean {
+  if (!attachment.attachmentId) {
+    return true;
+  }
+  if (attachment.kind === 'file') {
+    return true;
+  }
+
+  return attachment.cacheVariant === 'original' || attachment.cacheVariant === 'voice';
+}
+
+async function downloadAttachmentOriginalFile(
+  authId: string,
+  attachment: MessageAttachment,
+  onProgress?: (progress: MediaCacheDownloadProgress) => void,
+): Promise<string> {
+  const existingLocalUri = await resolveLocalAttachmentOriginalUri(authId, attachment);
+  const cacheKey =
+    attachment.originalCacheKey ??
+    (attachment.attachmentId && attachment.messageId
+      ? mediaCacheKeyForVariant(attachment.messageId, attachment.attachmentId, 'original')
+      : null);
+
+  if (existingLocalUri) {
+    if (cacheKey) {
+      const existingInfo = await FileSystem.getInfoAsync(existingLocalUri).catch(() => null);
+      await persistDownloadedAttachment(
+        authId,
+        attachment,
+        existingLocalUri,
+        cacheKey,
+        existingInfo?.exists && !existingInfo.isDirectory ? existingInfo.size : undefined,
+        'original',
+      );
+    }
+    return existingLocalUri;
+  }
+
+  const remoteUrl = await resolveAttachmentOriginalUrl(authId, attachment, {
+    cache: false,
+  });
+  if (!remoteUrl) {
+    throw new Error('Original media URL is not available.');
+  }
+
+  if (isLocalFileUri(remoteUrl)) {
+    if (cacheKey) {
+      const localInfo = await FileSystem.getInfoAsync(remoteUrl).catch(() => null);
+      await persistDownloadedAttachment(
+        authId,
+        attachment,
+        remoteUrl,
+        cacheKey,
+        localInfo?.exists && !localInfo.isDirectory ? localInfo.size : undefined,
+        'original',
+      );
+    }
+    return remoteUrl;
+  }
+
+  const cacheRecord = originalMediaCacheRecord(authId, attachment);
+  if (!cacheKey || !cacheRecord) {
+    throw new Error('Original media cache metadata is not available.');
+  }
+
+  const localUri = await downloadRemoteMediaFile(
+    remoteUrl,
+    cacheKey,
+    {
+      ...cacheRecord,
+      pinned: true,
+      protectedReason: 'downloaded-media',
+    },
+    onProgress,
+  );
+  if (!localUri) {
+    throw new Error('Original media download failed.');
+  }
+
+  const downloadedInfo = await FileSystem.getInfoAsync(localUri).catch(() => null);
+  await persistDownloadedAttachment(
+    authId,
+    attachment,
+    localUri,
+    cacheKey,
+    downloadedInfo?.exists && !downloadedInfo.isDirectory ? downloadedInfo.size : undefined,
+    'original',
+  );
+
+  return localUri;
 }
 
 async function openDocumentWithNativePreview(
@@ -2428,22 +2597,9 @@ async function resolveAttachmentOriginalUrl(
   attachment: MessageAttachment,
   options?: { cache?: boolean },
 ): Promise<string | null> {
-  if (attachment.originalLocalUri && (await localFileExists(attachment.originalLocalUri))) {
-    return attachment.originalLocalUri;
-  }
-  if (attachment.attachmentId) {
-    const cachedOriginal = await getPreferredMediaCacheEntryForAttachment(
-      authId,
-      attachment.attachmentId,
-      [attachment.kind === 'file' ? 'file' : 'original'],
-    );
-    if (cachedOriginal?.local_uri && (await localFileExists(cachedOriginal.local_uri))) {
-      await touchMediaCacheEntry(authId, cachedOriginal.cache_key);
-      return cachedOriginal.local_uri;
-    }
-  }
-  if (isLocalFileUri(attachment.url) && (await localFileExists(attachment.url))) {
-    return attachment.url;
+  const localUri = await resolveLocalAttachmentOriginalUri(authId, attachment);
+  if (localUri) {
+    return localUri;
   }
   const request: SignedMediaURLRequestItem | null = attachment.attachmentId
     ? { attachmentId: attachment.attachmentId, variant: 'original' }
@@ -2836,6 +2992,120 @@ function MediaAlbumBubble({
   );
 }
 
+function useVideoOriginalDownload(
+  authId: string,
+  attachment: MessageAttachment | null,
+): VideoDownloadState & { downloadOriginal: () => Promise<string | null> } {
+  const queryClient = useQueryClient();
+  const [downloadState, setDownloadState] = useState<VideoDownloadState>({
+    localUri: null,
+    progress: null,
+    status: 'idle',
+  });
+
+  useEffect(() => {
+    let isMounted = true;
+    if (!attachment || attachment.kind !== 'video') {
+      setDownloadState({ localUri: null, progress: null, status: 'idle' });
+      return;
+    }
+
+    setDownloadState((current) =>
+      current.status === 'downloading'
+        ? current
+        : { localUri: current.localUri, progress: null, status: 'checking' },
+    );
+
+    resolveLocalAttachmentOriginalUri(authId, attachment)
+      .then((localUri) => {
+        if (!isMounted) {
+          return;
+        }
+        setDownloadState((current) =>
+          current.status === 'downloading'
+            ? current
+            : {
+                localUri,
+                progress: null,
+                status: localUri ? 'downloaded' : 'idle',
+              },
+        );
+      })
+      .catch(() => {
+        if (isMounted) {
+          setDownloadState((current) =>
+            current.status === 'downloading'
+              ? current
+              : { localUri: null, progress: null, status: 'idle' },
+          );
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [
+    attachment?.attachmentId,
+    attachment?.kind,
+    attachment?.originalCacheKey,
+    attachment?.originalLocalUri,
+    attachment?.url,
+    authId,
+  ]);
+
+  const downloadOriginal = async () => {
+    if (!attachment || attachment.kind !== 'video') {
+      return null;
+    }
+    if (downloadState.status === 'downloading') {
+      return downloadState.localUri;
+    }
+    if (downloadState.status === 'downloaded' && downloadState.localUri) {
+      return downloadState.localUri;
+    }
+
+    try {
+      setDownloadState({
+        localUri: null,
+        progress: {
+          bytesExpected: attachment.originalByteSize ?? attachment.byteSize ?? null,
+          bytesWritten: 0,
+          progress: null,
+        },
+        status: 'downloading',
+      });
+      const localUri = await downloadAttachmentOriginalFile(authId, attachment, (progress) => {
+        setDownloadState((current) => ({
+          localUri: current.localUri,
+          progress,
+          status: 'downloading',
+        }));
+      });
+
+      setDownloadState({ localUri, progress: null, status: 'downloaded' });
+      if (attachment.conversationId) {
+        void queryClient.invalidateQueries({
+          queryKey: ['chat', authId, 'media-cache', attachment.conversationId],
+        });
+      }
+      void queryClient.invalidateQueries({
+        queryKey: ['media-cache-usage', authId],
+      });
+
+      return localUri;
+    } catch {
+      setDownloadState({ localUri: null, progress: null, status: 'idle' });
+      Alert.alert(
+        'Could not download video',
+        'The video could not be downloaded. Try again later.',
+      );
+      return null;
+    }
+  };
+
+  return { ...downloadState, downloadOriginal };
+}
+
 function MediaAlbumTile({
   attachment,
   authId,
@@ -2851,6 +3121,10 @@ function MediaAlbumTile({
   onPress: () => void;
   overflowCount: number;
 }) {
+  const videoDownload = useVideoOriginalDownload(
+    authId,
+    attachment.kind === 'video' ? attachment : null,
+  );
   const sourceUrl = getMediaTileImageUrl(attachment);
   const knownPreviewUri =
     attachment.kind === 'video' ? attachment.posterLocalUri : attachment.previewLocalUri;
@@ -2939,6 +3213,12 @@ function MediaAlbumTile({
               </Text>
             </View>
           ) : null}
+          <VideoDownloadBadge
+            byteSize={attachment.originalByteSize ?? attachment.byteSize}
+            onPress={videoDownload.downloadOriginal}
+            progress={videoDownload.progress}
+            status={videoDownload.status}
+          />
         </View>
       ) : null}
       {overflowCount > 0 ? (
@@ -2948,6 +3228,79 @@ function MediaAlbumTile({
       ) : null}
     </Pressable>
   );
+}
+
+function VideoDownloadBadge({
+  byteSize,
+  onPress,
+  progress,
+  status,
+}: {
+  byteSize?: number | null;
+  onPress: () => Promise<string | null>;
+  progress: MediaCacheDownloadProgress | null;
+  status: VideoDownloadState['status'];
+}) {
+  const isBusy = status === 'checking' || status === 'downloading';
+  const isDownloaded = status === 'downloaded';
+  const label = videoDownloadLabel(status, byteSize, progress);
+
+  return (
+    <Pressable
+      className="absolute right-2 top-2 flex-row items-center rounded-full bg-black/65 px-2.5 py-1.5 active:bg-black/80"
+      hitSlop={8}
+      onPress={(event) => {
+        event.stopPropagation();
+        if (isBusy || isDownloaded) {
+          return;
+        }
+        void onPress();
+      }}
+    >
+      <View className="h-5 w-5 items-center justify-center">
+        {status === 'downloading' ? (
+          <ActivityIndicator colorClassName="accent-white" size="small" />
+        ) : (
+          <Ionicons
+            color="#fff"
+            name={
+              isDownloaded
+                ? 'checkmark'
+                : status === 'checking'
+                  ? 'ellipsis-horizontal'
+                  : 'cloud-download-outline'
+            }
+            size={15}
+          />
+        )}
+      </View>
+      {label ? <Text className="ml-1.5 text-[11px] font-black text-white">{label}</Text> : null}
+    </Pressable>
+  );
+}
+
+function videoDownloadLabel(
+  status: VideoDownloadState['status'],
+  byteSize?: number | null,
+  progress?: MediaCacheDownloadProgress | null,
+): string {
+  if (status === 'downloaded') {
+    return 'Saved';
+  }
+  if (status === 'checking') {
+    return 'Checking';
+  }
+  if (status === 'downloading') {
+    if (progress?.progress !== null && progress?.progress !== undefined) {
+      return `${Math.min(100, Math.max(0, Math.round(progress.progress * 100)))}%`;
+    }
+    if (progress?.bytesWritten) {
+      return formatFileSize(progress.bytesWritten);
+    }
+    return 'Downloading';
+  }
+
+  return formatFileSize(byteSize) || 'Download';
 }
 
 function MediaGalleryModal({
@@ -2967,6 +3320,10 @@ function MediaGalleryModal({
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
   const selected = attachments[currentIndex] ?? attachments[0] ?? null;
+  const videoDownload = useVideoOriginalDownload(
+    authId,
+    selected?.kind === 'video' ? selected : null,
+  );
 
   useEffect(() => {
     if (visible) {
@@ -3012,6 +3369,14 @@ function MediaGalleryModal({
   const canGoBack = attachments.length > 1 && currentIndex > 0;
   const canGoForward = attachments.length > 1 && currentIndex < attachments.length - 1;
   const videoPosterUrl = selected.kind === 'video' ? galleryVideoPosterUrl(selected) : null;
+  const handleDownloadVideo = async () => {
+    const localUri = await videoDownload.downloadOriginal();
+    if (localUri) {
+      setResolvedUrl(localUri);
+    }
+
+    return localUri;
+  };
 
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
@@ -3073,6 +3438,14 @@ function MediaGalleryModal({
           </Pressable>
         ) : null}
         <View className="absolute bottom-10 left-5 right-5 items-center">
+          {selected.kind === 'video' ? (
+            <GalleryVideoDownloadButton
+              byteSize={selected.originalByteSize ?? selected.byteSize}
+              onPress={handleDownloadVideo}
+              progress={videoDownload.progress}
+              status={videoDownload.status}
+            />
+          ) : null}
           <Text className="text-center text-sm font-semibold text-white/80" numberOfLines={2}>
             {selected.kind === 'video' && selected.durationMs
               ? `${selected.name} · ${formatDuration(selected.durationMs)}`
@@ -3115,6 +3488,52 @@ function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri:
       player={player}
       style={{ height: '100%', width: '100%' }}
     />
+  );
+}
+
+function GalleryVideoDownloadButton({
+  byteSize,
+  onPress,
+  progress,
+  status,
+}: {
+  byteSize?: number | null;
+  onPress: () => Promise<string | null>;
+  progress: MediaCacheDownloadProgress | null;
+  status: VideoDownloadState['status'];
+}) {
+  const isBusy = status === 'checking' || status === 'downloading';
+  const isDownloaded = status === 'downloaded';
+  const detailLabel = videoDownloadLabel(status, byteSize, progress);
+  const label = isDownloaded
+    ? 'Saved offline'
+    : status === 'downloading'
+      ? `Downloading${detailLabel ? ` · ${detailLabel}` : ''}`
+      : status === 'checking'
+        ? 'Checking download'
+        : `Download video${detailLabel ? ` · ${detailLabel}` : ''}`;
+
+  return (
+    <Pressable
+      className="mb-3 flex-row items-center rounded-full bg-white/15 px-4 py-2.5 active:bg-white/20 disabled:opacity-80"
+      disabled={isBusy || isDownloaded}
+      onPress={() => {
+        void onPress();
+      }}
+    >
+      <View className="h-5 w-5 items-center justify-center">
+        {status === 'downloading' ? (
+          <ActivityIndicator colorClassName="accent-white" size="small" />
+        ) : (
+          <Ionicons
+            color="#fff"
+            name={isDownloaded ? 'checkmark' : 'cloud-download-outline'}
+            size={17}
+          />
+        )}
+      </View>
+      <Text className="ml-2 text-sm font-black text-white">{label}</Text>
+    </Pressable>
   );
 }
 
