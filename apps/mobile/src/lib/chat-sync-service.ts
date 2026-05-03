@@ -1,4 +1,5 @@
 import {
+  type AttachmentVariantRecord,
   bootstrapChatSync,
   completeMediaUpload,
   type ConversationMembershipRecord,
@@ -8,6 +9,8 @@ import {
   getMediaUploadStatus,
   listConversationMessagesBeforeSeq,
   markConversationReadBySeq,
+  type MessageAttachmentRecord,
+  type MessageRecord,
   type MediaUploadSessionResponse,
   sendMediaMessageCommand,
   sendTextMessageCommand,
@@ -58,6 +61,7 @@ import {
 } from './chat-sync-store';
 import { logDebugEvent } from './debug-log';
 import { getDeviceId } from './device-id';
+import { cacheLocalMediaFile } from './media-cache';
 
 export type ChatSyncTrigger =
   | 'startup'
@@ -844,6 +848,12 @@ export class ChatSyncService {
       membership: response.membership,
       message: response.message,
     });
+    await this.promoteSentMediaOriginals(
+      message,
+      response.message,
+      response.attachments,
+      response.attachmentVariants,
+    );
     void logDebugEvent('info', 'media-outbox', 'Media outbox message sent', {
       clientMessageId: message.client_message_id,
       serverMessageId: response.message.id,
@@ -940,6 +950,53 @@ export class ChatSyncService {
     }, delayMs);
   }
 
+  private async promoteSentMediaOriginals(
+    outboxMessage: LocalMediaOutboxMessageWithAttachments,
+    serverMessage: MessageRecord,
+    attachments: MessageAttachmentRecord[] = [],
+    variants: AttachmentVariantRecord[] = [],
+  ) {
+    const originalVariantByAttachmentId = new Map(
+      variants
+        .filter((variant) => variant.variant === 'original')
+        .map((variant) => [variant.attachment, variant]),
+    );
+
+    for (const attachment of attachments) {
+      const outboxAttachment = outboxMessage.attachments.find(
+        (candidate) =>
+          candidate.client_attachment_id === attachment.id ||
+          candidate.ordinal === attachment.ordinal,
+      );
+      const variant = originalVariantByAttachmentId.get(attachment.id);
+      if (!outboxAttachment || !variant) {
+        continue;
+      }
+      const cacheVariant = outboxAttachment.kind === 'file' ? 'file' : 'original';
+
+      await cacheLocalMediaFile(
+        outboxAttachment.local_uri,
+        mediaCacheKeyForVariant(serverMessage.id, attachment.id, cacheVariant),
+        {
+          attachmentId: attachment.id,
+          authId: this.authId,
+          byteSize: attachment.byte_size ?? variant.byte_size ?? outboxAttachment.byte_size ?? null,
+          conversationId: attachment.conversation,
+          durationMs:
+            attachment.duration_ms ?? variant.duration_ms ?? outboxAttachment.duration_ms ?? null,
+          height: attachment.height ?? variant.height ?? outboxAttachment.height ?? null,
+          messageId: attachment.message,
+          mimeType: attachment.mime_type || variant.mime_type || outboxAttachment.mime_type || null,
+          protectedReason: 'sent-original',
+          remoteObjectKey: variant.object_key,
+          sha256: attachment.sha256 || variant.sha256 || outboxAttachment.sha256 || null,
+          variant: cacheVariant,
+          width: attachment.width ?? variant.width ?? outboxAttachment.width ?? null,
+        },
+      );
+    }
+  }
+
   private invalidateChatQueries(conversationId?: string) {
     void this.queryClient.invalidateQueries({
       queryKey: ['chat', this.authId],
@@ -965,6 +1022,14 @@ export class ChatSyncService {
       });
     }
   }
+}
+
+function mediaCacheKeyForVariant(
+  messageId: string,
+  attachmentId: string,
+  variant: 'thumbnail' | 'preview' | 'original' | 'poster' | 'file' | 'voice',
+): string {
+  return `message-media:${messageId}:${attachmentId}:${variant}`;
 }
 
 function isPermanentCommandError(error: unknown) {

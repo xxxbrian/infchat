@@ -60,7 +60,11 @@ import { useChatSyncService } from '../../lib/chat-sync-context';
 import {
   getEarliestLocalMessageSeq,
   getLocalConversation,
+  getPreferredMediaCacheEntryForAttachment,
+  listAvailableMediaCacheEntriesForConversation,
   listLocalAttachmentVariants,
+  type LocalMediaCacheEntry,
+  type LocalMediaOutboxAttachment,
   type LocalMediaOutboxState,
   listLocalMessageAttachments,
   type OutboxMessageState,
@@ -76,7 +80,11 @@ import {
 import { logDebugEvent } from '../../lib/debug-log';
 import { getDeviceId } from '../../lib/device-id';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
-import { useCachedRemoteUri } from '../../lib/media-cache';
+import {
+  cacheRemoteMediaFile,
+  type ManagedMediaCacheRecordInput,
+  useCachedRemoteUri,
+} from '../../lib/media-cache';
 import {
   preparePickedDocumentAttachments,
   preparePickedMediaAttachments,
@@ -132,16 +140,22 @@ type MessageAttachment = {
   mimeType?: string | null;
   name: string;
   objectKey?: string;
+  originalCacheKey?: string;
+  originalLocalUri?: string;
   ordinal?: number;
+  previewCacheKey?: string;
+  previewLocalUri?: string;
   sha256?: string | null;
   thumbUrl?: string;
   url: string;
   variantId?: string;
+  variantObjectKey?: string;
   width?: number | null;
 };
 
 type LocalMediaReplica = {
   attachments: MessageAttachmentRecord[];
+  cacheEntries: LocalMediaCacheEntry[];
   variants: AttachmentVariantRecord[];
 };
 
@@ -252,19 +266,33 @@ export default function ChatDetailScreen() {
     queryFn: () => listLocalAttachmentVariants(authRecord.id, conversationId),
     enabled: Boolean(conversationId),
   });
+  const mediaCacheEntriesQuery = useQuery({
+    queryKey: ['chat', authRecord.id, 'media-cache', conversationId],
+    queryFn: () => listAvailableMediaCacheEntriesForConversation(authRecord.id, conversationId),
+    enabled: Boolean(conversationId),
+  });
   const signedMediaUrlRequests = useMemo(
     () =>
       signedMediaURLRequests(
         localAttachmentVariantsQuery.data ?? [],
         messagesQuery.data ?? [],
         localAttachmentsQuery.data ?? [],
+        mediaCacheEntriesQuery.data ?? [],
       ),
-    [localAttachmentVariantsQuery.data, localAttachmentsQuery.data, messagesQuery.data],
+    [
+      localAttachmentVariantsQuery.data,
+      localAttachmentsQuery.data,
+      mediaCacheEntriesQuery.data,
+      messagesQuery.data,
+    ],
   );
   const signedMediaUrlsQuery = useQuery({
     queryKey: ['chat', authRecord.id, 'signed-media-urls', conversationId, signedMediaUrlRequests],
     queryFn: () => signMediaURLs(pb, signedMediaUrlRequests),
-    enabled: isOnline && signedMediaUrlRequests.length > 0,
+    enabled:
+      isOnline &&
+      signedMediaUrlRequests.length > 0 &&
+      (mediaCacheEntriesQuery.isFetched || mediaCacheEntriesQuery.isError),
     staleTime: 1000 * 60 * 5,
   });
   const outboxMessagesQuery = useQuery({
@@ -331,9 +359,10 @@ export default function ChatDetailScreen() {
   const localMediaReplica = useMemo<LocalMediaReplica>(
     () => ({
       attachments: localAttachmentsQuery.data ?? [],
+      cacheEntries: mediaCacheEntriesQuery.data ?? [],
       variants: localAttachmentVariantsQuery.data ?? [],
     }),
-    [localAttachmentVariantsQuery.data, localAttachmentsQuery.data],
+    [localAttachmentVariantsQuery.data, localAttachmentsQuery.data, mediaCacheEntriesQuery.data],
   );
   const signedMediaUrlsByVariantId = useMemo(
     () => signedMediaURLByVariantId(signedMediaUrlsQuery.data?.items ?? []),
@@ -376,20 +405,9 @@ export default function ChatDetailScreen() {
       (message): ChatMessage => ({
         id: `media-outbox-${message.client_message_id}`,
         author: 'me' as const,
-        attachments: message.attachments.map((attachment) => ({
-          attachmentId: attachment.client_attachment_id,
-          byteSize: attachment.byte_size,
-          durationMs: attachment.duration_ms,
-          height: attachment.height,
-          kind: attachment.kind,
-          mimeType: attachment.mime_type,
-          name: attachment.original_name,
-          ordinal: attachment.ordinal,
-          thumbUrl:
-            attachment.thumbnail_local_uri ?? attachment.poster_local_uri ?? attachment.local_uri,
-          url: attachment.local_uri,
-          width: attachment.width,
-        })),
+        attachments: message.attachments.map((attachment) =>
+          toOutboxMessageAttachment(message.client_message_id, attachment),
+        ),
         created: message.client_created_at,
         deliveryStatus: toOutboxDeliveryStatus(message.state),
         failedMessageId:
@@ -1591,6 +1609,7 @@ function toMessageAttachments(
         toNormalizedMessageAttachment(
           attachment,
           variantsByAttachmentId.get(attachment.id) ?? [],
+          localMedia?.cacheEntries ?? [],
           signedMediaUrlsByVariantId,
         ),
       )
@@ -1607,9 +1626,45 @@ function toMessageAttachments(
   }));
 }
 
+function toOutboxMessageAttachment(
+  clientMessageId: string,
+  attachment: LocalMediaOutboxAttachment,
+): MessageAttachment {
+  const previewLocalUri =
+    attachment.thumbnail_local_uri ?? attachment.poster_local_uri ?? attachment.local_uri;
+  const cacheKey = mediaCacheKeyForVariant(
+    clientMessageId,
+    attachment.client_attachment_id,
+    'original',
+  );
+
+  return {
+    attachmentId: attachment.client_attachment_id,
+    byteSize: attachment.byte_size,
+    cacheVariant: 'original',
+    conversationId: attachment.conversation_id,
+    durationMs: attachment.duration_ms,
+    height: attachment.height,
+    kind: attachment.kind,
+    messageId: clientMessageId,
+    mimeType: attachment.mime_type,
+    name: attachment.original_name,
+    originalCacheKey: cacheKey,
+    originalLocalUri: attachment.local_uri,
+    ordinal: attachment.ordinal,
+    previewCacheKey: cacheKey,
+    previewLocalUri,
+    sha256: attachment.sha256,
+    thumbUrl: previewLocalUri,
+    url: attachment.local_uri,
+    width: attachment.width,
+  };
+}
+
 function toNormalizedMessageAttachment(
   attachment: MessageAttachmentRecord,
   variants: AttachmentVariantRecord[],
+  cacheEntries: LocalMediaCacheEntry[],
   signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
 ): MessageAttachment | null {
   const originalVariant = chooseVariant(variants, ['original']);
@@ -1623,20 +1678,30 @@ function toNormalizedMessageAttachment(
     return null;
   }
 
-  const originalUrl =
-    primaryVariant.variant === 'original'
+  const displayVariant = previewVariant ?? primaryVariant;
+  const displayCacheVariant = attachment.kind === 'file' ? 'file' : displayVariant.variant;
+  const originalCacheVariant = attachment.kind === 'file' ? 'file' : 'original';
+  const originalCacheEntry = originalVariant
+    ? cacheEntryForVariant(cacheEntries, attachment.id, originalCacheVariant)
+    : null;
+  const previewCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, displayCacheVariant);
+  const originalUrl = originalCacheEntry?.local_uri
+    ? originalCacheEntry.local_uri
+    : primaryVariant.variant === 'original'
       ? signedUrlForVariant(primaryVariant, signedMediaUrlsByVariantId)
       : null;
   const previewUrl = previewVariant
-    ? signedUrlForVariant(previewVariant, signedMediaUrlsByVariantId)
+    ? previewCacheEntry?.local_uri ||
+      signedUrlForVariant(previewVariant, signedMediaUrlsByVariantId)
     : originalUrl;
-  const displayVariant = previewVariant ?? primaryVariant;
-  const displayUrl = displayVariant.id === primaryVariant.id ? originalUrl : previewUrl;
+  const displayUrl =
+    previewCacheEntry?.local_uri ||
+    (displayVariant.id === primaryVariant.id ? originalUrl : previewUrl);
 
   return {
     attachmentId: attachment.id,
     byteSize: attachment.byte_size ?? displayVariant.byte_size ?? primaryVariant.byte_size ?? null,
-    cacheVariant: displayVariant.variant,
+    cacheVariant: displayCacheVariant,
     conversationId: attachment.conversation,
     durationMs:
       attachment.duration_ms ?? displayVariant.duration_ms ?? primaryVariant.duration_ms ?? null,
@@ -1645,12 +1710,26 @@ function toNormalizedMessageAttachment(
     messageId: attachment.message,
     mimeType: attachment.mime_type || displayVariant.mime_type || primaryVariant.mime_type || null,
     name: attachment.original_name || 'attachment',
-    objectKey: displayVariant.object_key,
+    objectKey: originalVariant?.object_key ?? displayVariant.object_key,
+    originalCacheKey: originalVariant
+      ? mediaCacheKeyForVariant(attachment.message, attachment.id, originalCacheVariant)
+      : undefined,
+    originalLocalUri: originalCacheEntry?.local_uri,
     ordinal: attachment.ordinal,
+    previewCacheKey: mediaCacheKeyForVariant(
+      attachment.message,
+      attachment.id,
+      displayCacheVariant,
+    ),
+    previewLocalUri: previewCacheEntry?.local_uri,
     sha256: attachment.sha256 || displayVariant.sha256 || primaryVariant.sha256 || null,
-    thumbUrl: displayUrl ?? undefined,
+    thumbUrl:
+      attachment.kind === 'video' && displayVariant.variant === 'original'
+        ? undefined
+        : (displayUrl ?? undefined),
     url: originalUrl ?? displayUrl ?? '',
     variantId: primaryVariant.id,
+    variantObjectKey: displayVariant.object_key,
     width: attachment.width ?? displayVariant.width ?? primaryVariant.width ?? null,
   };
 }
@@ -1707,6 +1786,30 @@ function signedUrlForVariant(
   return signedMediaUrlsByVariantId?.get(variant.id)?.presigned.url ?? null;
 }
 
+function cacheEntryForVariant(
+  entries: LocalMediaCacheEntry[],
+  attachmentId: string,
+  variant: MediaUploadVariant | 'file' | 'voice',
+): LocalMediaCacheEntry | null {
+  return (
+    entries.find(
+      (entry) =>
+        entry.attachment_id === attachmentId &&
+        entry.variant === variant &&
+        entry.state === 'available' &&
+        isLocalFileUri(entry.local_uri),
+    ) ?? null
+  );
+}
+
+function mediaCacheKeyForVariant(
+  messageId: string,
+  attachmentId: string,
+  variant: MediaUploadVariant | 'file' | 'voice',
+): string {
+  return `message-media:${messageId}:${attachmentId}:${variant}`;
+}
+
 function signedMediaURLByVariantId(items: SignedMediaURLItem[]): Map<string, SignedMediaURLItem> {
   return new Map(items.map((item) => [item.variantId, item]));
 }
@@ -1715,6 +1818,7 @@ function signedMediaURLRequests(
   variants: AttachmentVariantRecord[],
   messages: MessageRecord[],
   attachments: MessageAttachmentRecord[],
+  cacheEntries: LocalMediaCacheEntry[],
 ): SignedMediaURLRequestItem[] {
   const visibleMessageIds = new Set(
     messages
@@ -1728,6 +1832,12 @@ function signedMediaURLRequests(
       continue;
     }
     const attachment = attachmentById.get(variant.attachment);
+    if (attachment?.kind === 'file') {
+      continue;
+    }
+    if (attachment && cacheEntryForVariant(cacheEntries, attachment.id, variant.variant)) {
+      continue;
+    }
     if (attachment?.kind === 'video' && variant.variant === 'original') {
       continue;
     }
@@ -2073,19 +2183,65 @@ function mediaDisplayCacheKey(
   messageId: string,
   attachment: MessageAttachment,
 ): string | undefined {
+  if (attachment.previewCacheKey) {
+    return attachment.previewCacheKey;
+  }
   const keyPart = attachment.attachmentId ?? attachment.name;
   if (!keyPart) {
     return undefined;
   }
 
-  return `message-media:${messageId}:${keyPart}:${attachment.cacheVariant ?? 'preview'}`;
+  return mediaCacheKeyForVariant(messageId, keyPart, attachment.cacheVariant ?? 'preview');
 }
 
 function fileCacheKey(messageId: string, attachment: MessageAttachment): string {
-  return `message-file:${messageId}:${attachment.attachmentId ?? attachment.name}`;
+  if (attachment.originalCacheKey) {
+    return attachment.originalCacheKey;
+  }
+  if (attachment.attachmentId) {
+    return mediaCacheKeyForVariant(messageId, attachment.attachmentId, 'file');
+  }
+
+  return `message-file:${messageId}:${attachment.name}`;
 }
 
 function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) {
+  if (
+    !attachment.attachmentId ||
+    !attachment.conversationId ||
+    !attachment.messageId ||
+    !attachment.objectKey
+  ) {
+    return undefined;
+  }
+
+  const variant = attachment.cacheVariant ?? (attachment.kind === 'video' ? 'poster' : 'preview');
+  const variantObjectKey = attachment.variantObjectKey ?? attachment.objectKey;
+  if (!variantObjectKey) {
+    return undefined;
+  }
+
+  return {
+    attachmentId: attachment.attachmentId,
+    authId,
+    byteSize: attachment.byteSize,
+    conversationId: attachment.conversationId,
+    durationMs: attachment.durationMs,
+    height: attachment.height,
+    messageId: attachment.messageId,
+    mimeType: attachment.mimeType,
+    protectedReason: attachment.kind === 'video' ? 'visible-video-poster' : 'visible-media-preview',
+    remoteObjectKey: variantObjectKey,
+    sha256: attachment.sha256,
+    variant,
+    width: attachment.width,
+  } satisfies ManagedMediaCacheRecordInput;
+}
+
+function originalCacheRecord(
+  authId: string,
+  attachment: MessageAttachment,
+): ManagedMediaCacheRecordInput | undefined {
   if (
     !attachment.attachmentId ||
     !attachment.conversationId ||
@@ -2104,10 +2260,11 @@ function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) 
     height: attachment.height,
     messageId: attachment.messageId,
     mimeType: attachment.mimeType,
-    protectedReason: attachment.kind === 'video' ? 'visible-video-poster' : 'visible-media-preview',
+    pinned: attachment.kind === 'file',
+    protectedReason: attachment.kind === 'file' ? 'downloaded-file' : 'opened-original',
     remoteObjectKey: attachment.objectKey,
     sha256: attachment.sha256,
-    variant: attachment.cacheVariant ?? (attachment.kind === 'video' ? 'poster' : 'preview'),
+    variant: attachment.kind === 'file' ? 'file' : 'original',
     width: attachment.width,
   };
 }
@@ -2148,8 +2305,25 @@ async function persistDownloadedAttachment(
   await touchMediaCacheEntry(authId, cacheKey);
 }
 
-async function resolveAttachmentOriginalUrl(attachment: MessageAttachment): Promise<string | null> {
-  if (attachment.url && (attachment.kind !== 'video' || attachment.cacheVariant === 'original')) {
+async function resolveAttachmentOriginalUrl(
+  authId: string,
+  attachment: MessageAttachment,
+): Promise<string | null> {
+  if (attachment.originalLocalUri) {
+    return attachment.originalLocalUri;
+  }
+  if (attachment.attachmentId) {
+    const cachedOriginal = await getPreferredMediaCacheEntryForAttachment(
+      authId,
+      attachment.attachmentId,
+      [attachment.kind === 'file' ? 'file' : 'original'],
+    );
+    if (cachedOriginal?.local_uri) {
+      await touchMediaCacheEntry(authId, cachedOriginal.cache_key);
+      return cachedOriginal.local_uri;
+    }
+  }
+  if (isLocalFileUri(attachment.url)) {
     return attachment.url;
   }
   const request: SignedMediaURLRequestItem | null = attachment.attachmentId
@@ -2163,7 +2337,22 @@ async function resolveAttachmentOriginalUrl(attachment: MessageAttachment): Prom
 
   const response = await signMediaURLs(pb, [request]);
 
-  return response.items[0]?.presigned.url ?? null;
+  const remoteUrl = response.items[0]?.presigned.url ?? null;
+  const cacheKey =
+    attachment.originalCacheKey ??
+    (attachment.attachmentId && attachment.messageId
+      ? mediaCacheKeyForVariant(
+          attachment.messageId,
+          attachment.attachmentId,
+          attachment.kind === 'file' ? 'file' : 'original',
+        )
+      : null);
+  const cacheRecord = originalCacheRecord(authId, attachment);
+  if (remoteUrl && cacheKey && cacheRecord) {
+    return (await cacheRemoteMediaFile(remoteUrl, cacheKey, cacheRecord)) ?? remoteUrl;
+  }
+
+  return remoteUrl;
 }
 
 function isLocalFileUri(uri?: string | null): boolean {
@@ -2509,6 +2698,7 @@ function MediaAlbumBubble({
           ) : null}
           <MediaGalleryModal
             attachments={message.attachments}
+            authId={authId}
             initialIndex={viewer.index}
             onClose={() => setViewer((current) => ({ ...current, visible: false }))}
             visible={viewer.visible}
@@ -2540,6 +2730,7 @@ function MediaAlbumTile({
     sourceUrl,
     sourceUrl ? mediaDisplayCacheKey(messageId, attachment) : undefined,
     sourceUrl ? mediaDisplayCacheRecord(authId, attachment) : undefined,
+    attachment.previewLocalUri,
   );
   const isVideo = attachment.kind === 'video';
   const hasPreview = Boolean(cachedUri && sourceUrl);
@@ -2595,11 +2786,13 @@ function MediaAlbumTile({
 
 function MediaGalleryModal({
   attachments,
+  authId,
   initialIndex,
   onClose,
   visible,
 }: {
   attachments: MessageAttachment[];
+  authId: string;
   initialIndex: number;
   onClose: () => void;
   visible: boolean;
@@ -2622,8 +2815,8 @@ function MediaGalleryModal({
     }
 
     let isMounted = true;
-    setResolvedUrl(null);
-    resolveAttachmentOriginalUrl(selected)
+    setResolvedUrl(selected.originalLocalUri ?? selected.previewLocalUri ?? null);
+    resolveAttachmentOriginalUrl(authId, selected)
       .then((url) => {
         if (isMounted) {
           setResolvedUrl(url);
@@ -2638,7 +2831,7 @@ function MediaGalleryModal({
     return () => {
       isMounted = false;
     };
-  }, [selected, visible]);
+  }, [authId, selected, visible]);
 
   if (!visible || !selected) {
     return null;
@@ -2666,7 +2859,11 @@ function MediaGalleryModal({
         <View className="flex-1 items-center justify-center">
           {resolvedUrl ? (
             selected.kind === 'video' ? (
-              <GalleryVideo attachment={selected} uri={resolvedUrl} />
+              <GalleryVideo
+                attachment={selected}
+                key={`${selected.attachmentId ?? selected.name}:${resolvedUrl}`}
+                uri={resolvedUrl}
+              />
             ) : (
               <Image
                 resizeMode="contain"
@@ -2717,7 +2914,6 @@ function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri:
     }),
     [attachment.name, uri],
   );
-  const sourceKey = JSON.stringify(source);
   const player = useVideoPlayer(source, (createdPlayer) => {
     createdPlayer.loop = false;
     createdPlayer.muted = false;
@@ -2725,13 +2921,8 @@ function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri:
   });
 
   useEffect(() => {
-    void player.replaceAsync(source).catch(() => {});
     player.play();
-
-    return () => {
-      player.pause();
-    };
-  }, [player, source, sourceKey]);
+  }, [player]);
 
   return (
     <VideoView
@@ -2766,9 +2957,13 @@ function FileMessageBubble({
 }) {
   const fileName = formatAttachmentName(fileAttachment.name) || 'File';
   const localFileUri = getLocalMessageFileUri(message.id, fileName);
-  const sourceLocalUri = isLocalFileUri(fileAttachment.url) ? fileAttachment.url : localFileUri;
+  const sourceLocalUri =
+    fileAttachment.originalLocalUri ??
+    (isLocalFileUri(fileAttachment.url) ? fileAttachment.url : localFileUri);
   const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
-  const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>('idle');
+  const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>(
+    fileAttachment.originalLocalUri || isLocalFileUri(fileAttachment.url) ? 'downloaded' : 'idle',
+  );
 
   useEffect(() => {
     if (!sourceLocalUri) {
@@ -2817,15 +3012,19 @@ function FileMessageBubble({
       const info = uriToOpen ? await FileSystem.getInfoAsync(uriToOpen) : null;
 
       if (!info?.exists) {
-        const fileUrl = await resolveAttachmentOriginalUrl(fileAttachment);
+        const fileUrl = await resolveAttachmentOriginalUrl(authId, fileAttachment);
         if (!fileUrl || !localFileUri || !cacheDirectory) {
           throw new Error('File URL is not available.');
         }
-        await FileSystem.makeDirectoryAsync(cacheDirectory, {
-          intermediates: true,
-        });
-        const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
-        uriToOpen = download.uri;
+        if (isLocalFileUri(fileUrl)) {
+          uriToOpen = fileUrl;
+        } else {
+          await FileSystem.makeDirectoryAsync(cacheDirectory, {
+            intermediates: true,
+          });
+          const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
+          uriToOpen = download.uri;
+        }
         await persistDownloadedAttachment(
           authId,
           fileAttachment,

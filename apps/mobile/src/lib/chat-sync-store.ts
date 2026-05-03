@@ -1398,6 +1398,56 @@ export async function listMediaCacheEntriesForConversation(
   return rows;
 }
 
+export async function listAvailableMediaCacheEntriesForConversation(
+  authId: string,
+  conversationId: string,
+): Promise<LocalMediaCacheEntry[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<LocalMediaCacheEntry>(
+    `SELECT * FROM media_cache_entries
+     WHERE auth_id = ? AND conversation_id = ? AND state = 'available'
+     ORDER BY last_accessed_at DESC`,
+    authId,
+    conversationId,
+  );
+
+  return rows;
+}
+
+export async function getMediaCacheEntryForAttachmentVariant(
+  authId: string,
+  attachmentId: string,
+  variant: LocalMediaVariant | 'file' | 'voice',
+): Promise<LocalMediaCacheEntry | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<LocalMediaCacheEntry>(
+    `SELECT * FROM media_cache_entries
+     WHERE auth_id = ? AND attachment_id = ? AND variant = ? AND state = 'available'
+     ORDER BY last_accessed_at DESC
+     LIMIT 1`,
+    authId,
+    attachmentId,
+    variant,
+  );
+
+  return row ?? null;
+}
+
+export async function getPreferredMediaCacheEntryForAttachment(
+  authId: string,
+  attachmentId: string,
+  variants: (LocalMediaVariant | 'file' | 'voice')[],
+): Promise<LocalMediaCacheEntry | null> {
+  for (const variant of variants) {
+    const entry = await getMediaCacheEntryForAttachmentVariant(authId, attachmentId, variant);
+    if (entry) {
+      return entry;
+    }
+  }
+
+  return null;
+}
+
 export async function listEvictableMediaCacheEntries(
   authId: string,
   limit: number,

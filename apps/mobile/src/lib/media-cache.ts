@@ -15,15 +15,26 @@ type MediaCacheRecordInput = Omit<UpsertMediaCacheEntryInput, 'cacheKey' | 'loca
   authId: string;
 };
 
+export type ManagedMediaCacheRecordInput = MediaCacheRecordInput;
+
 export function useCachedRemoteUri(
   remoteUri?: string | null,
   cacheKey?: string,
   cacheRecord?: MediaCacheRecordInput,
+  knownLocalUri?: string | null,
 ): string | null {
-  const [localUri, setLocalUri] = useState<string | null>(null);
+  const [localUri, setLocalUri] = useState<string | null>(knownLocalUri ?? null);
   const cacheRecordKey = cacheRecord ? stableCacheRecordKey(cacheRecord) : '';
 
   useEffect(() => {
+    if (knownLocalUri) {
+      setLocalUri(knownLocalUri);
+      if (cacheKey && cacheRecord?.authId) {
+        void touchMediaCacheEntry(cacheRecord.authId, cacheKey).catch(() => {});
+      }
+      return;
+    }
+
     if (!remoteUri || !cacheKey || !MEDIA_CACHE_DIRECTORY) {
       setLocalUri(null);
       return;
@@ -35,7 +46,7 @@ export function useCachedRemoteUri(
     }
 
     let isMounted = true;
-    const targetUri = `${MEDIA_CACHE_DIRECTORY}${hashCacheKey(cacheKey)}${getUriExtension(remoteUri)}`;
+    const targetUri = targetMediaCacheUri(cacheKey, remoteUri);
 
     FileSystem.getInfoAsync(targetUri)
       .then(async (info) => {
@@ -68,9 +79,59 @@ export function useCachedRemoteUri(
     return () => {
       isMounted = false;
     };
-  }, [cacheKey, cacheRecordKey, remoteUri]);
+  }, [cacheKey, cacheRecord?.authId, cacheRecordKey, knownLocalUri, remoteUri]);
 
   return localUri ?? remoteUri ?? null;
+}
+
+export async function cacheLocalMediaFile(
+  sourceUri: string,
+  cacheKey: string,
+  cacheRecord: MediaCacheRecordInput,
+): Promise<string | null> {
+  if (!MEDIA_CACHE_DIRECTORY) {
+    return null;
+  }
+
+  const targetUri = targetMediaCacheUri(cacheKey, sourceUri);
+  const targetInfo = await FileSystem.getInfoAsync(targetUri);
+  if (!targetInfo.exists) {
+    const sourceInfo = await FileSystem.getInfoAsync(sourceUri);
+    if (!sourceInfo.exists || sourceInfo.isDirectory) {
+      return null;
+    }
+    await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
+      intermediates: true,
+    });
+    await FileSystem.copyAsync({ from: sourceUri, to: targetUri });
+  }
+
+  await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+
+  return targetUri;
+}
+
+export async function cacheRemoteMediaFile(
+  remoteUri: string,
+  cacheKey: string,
+  cacheRecord: MediaCacheRecordInput,
+): Promise<string | null> {
+  if (!MEDIA_CACHE_DIRECTORY || !isDownloadableRemoteUri(remoteUri)) {
+    return null;
+  }
+
+  const targetUri = targetMediaCacheUri(cacheKey, remoteUri);
+  const targetInfo = await FileSystem.getInfoAsync(targetUri);
+  if (!targetInfo.exists) {
+    await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
+      intermediates: true,
+    });
+    await FileSystem.downloadAsync(remoteUri, targetUri);
+  }
+
+  await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+
+  return targetUri;
 }
 
 export function avatarMediaCacheKey({
@@ -101,6 +162,14 @@ function hashCacheKey(value: string): string {
   }
 
   return (hash >>> 0).toString(36);
+}
+
+function targetMediaCacheUri(cacheKey: string, sourceUri: string): string {
+  if (!MEDIA_CACHE_DIRECTORY) {
+    throw new Error('Media cache directory is not available.');
+  }
+
+  return `${MEDIA_CACHE_DIRECTORY}${hashCacheKey(cacheKey)}${getUriExtension(sourceUri)}`;
 }
 
 function getUriExtension(uri: string): string {
