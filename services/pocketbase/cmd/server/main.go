@@ -1303,7 +1303,7 @@ func getMessagePreview(app core.App, record *core.Record) string {
 
 	switch record.GetString("kind") {
 	case "media":
-		return "Media"
+		return mediaMessagePreview(app, record)
 	case "file":
 		if attachmentName := firstMessageAttachmentName(app, record); attachmentName != "" {
 			return attachmentName
@@ -1315,6 +1315,54 @@ func getMessagePreview(app core.App, record *core.Record) string {
 	default:
 		return "Message"
 	}
+}
+
+func mediaMessagePreview(app core.App, record *core.Record) string {
+	attachments, err := app.FindRecordsByFilter(
+		"message_attachments",
+		"message={:message}",
+		"ordinal",
+		mediaUploadMaxAttachmentCount,
+		0,
+		dbx.Params{"message": record.Id},
+	)
+	if err != nil || len(attachments) == 0 {
+		legacyAttachments := record.GetStringSlice("attachments")
+		if len(legacyAttachments) == 1 {
+			return "Photo"
+		}
+		if len(legacyAttachments) > 1 {
+			return fmt.Sprintf("%d photos", len(legacyAttachments))
+		}
+
+		return "Media"
+	}
+
+	imageCount := 0
+	videoCount := 0
+	for _, attachment := range attachments {
+		switch attachment.GetString("kind") {
+		case "image":
+			imageCount++
+		case "video":
+			videoCount++
+		}
+	}
+	if len(attachments) == 1 {
+		if videoCount == 1 {
+			return "Video"
+		}
+
+		return "Photo"
+	}
+	if videoCount == 0 {
+		return fmt.Sprintf("%d photos", imageCount)
+	}
+	if imageCount == 0 {
+		return fmt.Sprintf("%d videos", videoCount)
+	}
+
+	return fmt.Sprintf("%d media", imageCount+videoCount)
 }
 
 func firstMessageAttachmentName(app core.App, record *core.Record) string {

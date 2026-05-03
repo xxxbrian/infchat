@@ -176,14 +176,6 @@ func startMediaUploadCommand(ctx context.Context, app core.App, userId string, d
 	if data.Ordinal < 0 {
 		return mediaUploadSessionResponse{}, router.NewBadRequestError("ordinal must be positive.", nil)
 	}
-	existingCount, err := countExistingUploadSessionsForMessage(app, userId, conversation.Id, data.ClientMessageId)
-	if err != nil {
-		return mediaUploadSessionResponse{}, err
-	}
-	if existingCount >= mediaUploadMaxAttachmentCount {
-		return mediaUploadSessionResponse{}, router.NewBadRequestError("Too many attachments for one message.", nil)
-	}
-
 	storage, err := newMediaObjectStorageFromEnv(ctx)
 	if err != nil {
 		return mediaUploadSessionResponse{}, mediaStorageAPIError(err)
@@ -208,6 +200,13 @@ func startMediaUploadCommand(ctx context.Context, app core.App, userId string, d
 		return reusableMediaUploadSessionResponse(ctx, app, existing)
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return mediaUploadSessionResponse{}, err
+	}
+	existingCount, err := countExistingUploadSessionsForMessage(app, userId, conversation.Id, data.ClientMessageId)
+	if err != nil {
+		return mediaUploadSessionResponse{}, err
+	}
+	if existingCount >= mediaUploadMaxAttachmentCount {
+		return mediaUploadSessionResponse{}, router.NewBadRequestError("Too many attachments for one message.", nil)
 	}
 	mimeType := strings.TrimSpace(data.MimeType)
 	if err := validateMediaUploadMIME(attachmentKind, mimeType); err != nil {
