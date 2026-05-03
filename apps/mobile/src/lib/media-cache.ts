@@ -50,54 +50,74 @@ export function useCachedRemoteUri(
   const cacheRecordKey = cacheRecord ? stableCacheRecordKey(cacheRecord) : '';
 
   useEffect(() => {
-    if (knownLocalUri) {
-      setLocalUri(knownLocalUri);
-      if (cacheKey && cacheRecord?.authId) {
-        void touchMediaCacheEntry(cacheRecord.authId, cacheKey).catch(() => {});
-      }
-      return;
-    }
-
-    if (!remoteUri || !cacheKey || !MEDIA_CACHE_DIRECTORY) {
-      setLocalUri(null);
-      return;
-    }
-
-    if (!isDownloadableRemoteUri(remoteUri)) {
-      setLocalUri(remoteUri);
-      return;
-    }
-
     let isMounted = true;
-    const targetUri = targetMediaCacheUri(cacheKey, remoteUri);
 
-    FileSystem.getInfoAsync(targetUri)
-      .then(async (info) => {
+    const resolveUri = async () => {
+      if (knownLocalUri) {
+        if (!isLocalFileUri(knownLocalUri)) {
+          setLocalUri(knownLocalUri);
+          return;
+        }
+
+        const knownInfo = await FileSystem.getInfoAsync(knownLocalUri).catch(() => null);
         if (!isMounted) {
           return;
         }
+        if (knownInfo?.exists && !knownInfo.isDirectory) {
+          setLocalUri(knownLocalUri);
+          if (cacheKey && cacheRecord?.authId) {
+            await touchMediaCacheEntry(cacheRecord.authId, cacheKey).catch(() => {});
+          }
+          return;
+        }
+      }
 
-        if (info.exists) {
-          setLocalUri(targetUri);
-          await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+      if (!remoteUri || !cacheKey || !MEDIA_CACHE_DIRECTORY) {
+        setLocalUri(null);
+        return;
+      }
+
+      if (!isDownloadableRemoteUri(remoteUri)) {
+        if (isLocalFileUri(remoteUri)) {
+          const remoteInfo = await FileSystem.getInfoAsync(remoteUri).catch(() => null);
+          if (isMounted) {
+            setLocalUri(remoteInfo?.exists && !remoteInfo.isDirectory ? remoteUri : null);
+          }
           return;
         }
 
-        await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
-          intermediates: true,
-        });
-        await FileSystem.downloadAsync(remoteUri, targetUri);
-        await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+        setLocalUri(remoteUri);
+        return;
+      }
 
-        if (isMounted) {
-          setLocalUri(targetUri);
-        }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setLocalUri(null);
-        }
+      const targetUri = targetMediaCacheUri(cacheKey, remoteUri);
+      const info = await FileSystem.getInfoAsync(targetUri);
+      if (!isMounted) {
+        return;
+      }
+
+      if (info.exists) {
+        setLocalUri(targetUri);
+        await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+        return;
+      }
+
+      await FileSystem.makeDirectoryAsync(MEDIA_CACHE_DIRECTORY, {
+        intermediates: true,
       });
+      await FileSystem.downloadAsync(remoteUri, targetUri);
+      await persistCacheRecord(cacheKey, targetUri, cacheRecord);
+
+      if (isMounted) {
+        setLocalUri(targetUri);
+      }
+    };
+
+    void resolveUri().catch(() => {
+      if (isMounted) {
+        setLocalUri(null);
+      }
+    });
 
     return () => {
       isMounted = false;
@@ -351,6 +371,10 @@ function mediaCacheEntryType(entry: LocalMediaCacheEntry): keyof MediaCacheUsage
 
 function isDownloadableRemoteUri(uri: string): boolean {
   return /^https?:\/\//i.test(uri);
+}
+
+function isLocalFileUri(uri: string): boolean {
+  return uri.startsWith('file://');
 }
 
 async function persistCacheRecord(

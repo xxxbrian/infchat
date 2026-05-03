@@ -2428,7 +2428,7 @@ async function resolveAttachmentOriginalUrl(
   attachment: MessageAttachment,
   options?: { cache?: boolean },
 ): Promise<string | null> {
-  if (attachment.originalLocalUri) {
+  if (attachment.originalLocalUri && (await localFileExists(attachment.originalLocalUri))) {
     return attachment.originalLocalUri;
   }
   if (attachment.attachmentId) {
@@ -2437,12 +2437,12 @@ async function resolveAttachmentOriginalUrl(
       attachment.attachmentId,
       [attachment.kind === 'file' ? 'file' : 'original'],
     );
-    if (cachedOriginal?.local_uri) {
+    if (cachedOriginal?.local_uri && (await localFileExists(cachedOriginal.local_uri))) {
       await touchMediaCacheEntry(authId, cachedOriginal.cache_key);
       return cachedOriginal.local_uri;
     }
   }
-  if (isLocalFileUri(attachment.url)) {
+  if (isLocalFileUri(attachment.url) && (await localFileExists(attachment.url))) {
     return attachment.url;
   }
   const request: SignedMediaURLRequestItem | null = attachment.attachmentId
@@ -2474,6 +2474,15 @@ async function resolveAttachmentOriginalUrl(
 
 function isLocalFileUri(uri?: string | null): boolean {
   return Boolean(uri && uri.startsWith('file://'));
+}
+
+async function localFileExists(uri: string): Promise<boolean> {
+  if (!isLocalFileUri(uri)) {
+    return true;
+  }
+  const info = await FileSystem.getInfoAsync(uri).catch(() => null);
+
+  return Boolean(info?.exists && !info.isDirectory);
 }
 
 function formatDuration(durationMs: number | null | undefined): string {
@@ -2845,19 +2854,36 @@ function MediaAlbumTile({
   const sourceUrl = getMediaTileImageUrl(attachment);
   const knownPreviewUri =
     attachment.kind === 'video' ? attachment.posterLocalUri : attachment.previewLocalUri;
+  const [validKnownPreviewUri, setValidKnownPreviewUri] = useState<string | null>(null);
+  useEffect(() => {
+    let isMounted = true;
+    if (!knownPreviewUri) {
+      setValidKnownPreviewUri(null);
+      return;
+    }
+    void localFileExists(knownPreviewUri).then((exists) => {
+      if (isMounted) {
+        setValidKnownPreviewUri(exists ? knownPreviewUri : null);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [knownPreviewUri]);
   const cacheRecord = mediaDisplayCacheRecord(authId, attachment);
   const cachedUri = useCachedRemoteUri(
     sourceUrl,
     sourceUrl ? mediaDisplayCacheKey(messageId, attachment) : undefined,
     sourceUrl ? cacheRecord : undefined,
-    knownPreviewUri,
+    validKnownPreviewUri,
   );
   const isVideo = attachment.kind === 'video';
   const hasPreview = Boolean(cachedUri && sourceUrl);
   const needsSignedPreview = Boolean(
     cacheRecord &&
       !sourceUrl &&
-      !knownPreviewUri &&
+      !validKnownPreviewUri &&
       !hasProcessingStatus(attachment.processingStatus),
   );
   const isProcessing = hasProcessingStatus(attachment.processingStatus) && !hasPreview;
@@ -2881,11 +2907,11 @@ function MediaAlbumTile({
           enforceEarlyResizing
           placeholder={dominantMediaPlaceholder(attachment)}
           placeholderContentFit="cover"
-          priority={knownPreviewUri ? 'high' : 'normal'}
-          recyclingKey={knownPreviewUri ?? cachedUri ?? sourceUrl}
+          priority={validKnownPreviewUri ? 'high' : 'normal'}
+          recyclingKey={validKnownPreviewUri ?? cachedUri ?? sourceUrl}
           source={{ uri: cachedUri ?? sourceUrl }}
           style={{ height: frame.height, width: frame.width }}
-          transition={knownPreviewUri ? 0 : 120}
+          transition={validKnownPreviewUri ? 0 : 120}
         />
       ) : (
         <View className="h-full w-full items-center justify-center bg-muted">
@@ -2955,7 +2981,11 @@ function MediaGalleryModal({
     }
 
     let isMounted = true;
-    setResolvedUrl(initialGalleryMediaUrl(selected));
+    void initialGalleryMediaUrl(selected).then((url) => {
+      if (isMounted) {
+        setResolvedUrl(url);
+      }
+    });
     resolveAttachmentOriginalUrl(authId, selected, {
       cache: selected.kind !== 'video',
     })
@@ -3115,12 +3145,27 @@ function GalleryVideoLoading({
   );
 }
 
-function initialGalleryMediaUrl(attachment: MessageAttachment): string | null {
+async function initialGalleryMediaUrl(attachment: MessageAttachment): Promise<string | null> {
   if (attachment.kind === 'video') {
-    return attachment.originalLocalUri ?? null;
+    return attachment.originalLocalUri && (await localFileExists(attachment.originalLocalUri))
+      ? attachment.originalLocalUri
+      : null;
   }
 
-  return attachment.originalLocalUri ?? attachment.previewLocalUri ?? attachment.previewUrl ?? null;
+  for (const uri of [
+    attachment.originalLocalUri,
+    attachment.previewLocalUri,
+    attachment.previewUrl,
+  ]) {
+    if (!uri) {
+      continue;
+    }
+    if (await localFileExists(uri)) {
+      return uri;
+    }
+  }
+
+  return null;
 }
 
 function fallbackGalleryMediaUrl(attachment: MessageAttachment): string | null {
