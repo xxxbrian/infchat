@@ -22,14 +22,17 @@ import {
 import { useNetInfo } from '@react-native-community/netinfo';
 import { FlashList, type FlashListRef, type ListRenderItemInfo } from '@shopify/flash-list';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { BlurView } from 'expo-blur';
+import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as Haptics from 'expo-haptics';
 import { Image as ExpoImage } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useVideoPlayer, VideoView, type VideoSource } from 'expo-video';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentRef, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -203,7 +206,19 @@ type FailedOutgoingMessage = {
   id: string;
 };
 
-type MessageActionTarget = ChatMessage;
+type MessageActionFrame = {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+type MessageActionTarget = {
+  frame: MessageActionFrame;
+  message: ChatMessage;
+};
+
+type MessageLongPressHandler = (message: ChatMessage, frame: MessageActionFrame) => void;
 
 const HEADER_HEIGHT = 58;
 const COMPOSER_HEIGHT = 50;
@@ -218,6 +233,10 @@ const ATTACHMENT_MENU_ROW_HEIGHT = 54;
 const ATTACHMENT_MENU_GAP = 10;
 const CHAT_MESSAGE_PAGE_SIZE = 100;
 const MEDIA_PICKER_SELECTION_LIMIT = 10;
+const MESSAGE_ACTION_MENU_WIDTH = 286;
+const MESSAGE_ACTION_MENU_ROW_HEIGHT = 50;
+const MESSAGE_ACTION_MENU_VERTICAL_PADDING = 12;
+const MESSAGE_ACTION_MENU_GAP = 10;
 
 export default function ChatDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -950,7 +969,7 @@ export default function ChatDetailScreen() {
         authId={authRecord.id}
         conversation={conversation}
         message={item.message}
-        onLongPressMessage={setMessageActionTarget}
+        onLongPressMessage={(message, frame) => setMessageActionTarget({ frame, message })}
         onRetryFailedMessage={handleRetryFailedMessage}
       />
     );
@@ -1379,8 +1398,10 @@ export default function ChatDetailScreen() {
           />
         </View>
 
-        <MessageActionSheet
-          message={messageActionTarget}
+        <MessageActionOverlay
+          authId={authRecord.id}
+          conversation={conversation}
+          target={messageActionTarget}
           onClose={() => setMessageActionTarget(null)}
           onDelete={confirmDeleteMessage}
         />
@@ -2571,17 +2592,39 @@ function ActiveCallBanner({ callRoom, onJoin }: { callRoom: CallRoomRecord; onJo
   );
 }
 
+function measureMessageActionFrame(
+  ref: {
+    current: {
+      measureInWindow?: (
+        callback: (x: number, y: number, width: number, height: number) => void,
+      ) => void;
+    } | null;
+  },
+  message: ChatMessage,
+  onLongPressMessage: MessageLongPressHandler,
+) {
+  ref.current?.measureInWindow?.((x, y, width, height) => {
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    onLongPressMessage(message, { height, width, x, y });
+  });
+}
+
 function MessageBubble({
   authId,
   conversation,
+  isPreview = false,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
 }: {
   authId: string;
   conversation: ConversationView;
+  isPreview?: boolean;
   message: ChatMessage;
-  onLongPressMessage: (message: ChatMessage) => void;
+  onLongPressMessage: MessageLongPressHandler;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
   const fileAttachment = message.kind === 'file' ? message.attachments[0] : undefined;
@@ -2589,6 +2632,7 @@ function MessageBubble({
   const hasText = message.text.trim().length > 0;
   const isFailed = message.deliveryStatus === 'failed';
   const deliveryLabel = getDeliveryLabel(message.deliveryStatus);
+  const callRef = useRef<ComponentRef<typeof Pressable>>(null);
 
   if (message.kind === 'call') {
     const isVideo = message.text.toLowerCase().includes('video');
@@ -2600,8 +2644,13 @@ function MessageBubble({
     return (
       <View className="my-3 self-center rounded-full border border-border/70 bg-muted/70 px-4 py-2">
         <Pressable
+          ref={callRef}
           className="flex-row items-center gap-2"
-          onLongPress={() => onLongPressMessage(message)}
+          onLongPress={
+            isPreview
+              ? undefined
+              : () => measureMessageActionFrame(callRef, message, onLongPressMessage)
+          }
         >
           <View
             className={`h-7 w-7 items-center justify-center rounded-full ${isUnanswered ? 'bg-red-500/20' : 'bg-emerald-400/20'}`}
@@ -2627,6 +2676,7 @@ function MessageBubble({
         deliveryLabel={deliveryLabel}
         isFailed={isFailed}
         isMine={isMine}
+        isPreview={isPreview}
         message={message}
         onLongPressMessage={onLongPressMessage}
         onRetryFailedMessage={onRetryFailedMessage}
@@ -2642,6 +2692,7 @@ function MessageBubble({
         fileAttachment={fileAttachment}
         isFailed={isFailed}
         isMine={isMine}
+        isPreview={isPreview}
         message={message}
         onLongPressMessage={onLongPressMessage}
         onRetryFailedMessage={onRetryFailedMessage}
@@ -2656,6 +2707,7 @@ function MessageBubble({
       hasText={hasText}
       isFailed={isFailed}
       isMine={isMine}
+      isPreview={isPreview}
       message={message}
       onLongPressMessage={onLongPressMessage}
       onRetryFailedMessage={onRetryFailedMessage}
@@ -2669,6 +2721,7 @@ function TextMessageBubble({
   hasText,
   isFailed,
   isMine,
+  isPreview = false,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
@@ -2678,19 +2731,32 @@ function TextMessageBubble({
   hasText: boolean;
   isFailed: boolean;
   isMine: boolean;
+  isPreview?: boolean;
   message: ChatMessage;
-  onLongPressMessage: (message: ChatMessage) => void;
+  onLongPressMessage: MessageLongPressHandler;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
+  const bubbleRef = useRef<ComponentRef<typeof Pressable>>(null);
+
   return (
     <View>
       <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
-        <FailedRetryButton
-          failedMessageId={message.failedMessageId}
-          isFailed={isFailed}
-          onRetryFailedMessage={onRetryFailedMessage}
-        />
-        <Pressable className="max-w-[82%]" onLongPress={() => onLongPressMessage(message)}>
+        {isPreview ? null : (
+          <FailedRetryButton
+            failedMessageId={message.failedMessageId}
+            isFailed={isFailed}
+            onRetryFailedMessage={onRetryFailedMessage}
+          />
+        )}
+        <Pressable
+          ref={bubbleRef}
+          className={isPreview ? 'w-full' : 'max-w-[82%]'}
+          onLongPress={
+            isPreview
+              ? undefined
+              : () => measureMessageActionFrame(bubbleRef, message, onLongPressMessage)
+          }
+        >
           <View
             className={`rounded-[24px] px-4 py-3 ${isFailed ? 'bg-foreground/80' : isMine ? 'bg-foreground' : 'bg-muted'}`}
             style={styles.bubble}
@@ -2716,7 +2782,9 @@ function TextMessageBubble({
               {message.time}
             </Text>
           </View>
-          <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
+          {isPreview ? null : (
+            <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
+          )}
         </Pressable>
       </View>
     </View>
@@ -2729,6 +2797,7 @@ function MediaAlbumBubble({
   deliveryLabel,
   isFailed,
   isMine,
+  isPreview = false,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
@@ -2738,11 +2807,13 @@ function MediaAlbumBubble({
   deliveryLabel?: string;
   isFailed: boolean;
   isMine: boolean;
+  isPreview?: boolean;
   message: ChatMessage;
-  onLongPressMessage: (message: ChatMessage) => void;
+  onLongPressMessage: MessageLongPressHandler;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
   const { width: windowWidth } = useWindowDimensions();
+  const bubbleRef = useRef<ComponentRef<typeof Pressable>>(null);
   const [viewer, setViewer] = useState<MediaViewerState>({
     index: 0,
     visible: false,
@@ -2753,20 +2824,26 @@ function MediaAlbumBubble({
   return (
     <View>
       <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
-        <FailedRetryButton
-          failedMessageId={message.failedMessageId}
-          isFailed={isFailed}
-          onRetryFailedMessage={onRetryFailedMessage}
-        />
-        <View
+        {isPreview ? null : (
+          <FailedRetryButton
+            failedMessageId={message.failedMessageId}
+            isFailed={isFailed}
+            onRetryFailedMessage={onRetryFailedMessage}
+          />
+        )}
+        <Pressable
+          ref={bubbleRef}
           className={`overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+          onLongPress={
+            isPreview
+              ? undefined
+              : () => measureMessageActionFrame(bubbleRef, message, onLongPressMessage)
+          }
           style={[styles.bubble, { width: layout.width }]}
         >
-          <Pressable onLongPress={() => onLongPressMessage(message)}>
-            {!isMine && conversation.kind === 'group' && message.sender ? (
-              <Text className="px-3 pt-2 text-xs font-bold text-primary">{message.sender}</Text>
-            ) : null}
-          </Pressable>
+          {!isMine && conversation.kind === 'group' && message.sender ? (
+            <Text className="px-3 pt-2 text-xs font-bold text-primary">{message.sender}</Text>
+          ) : null}
           <View style={{ height: layout.height, width: layout.width }}>
             {message.attachments.slice(0, layout.visibleCount).map((attachment, index) => {
               const frame = layout.tiles[index];
@@ -2781,7 +2858,7 @@ function MediaAlbumBubble({
                   frame={frame}
                   key={attachment.attachmentId ?? `${message.id}-${index}`}
                   messageId={message.id}
-                  onPress={() => setViewer({ index, visible: true })}
+                  onPress={isPreview ? undefined : () => setViewer({ index, visible: true })}
                   overflowCount={index === layout.visibleCount - 1 ? layout.overflowCount : 0}
                 />
               );
@@ -2795,8 +2872,8 @@ function MediaAlbumBubble({
           {hasText ? (
             <Pressable
               className="px-3 py-2"
-              onLongPress={() => onLongPressMessage(message)}
-              onPress={() => setViewer({ index: 0, visible: true })}
+              disabled={isPreview}
+              onPress={isPreview ? undefined : () => setViewer({ index: 0, visible: true })}
             >
               <Text
                 className={`text-[15px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
@@ -2813,16 +2890,18 @@ function MediaAlbumBubble({
               </Text>
             </Pressable>
           ) : null}
-          <MediaGalleryModal
-            attachments={message.attachments}
-            authId={authId}
-            initialIndex={viewer.index}
-            onClose={() => setViewer((current) => ({ ...current, visible: false }))}
-            visible={viewer.visible}
-          />
-        </View>
+          {isPreview ? null : (
+            <MediaGalleryModal
+              attachments={message.attachments}
+              authId={authId}
+              initialIndex={viewer.index}
+              onClose={() => setViewer((current) => ({ ...current, visible: false }))}
+              visible={viewer.visible}
+            />
+          )}
+        </Pressable>
       </View>
-      <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
+      {isPreview ? null : <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />}
     </View>
   );
 }
@@ -2839,7 +2918,7 @@ function MediaAlbumTile({
   authId: string;
   frame: MediaTileFrame;
   messageId: string;
-  onPress: () => void;
+  onPress?: () => void;
   overflowCount: number;
 }) {
   const sourceUrl = getMediaTileImageUrl(attachment);
@@ -2865,6 +2944,7 @@ function MediaAlbumTile({
   return (
     <Pressable
       className="overflow-hidden bg-background/55"
+      disabled={!onPress}
       onPress={onPress}
       style={{
         height: frame.height,
@@ -3151,6 +3231,7 @@ function FileMessageBubble({
   fileAttachment,
   isFailed,
   isMine,
+  isPreview = false,
   message,
   onLongPressMessage,
   onRetryFailedMessage,
@@ -3160,16 +3241,17 @@ function FileMessageBubble({
   fileAttachment: MessageAttachment;
   isFailed: boolean;
   isMine: boolean;
+  isPreview?: boolean;
   message: ChatMessage;
-  onLongPressMessage: (message: ChatMessage) => void;
+  onLongPressMessage: MessageLongPressHandler;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
+  const bubbleRef = useRef<ComponentRef<typeof Pressable>>(null);
   const fileName = formatAttachmentName(fileAttachment.name) || 'File';
   const localFileUri = getLocalMessageFileUri(message.id, fileName);
   const sourceLocalUri =
     fileAttachment.originalLocalUri ??
     (isLocalFileUri(fileAttachment.url) ? fileAttachment.url : localFileUri);
-  const [isFilePreviewVisible, setIsFilePreviewVisible] = useState(false);
   const [fileDownloadState, setFileDownloadState] = useState<FileDownloadState>(
     fileAttachment.originalLocalUri || isLocalFileUri(fileAttachment.url) ? 'downloaded' : 'idle',
   );
@@ -3247,7 +3329,6 @@ function FileMessageBubble({
       setFileDownloadState('downloaded');
 
       await openDocumentWithNativePreview(uriToOpen, fileName, fileAttachment.mimeType);
-      setIsFilePreviewVisible(false);
     } catch {
       setFileDownloadState('idle');
       Alert.alert('Could not open file', 'The file could not be downloaded. Try again later.');
@@ -3255,13 +3336,14 @@ function FileMessageBubble({
   };
 
   const isFileActionBusy = fileDownloadState === 'checking' || fileDownloadState === 'downloading';
-  const fileActionLabel =
-    fileDownloadState === 'downloading'
-      ? 'Downloading...'
-      : fileDownloadState === 'downloaded'
-        ? 'Open file'
-        : 'Download file';
-  const fileStatusLabel = fileDownloadState === 'downloaded' ? 'downloaded' : 'tap to download';
+  const fileStatusLabel =
+    fileDownloadState === 'checking'
+      ? 'checking'
+      : fileDownloadState === 'downloading'
+        ? 'downloading'
+        : fileDownloadState === 'downloaded'
+          ? 'downloaded'
+          : 'tap to download';
   const fileMetaLabel = [formatFileSize(fileAttachment.byteSize), fileStatusLabel, message.time]
     .filter(Boolean)
     .join(' · ');
@@ -3270,20 +3352,26 @@ function FileMessageBubble({
   return (
     <View>
       <View className={`mb-2 flex-row items-end gap-2 ${isMine ? 'self-end' : 'self-start'}`}>
-        <FailedRetryButton
-          failedMessageId={message.failedMessageId}
-          isFailed={isFailed}
-          onRetryFailedMessage={onRetryFailedMessage}
-        />
-        <View
-          className={`max-w-[82%] overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+        {isPreview ? null : (
+          <FailedRetryButton
+            failedMessageId={message.failedMessageId}
+            isFailed={isFailed}
+            onRetryFailedMessage={onRetryFailedMessage}
+          />
+        )}
+        <Pressable
+          ref={bubbleRef}
+          className={`${isPreview ? 'w-full' : 'max-w-[82%]'} overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+          disabled={isFileActionBusy || isPreview}
+          onLongPress={
+            isPreview
+              ? undefined
+              : () => measureMessageActionFrame(bubbleRef, message, onLongPressMessage)
+          }
+          onPress={isPreview ? undefined : handleOpenFile}
           style={styles.bubble}
         >
-          <Pressable
-            className="flex-row items-center gap-3 px-3 py-2.5"
-            onLongPress={() => onLongPressMessage(message)}
-            onPress={() => setIsFilePreviewVisible(true)}
-          >
+          <View className="flex-row items-center gap-3 px-3 py-2.5">
             <View
               className={`h-11 w-11 items-center justify-center rounded-[16px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
             >
@@ -3292,7 +3380,7 @@ function FileMessageBubble({
             <View className="min-w-0 flex-1 pr-2">
               <Text
                 className={`text-[15px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
-                numberOfLines={2}
+                numberOfLines={3}
               >
                 {fileName}
               </Text>
@@ -3302,16 +3390,18 @@ function FileMessageBubble({
                 {fileMetaLabel}
               </Text>
             </View>
-            <View
-              className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
-            >
-              <Ionicons
-                color={isMine ? '#080b12' : '#f8fafc'}
-                name={fileDownloadState === 'downloaded' ? 'open-outline' : 'download-outline'}
-                size={17}
-              />
-            </View>
-          </Pressable>
+            {fileDownloadState === 'downloaded' ? null : (
+              <View
+                className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+              >
+                {isFileActionBusy ? (
+                  <ActivityIndicator color={isMine ? '#080b12' : '#f8fafc'} size="small" />
+                ) : (
+                  <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="download" size={17} />
+                )}
+              </View>
+            )}
+          </View>
           {caption ? (
             <Text
               className={`px-4 pb-3 text-[15px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
@@ -3319,49 +3409,9 @@ function FileMessageBubble({
               {caption}
             </Text>
           ) : null}
-        </View>
+        </Pressable>
       </View>
-      <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />
-      <Modal
-        animationType="fade"
-        onRequestClose={() => setIsFilePreviewVisible(false)}
-        transparent
-        visible={isFilePreviewVisible}
-      >
-        <View className="flex-1 justify-end bg-black/70">
-          <Pressable className="flex-1" onPress={() => setIsFilePreviewVisible(false)} />
-          <View className="rounded-t-[34px] bg-background px-5 pb-8 pt-5">
-            <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
-            <View className="items-center">
-              <View className="h-16 w-16 items-center justify-center rounded-[24px] bg-muted">
-                <Ionicons color="#f8fafc" name="document-text" size={30} />
-              </View>
-              <Text
-                className="mt-4 text-center text-xl font-bold text-foreground"
-                numberOfLines={3}
-              >
-                {fileName}
-              </Text>
-              <Text className="mt-2 text-sm font-semibold text-muted-foreground">
-                {formatFileSize(fileAttachment.byteSize) || 'Document'}
-              </Text>
-            </View>
-            <Pressable
-              className={`mt-6 h-[52px] items-center justify-center rounded-full ${isFileActionBusy ? 'bg-foreground/65' : 'bg-foreground'}`}
-              disabled={isFileActionBusy}
-              onPress={handleOpenFile}
-            >
-              <Text className="text-base font-bold text-background">{fileActionLabel}</Text>
-            </Pressable>
-            <Pressable
-              className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
-              onPress={() => setIsFilePreviewVisible(false)}
-            >
-              <Text className="text-base font-bold text-foreground">Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      {isPreview ? null : <BubbleDeliveryLabel deliveryLabel={deliveryLabel} message={message} />}
     </View>
   );
 }
@@ -3407,50 +3457,236 @@ function BubbleDeliveryLabel({
   );
 }
 
-function MessageActionSheet({
-  message,
+function MessageActionOverlay({
+  authId,
+  conversation,
+  target,
   onClose,
   onDelete,
 }: {
-  message: MessageActionTarget | null;
+  authId: string;
+  conversation: ConversationView;
+  target: MessageActionTarget | null;
   onClose: () => void;
-  onDelete: (message: MessageActionTarget) => void;
+  onDelete: (message: ChatMessage) => void;
 }) {
-  if (!message) {
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const progress = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!target) {
+      progress.setValue(0);
+      return;
+    }
+
+    if (Platform.OS === 'ios') {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+
+    Animated.spring(progress, {
+      toValue: 1,
+      damping: 19,
+      mass: 0.72,
+      stiffness: 210,
+      useNativeDriver: true,
+    }).start();
+  }, [progress, target]);
+
+  if (!target) {
     return null;
   }
 
+  const { frame, message } = target;
   const canDelete = !message.localOnly || message.deliveryStatus === 'failed';
+  const actionRows = messageActionRows(message, canDelete);
+  const menuHeight =
+    MESSAGE_ACTION_MENU_VERTICAL_PADDING * 2 +
+    MESSAGE_ACTION_MENU_ROW_HEIGHT * actionRows.length +
+    1;
+  const menuWidth = Math.min(MESSAGE_ACTION_MENU_WIDTH, windowWidth - 32);
+  const contentGap = MESSAGE_ACTION_MENU_GAP;
+  const rightAlignedX = frame.x + frame.width - menuWidth;
+  const menuLeft = Math.min(
+    Math.max(16, rightAlignedX),
+    Math.max(16, windowWidth - menuWidth - 16),
+  );
+  const bottomLimit = windowHeight - Math.max(insets.bottom, 10) - 14;
+  const topLimit = Math.max(insets.top + 12, 12);
+  const desiredBubbleTop = Math.min(frame.y, bottomLimit - menuHeight - contentGap - frame.height);
+  const bubbleTop = Math.max(topLimit, desiredBubbleTop);
+  const bubbleLeft = Math.min(Math.max(12, frame.x), Math.max(12, windowWidth - frame.width - 12));
+  const menuTop = Math.min(bubbleTop + frame.height + contentGap, bottomLimit - menuHeight);
+  const bubbleTranslateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [frame.y - bubbleTop + 8, 0],
+  });
+  const menuTranslateY = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [18, 0],
+  });
+  const overlayOpacity = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const bubbleScale = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.96, 1],
+  });
+
+  const handleActionPress = (action: MessageActionRow) => {
+    if (action.disabled) {
+      return;
+    }
+    if (action.kind === 'copy') {
+      const text = message.text.trim();
+      if (!text) {
+        return;
+      }
+      void Clipboard.setStringAsync(text).then(() => {
+        if (Platform.OS === 'ios') {
+          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }
+      });
+      onClose();
+      return;
+    }
+    if (action.kind === 'delete') {
+      onClose();
+      requestAnimationFrame(() => onDelete(message));
+    }
+  };
 
   return (
-    <Modal animationType="fade" onRequestClose={onClose} transparent visible>
-      <View className="flex-1 justify-end bg-black/55">
-        <Pressable className="flex-1" onPress={onClose} />
-        <View className="rounded-t-[30px] bg-background px-5 pb-8 pt-4">
-          <View className="mx-auto mb-5 h-1.5 w-12 rounded-full bg-muted" />
-          <Text className="mb-3 text-center text-sm font-semibold text-muted-foreground">
-            Message actions
-          </Text>
-          {canDelete ? (
-            <Pressable
-              className="h-[52px] flex-row items-center justify-center rounded-full bg-red-500"
-              onPress={() => onDelete(message)}
-            >
-              <Ionicons color="#fff" name="trash" size={18} />
-              <Text className="ml-2 text-base font-black text-white">
-                {message.localOnly ? 'Delete' : 'Delete for everyone'}
-              </Text>
-            </Pressable>
-          ) : null}
-          <Pressable
-            className="mt-3 h-[52px] items-center justify-center rounded-full bg-muted"
-            onPress={onClose}
-          >
-            <Text className="text-base font-bold text-foreground">Cancel</Text>
-          </Pressable>
-        </View>
+    <Modal animationType="none" onRequestClose={onClose} transparent visible>
+      <View className="flex-1">
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: overlayOpacity }]}>
+          <BlurView intensity={36} style={StyleSheet.absoluteFillObject} tint="dark" />
+          <View className="absolute inset-0 bg-black/45" />
+        </Animated.View>
+        <Pressable className="absolute inset-0" onPress={onClose} />
+        <Animated.View
+          pointerEvents="none"
+          style={{
+            left: bubbleLeft,
+            opacity: overlayOpacity,
+            position: 'absolute',
+            top: bubbleTop,
+            transform: [{ translateY: bubbleTranslateY }, { scale: bubbleScale }],
+            width: frame.width,
+          }}
+        >
+          <MessageBubble
+            authId={authId}
+            conversation={conversation}
+            isPreview
+            message={message}
+            onLongPressMessage={() => {}}
+            onRetryFailedMessage={() => {}}
+          />
+        </Animated.View>
+        <Animated.View
+          className="overflow-hidden rounded-[30px] border border-border/70 bg-background/95"
+          style={[
+            styles.messageActionMenu,
+            {
+              left: menuLeft,
+              opacity: overlayOpacity,
+              position: 'absolute',
+              top: menuTop,
+              transform: [{ translateY: menuTranslateY }],
+              width: menuWidth,
+            },
+          ]}
+        >
+          <View className="px-5 pb-2 pt-3">
+            <Text className="text-[13px] font-semibold text-muted-foreground">
+              {messageActionMetaLabel(message)}
+            </Text>
+          </View>
+          <View className="mx-5 h-px bg-border/70" />
+          <View className="py-3">
+            {actionRows.map((action) => (
+              <MessageActionMenuRow
+                action={action}
+                key={action.label}
+                onPress={handleActionPress}
+              />
+            ))}
+          </View>
+        </Animated.View>
       </View>
     </Modal>
+  );
+}
+
+type MessageActionRow = {
+  disabled?: boolean;
+  icon: keyof typeof Ionicons.glyphMap;
+  kind: 'copy' | 'delete' | 'placeholder';
+  label: string;
+};
+
+function messageActionRows(message: ChatMessage, canDelete: boolean): MessageActionRow[] {
+  const canCopyText = message.kind === 'text' && message.text.trim().length > 0;
+
+  return [
+    { disabled: true, icon: 'return-down-back', kind: 'placeholder', label: 'Reply' },
+    {
+      disabled: !canCopyText,
+      icon: 'copy-outline',
+      kind: canCopyText ? 'copy' : 'placeholder',
+      label: 'Copy',
+    },
+    { disabled: true, icon: 'arrow-redo-outline', kind: 'placeholder', label: 'Forward' },
+    {
+      disabled: true,
+      icon: 'bookmark-outline',
+      kind: 'placeholder',
+      label: 'Save to Saved Messages',
+    },
+    ...(canDelete
+      ? [
+          {
+            icon: 'trash-outline' as const,
+            kind: 'delete' as const,
+            label: message.localOnly ? 'Delete' : 'Delete for everyone',
+          },
+        ]
+      : []),
+    { disabled: true, icon: 'checkmark-circle-outline', kind: 'placeholder', label: 'Select' },
+  ];
+}
+
+function messageActionMetaLabel(message: ChatMessage): string {
+  const status = getDeliveryLabel(message.deliveryStatus) ?? message.readLabel;
+  return [message.time, status].filter(Boolean).join(' · ') || 'Message actions';
+}
+
+function MessageActionMenuRow({
+  action,
+  onPress,
+}: {
+  action: MessageActionRow;
+  onPress: (action: MessageActionRow) => void;
+}) {
+  const isDelete = action.kind === 'delete';
+  const tintColor = isDelete ? '#f87171' : action.disabled ? '#64748b' : '#f8fafc';
+
+  return (
+    <Pressable
+      className={`h-[50px] flex-row items-center px-5 ${action.disabled ? 'opacity-50' : ''}`}
+      disabled={action.disabled}
+      onPress={() => onPress(action)}
+    >
+      <Ionicons color={tintColor} name={action.icon} size={23} />
+      <Text
+        className={`ml-5 text-[17px] font-semibold ${isDelete ? 'text-red-400' : 'text-foreground'}`}
+        numberOfLines={1}
+      >
+        {action.label}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -3633,5 +3869,12 @@ const styles = StyleSheet.create({
     shadowOffset: { height: 12, width: 0 },
     shadowOpacity: 0.28,
     shadowRadius: 26,
+  } as ViewStyle,
+  messageActionMenu: {
+    borderCurve: 'continuous',
+    shadowColor: '#000',
+    shadowOffset: { height: 18, width: 0 },
+    shadowOpacity: 0.34,
+    shadowRadius: 34,
   } as ViewStyle,
 });
