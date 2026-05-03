@@ -2,6 +2,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useEffect, useState } from 'react';
 
 import {
+  deleteMediaCacheEntry,
+  listAvailableMediaCacheEntries,
+  type LocalMediaCacheEntry,
   touchMediaCacheEntry,
   type UpsertMediaCacheEntryInput,
   upsertMediaCacheEntry,
@@ -17,6 +20,23 @@ type MediaCacheRecordInput = Omit<UpsertMediaCacheEntryInput, 'cacheKey' | 'loca
 };
 
 export type ManagedMediaCacheRecordInput = MediaCacheRecordInput;
+
+export type MediaCacheUsageSummary = {
+  byType: {
+    files: number;
+    images: number;
+    other: number;
+    videos: number;
+    voice: number;
+  };
+  entryCount: number;
+  totalBytes: number;
+};
+
+export type MediaCacheClearOptions = {
+  conversationId?: string;
+  type?: keyof MediaCacheUsageSummary['byType'];
+};
 
 export function useCachedRemoteUri(
   remoteUri?: string | null,
@@ -143,6 +163,69 @@ export async function cacheRemoteMediaFile(
   return targetUri;
 }
 
+export async function getMediaCacheUsageSummary(authId: string): Promise<MediaCacheUsageSummary> {
+  const entries = await listAvailableMediaCacheEntries(authId);
+  const summary: MediaCacheUsageSummary = {
+    byType: {
+      files: 0,
+      images: 0,
+      other: 0,
+      videos: 0,
+      voice: 0,
+    },
+    entryCount: entries.length,
+    totalBytes: 0,
+  };
+
+  for (const entry of entries) {
+    const size = await cacheEntrySize(entry.local_uri, entry.byte_size);
+    summary.totalBytes += size;
+    summary.byType[mediaCacheEntryType(entry)] += size;
+  }
+
+  return summary;
+}
+
+export async function clearManagedMediaCache(
+  authId: string,
+  options: MediaCacheClearOptions = {},
+): Promise<MediaCacheUsageSummary> {
+  const entries = await listAvailableMediaCacheEntries(authId);
+  const cleared: MediaCacheUsageSummary = {
+    byType: {
+      files: 0,
+      images: 0,
+      other: 0,
+      videos: 0,
+      voice: 0,
+    },
+    entryCount: 0,
+    totalBytes: 0,
+  };
+
+  for (const entry of entries) {
+    if (entry.pinned || entry.protected_reason) {
+      continue;
+    }
+    if (options.conversationId && entry.conversation_id !== options.conversationId) {
+      continue;
+    }
+    const entryType = mediaCacheEntryType(entry);
+    if (options.type && entryType !== options.type) {
+      continue;
+    }
+
+    const size = await cacheEntrySize(entry.local_uri, entry.byte_size);
+    await FileSystem.deleteAsync(entry.local_uri, { idempotent: true }).catch(() => {});
+    await deleteMediaCacheEntry(authId, entry.cache_key);
+    cleared.entryCount += 1;
+    cleared.totalBytes += size;
+    cleared.byType[entryType] += size;
+  }
+
+  return cleared;
+}
+
 export function avatarMediaCacheKey({
   field = 'avatar',
   fileName,
@@ -219,6 +302,46 @@ function extensionForMimeType(mimeType?: string | null): string {
     default:
       return '';
   }
+}
+
+async function cacheEntrySize(localUri: string, recordedSize?: number | null): Promise<number> {
+  if (recordedSize && recordedSize > 0) {
+    return recordedSize;
+  }
+
+  const info = await FileSystem.getInfoAsync(localUri).catch(() => null);
+  if (info?.exists && !info.isDirectory) {
+    return info.size;
+  }
+
+  return 0;
+}
+
+function mediaCacheEntryType(entry: LocalMediaCacheEntry): keyof MediaCacheUsageSummary['byType'] {
+  if (entry.variant === 'file') {
+    return 'files';
+  }
+  if (entry.variant === 'voice') {
+    return 'voice';
+  }
+  if (entry.mime_type?.startsWith('video/')) {
+    return 'videos';
+  }
+  if (entry.mime_type?.startsWith('image/')) {
+    return 'images';
+  }
+  if (entry.variant === 'poster' || entry.protected_reason?.includes('video')) {
+    return 'videos';
+  }
+  if (
+    entry.variant === 'thumbnail' ||
+    entry.variant === 'preview' ||
+    entry.variant === 'original'
+  ) {
+    return 'images';
+  }
+
+  return 'other';
 }
 
 function isDownloadableRemoteUri(uri: string): boolean {

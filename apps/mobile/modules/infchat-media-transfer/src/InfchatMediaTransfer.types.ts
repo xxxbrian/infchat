@@ -19,7 +19,15 @@ export type UploadResult = {
   status: number;
 };
 
+export type OpenDocumentOptions = {
+  fileName?: string;
+  localUri: string;
+  mimeType?: string | null;
+  title?: string;
+};
+
 export type InfchatMediaTransferModule = {
+  openDocumentAsync(options: OpenDocumentOptions): Promise<void>;
   uploadFileAsync(options: UploadFileOptions): Promise<UploadResult>;
   uploadFilePartAsync(options: UploadFilePartOptions): Promise<UploadResult>;
 };

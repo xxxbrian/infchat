@@ -1414,6 +1414,20 @@ export async function listAvailableMediaCacheEntriesForConversation(
   return rows;
 }
 
+export async function listAvailableMediaCacheEntries(
+  authId: string,
+): Promise<LocalMediaCacheEntry[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<LocalMediaCacheEntry>(
+    `SELECT * FROM media_cache_entries
+     WHERE auth_id = ? AND state = 'available'
+     ORDER BY last_accessed_at DESC`,
+    authId,
+  );
+
+  return rows;
+}
+
 export async function getMediaCacheEntryForAttachmentVariant(
   authId: string,
   attachmentId: string,
@@ -1463,6 +1477,17 @@ export async function listEvictableMediaCacheEntries(
   );
 
   return rows;
+}
+
+export async function deleteMediaCacheEntry(authId: string, cacheKey: string): Promise<void> {
+  const db = await getDb();
+  await enqueueDbWrite(() =>
+    db.runAsync(
+      'DELETE FROM media_cache_entries WHERE auth_id = ? AND cache_key = ?',
+      authId,
+      cacheKey,
+    ),
+  );
 }
 
 export async function listLocalConversations(authId: string): Promise<ConversationRecord[]> {

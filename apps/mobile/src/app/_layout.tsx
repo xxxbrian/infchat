@@ -142,6 +142,7 @@ export default function RootLayout() {
                       <Stack.Screen name="profile/setup" />
                       <Stack.Screen name="preferences/notifications" />
                       <Stack.Screen name="preferences/privacy" />
+                      <Stack.Screen name="preferences/storage" />
                     </Stack>
                     <ProfileSetupGate authRecord={authRecord} />
                     <PushRegistration authRecord={authRecord} />

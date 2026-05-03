@@ -66,7 +66,11 @@ const SETTINGS_SECTIONS: SettingsRowItem[][] = [
       label: 'Privacy',
       onPress: () => router.push({ pathname: '/preferences/privacy' } as never),
     },
-    { icon: 'server', label: 'Data and Storage', status: 'Soon' },
+    {
+      icon: 'server',
+      label: 'Data and Storage',
+      onPress: () => router.push({ pathname: '/preferences/storage' } as never),
+    },
     { icon: 'color-palette', label: 'Appearance', status: 'Soon' },
     {
       icon: 'bug',

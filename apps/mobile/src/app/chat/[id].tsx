@@ -85,6 +85,7 @@ import {
   type ManagedMediaCacheRecordInput,
   useCachedRemoteUri,
 } from '../../lib/media-cache';
+import InfchatMediaTransfer from '../../../modules/infchat-media-transfer';
 import {
   preparePickedDocumentAttachments,
   preparePickedMediaAttachments,
@@ -143,10 +144,20 @@ type MessageAttachment = {
   objectKey?: string;
   originalCacheKey?: string;
   originalLocalUri?: string;
+  originalVariantId?: string;
   ordinal?: number;
+  posterCacheKey?: string;
+  posterLocalUri?: string;
+  posterUrl?: string;
   previewCacheKey?: string;
   previewLocalUri?: string;
+  previewUrl?: string;
+  processingError?: string | null;
+  processingStatus?: MessageAttachmentRecord['processing_status'];
   sha256?: string | null;
+  thumbnailCacheKey?: string;
+  thumbnailLocalUri?: string;
+  thumbnailUrl?: string;
   thumbUrl?: string;
   url: string;
   variantId?: string;
@@ -1639,18 +1650,21 @@ function toOutboxMessageAttachment(
   attachment: LocalMediaOutboxAttachment,
 ): MessageAttachment {
   const previewLocalUri =
-    attachment.thumbnail_local_uri ?? attachment.poster_local_uri ?? attachment.local_uri;
-  const cacheKey = mediaCacheKeyForVariant(
+    attachment.kind === 'video'
+      ? (attachment.poster_local_uri ?? attachment.thumbnail_local_uri ?? attachment.local_uri)
+      : (attachment.thumbnail_local_uri ?? attachment.local_uri);
+  const originalCacheKey = mediaCacheKeyForVariant(
     clientMessageId,
     attachment.client_attachment_id,
     'original',
   );
+  const displayCacheVariant = attachment.kind === 'video' ? 'poster' : 'preview';
 
   return {
     attachmentId: attachment.client_attachment_id,
     blurhash: attachment.blurhash,
     byteSize: attachment.byte_size,
-    cacheVariant: 'original',
+    cacheVariant: displayCacheVariant,
     conversationId: attachment.conversation_id,
     durationMs: attachment.duration_ms,
     height: attachment.height,
@@ -1658,12 +1672,31 @@ function toOutboxMessageAttachment(
     messageId: clientMessageId,
     mimeType: attachment.mime_type,
     name: attachment.original_name,
-    originalCacheKey: cacheKey,
+    originalCacheKey,
     originalLocalUri: attachment.local_uri,
     ordinal: attachment.ordinal,
-    previewCacheKey: cacheKey,
+    posterCacheKey:
+      attachment.kind === 'video'
+        ? mediaCacheKeyForVariant(clientMessageId, attachment.client_attachment_id, 'poster')
+        : undefined,
+    posterLocalUri: attachment.poster_local_uri ?? undefined,
+    posterUrl: attachment.poster_local_uri ?? undefined,
+    previewCacheKey: mediaCacheKeyForVariant(
+      clientMessageId,
+      attachment.client_attachment_id,
+      displayCacheVariant,
+    ),
     previewLocalUri,
+    previewUrl: previewLocalUri,
+    processingStatus: 'ready',
     sha256: attachment.sha256,
+    thumbnailCacheKey: mediaCacheKeyForVariant(
+      clientMessageId,
+      attachment.client_attachment_id,
+      'thumbnail',
+    ),
+    thumbnailLocalUri: attachment.thumbnail_local_uri ?? undefined,
+    thumbnailUrl: attachment.thumbnail_local_uri ?? undefined,
     thumbUrl: previewLocalUri,
     url: attachment.local_uri,
     width: attachment.width,
@@ -1677,6 +1710,9 @@ function toNormalizedMessageAttachment(
   signedMediaUrlsByVariantId?: Map<string, SignedMediaURLItem>,
 ): MessageAttachment | null {
   const originalVariant = chooseVariant(variants, ['original']);
+  const thumbnailVariant = chooseVariant(variants, ['thumbnail']);
+  const previewImageVariant = chooseVariant(variants, ['preview']);
+  const posterVariant = chooseVariant(variants, ['poster']);
   const previewVariant = choosePreviewVariantForAttachment(attachment, variants);
   if (!originalVariant && !previewVariant) {
     return null;
@@ -1693,54 +1729,85 @@ function toNormalizedMessageAttachment(
   const originalCacheEntry = originalVariant
     ? cacheEntryForVariant(cacheEntries, attachment.id, originalCacheVariant)
     : null;
-  const previewCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, displayCacheVariant);
+  const thumbnailCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, 'thumbnail');
+  const previewImageCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, 'preview');
+  const posterCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, 'poster');
+  const displayCacheEntry = cacheEntryForVariant(cacheEntries, attachment.id, displayCacheVariant);
   const originalUrl = originalCacheEntry?.local_uri
     ? originalCacheEntry.local_uri
     : primaryVariant.variant === 'original'
       ? signedUrlForVariant(primaryVariant, signedMediaUrlsByVariantId)
       : null;
+  const thumbnailUrl = thumbnailVariant
+    ? thumbnailCacheEntry?.local_uri ||
+      signedUrlForVariant(thumbnailVariant, signedMediaUrlsByVariantId)
+    : null;
+  const previewImageUrl = previewImageVariant
+    ? previewImageCacheEntry?.local_uri ||
+      signedUrlForVariant(previewImageVariant, signedMediaUrlsByVariantId)
+    : null;
+  const posterUrl = posterVariant
+    ? posterCacheEntry?.local_uri || signedUrlForVariant(posterVariant, signedMediaUrlsByVariantId)
+    : null;
   const previewUrl = previewVariant
-    ? previewCacheEntry?.local_uri ||
+    ? displayCacheEntry?.local_uri ||
       signedUrlForVariant(previewVariant, signedMediaUrlsByVariantId)
     : originalUrl;
   const displayUrl =
-    previewCacheEntry?.local_uri ||
+    displayCacheEntry?.local_uri ||
     (displayVariant.id === primaryVariant.id ? originalUrl : previewUrl);
+  const displayMimeType =
+    displayVariant.mime_type || attachment.mime_type || primaryVariant.mime_type || null;
 
   return {
     attachmentId: attachment.id,
     blurhash: attachment.blurhash,
-    byteSize: attachment.byte_size ?? displayVariant.byte_size ?? primaryVariant.byte_size ?? null,
+    byteSize: displayVariant.byte_size ?? attachment.byte_size ?? primaryVariant.byte_size ?? null,
     cacheVariant: displayCacheVariant,
     conversationId: attachment.conversation,
     durationMs:
-      attachment.duration_ms ?? displayVariant.duration_ms ?? primaryVariant.duration_ms ?? null,
-    height: attachment.height ?? displayVariant.height ?? primaryVariant.height ?? null,
+      displayVariant.duration_ms ?? attachment.duration_ms ?? primaryVariant.duration_ms ?? null,
+    height: displayVariant.height ?? attachment.height ?? primaryVariant.height ?? null,
     kind: attachment.kind,
     messageId: attachment.message,
-    mimeType: attachment.mime_type || displayVariant.mime_type || primaryVariant.mime_type || null,
+    mimeType: displayMimeType,
     name: attachment.original_name || 'attachment',
     objectKey: originalVariant?.object_key ?? displayVariant.object_key,
     originalCacheKey: originalVariant
       ? mediaCacheKeyForVariant(attachment.message, attachment.id, originalCacheVariant)
       : undefined,
     originalLocalUri: originalCacheEntry?.local_uri,
+    originalVariantId: originalVariant?.id,
     ordinal: attachment.ordinal,
+    posterCacheKey: posterVariant
+      ? mediaCacheKeyForVariant(attachment.message, attachment.id, 'poster')
+      : undefined,
+    posterLocalUri: posterCacheEntry?.local_uri,
+    posterUrl: posterUrl ?? undefined,
     previewCacheKey: mediaCacheKeyForVariant(
       attachment.message,
       attachment.id,
       displayCacheVariant,
     ),
-    previewLocalUri: previewCacheEntry?.local_uri,
-    sha256: attachment.sha256 || displayVariant.sha256 || primaryVariant.sha256 || null,
+    previewLocalUri: displayCacheEntry?.local_uri,
+    previewUrl: previewImageUrl ?? previewUrl ?? undefined,
+    processingError: attachment.processing_error,
+    processingStatus: attachment.processing_status,
+    sha256: displayVariant.sha256 || attachment.sha256 || primaryVariant.sha256 || null,
+    thumbnailCacheKey: thumbnailVariant
+      ? mediaCacheKeyForVariant(attachment.message, attachment.id, 'thumbnail')
+      : undefined,
+    thumbnailLocalUri: thumbnailCacheEntry?.local_uri,
+    thumbnailUrl: thumbnailUrl ?? undefined,
     thumbUrl:
       attachment.kind === 'video' && displayVariant.variant === 'original'
         ? undefined
         : (displayUrl ?? undefined),
     url: originalUrl ?? displayUrl ?? '',
     variantId: primaryVariant.id,
-    variantObjectKey: displayVariant.object_key,
-    width: attachment.width ?? displayVariant.width ?? primaryVariant.width ?? null,
+    variantObjectKey:
+      displayVariant.variant === displayCacheVariant ? displayVariant.object_key : undefined,
+    width: displayVariant.width ?? attachment.width ?? primaryVariant.width ?? null,
   };
 }
 
@@ -1830,66 +1897,54 @@ function signedMediaURLRequests(
   attachments: MessageAttachmentRecord[],
   cacheEntries: LocalMediaCacheEntry[],
 ): SignedMediaURLRequestItem[] {
-  const visibleMessageIds = new Set(
-    messages
-      .filter((message) => message.kind === 'media' || message.kind === 'file')
-      .map((message) => message.id),
-  );
+  const visibleMessageIds = new Set(messages.map((message) => message.id));
   const attachmentById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
-  const preferredVariantByAttachment = new Map<string, AttachmentVariantRecord>();
+  const variantsByAttachmentId = new Map<string, AttachmentVariantRecord[]>();
   for (const variant of variants) {
     if (!variant.message || !visibleMessageIds.has(variant.message)) {
       continue;
     }
-    const attachment = attachmentById.get(variant.attachment);
-    if (attachment?.kind === 'file') {
-      continue;
-    }
-    if (attachment && cacheEntryForVariant(cacheEntries, attachment.id, variant.variant)) {
-      continue;
-    }
-    if (attachment?.kind === 'video' && variant.variant === 'original') {
-      continue;
-    }
-    const current = preferredVariantByAttachment.get(variant.attachment);
-    if (
-      !current ||
-      variantPreferenceRank(variant.variant, attachment?.kind) <
-        variantPreferenceRank(current.variant, attachment?.kind)
-    ) {
-      preferredVariantByAttachment.set(variant.attachment, variant);
-    }
+    const attachmentVariants = variantsByAttachmentId.get(variant.attachment) ?? [];
+    attachmentVariants.push(variant);
+    variantsByAttachmentId.set(variant.attachment, attachmentVariants);
   }
 
-  return [...preferredVariantByAttachment.values()].map((variant) => ({
-    variantId: variant.id,
-  }));
+  const requestedVariantIds = new Set<string>();
+  const requests: SignedMediaURLRequestItem[] = [];
+  for (const [attachmentId, attachmentVariants] of variantsByAttachmentId) {
+    const attachment = attachmentById.get(attachmentId);
+    if (!attachment || (attachment.kind !== 'image' && attachment.kind !== 'video')) {
+      continue;
+    }
+    const variant = choosePreviewVariantForAttachment(attachment, attachmentVariants);
+    if (!variant || !shouldPrefetchAttachmentVariant(attachment.kind, variant.variant)) {
+      continue;
+    }
+    if (
+      cacheEntryForVariant(cacheEntries, attachment.id, variant.variant) ||
+      requestedVariantIds.has(variant.id)
+    ) {
+      continue;
+    }
+    requestedVariantIds.add(variant.id);
+    requests.push({ variantId: variant.id });
+  }
+
+  return requests;
 }
 
-function variantPreferenceRank(variant: MediaUploadVariant, kind?: MediaAttachmentKind): number {
+function shouldPrefetchAttachmentVariant(
+  kind: MediaAttachmentKind,
+  variant: MediaUploadVariant,
+): boolean {
+  if (kind === 'image') {
+    return variant === 'preview';
+  }
   if (kind === 'video') {
-    switch (variant) {
-      case 'poster':
-        return 0;
-      case 'thumbnail':
-        return 1;
-      case 'preview':
-        return 2;
-      case 'original':
-        return 3;
-    }
+    return variant === 'poster' || variant === 'thumbnail';
   }
 
-  switch (variant) {
-    case 'preview':
-      return 0;
-    case 'thumbnail':
-      return 1;
-    case 'poster':
-      return 2;
-    case 'original':
-      return 3;
-  }
+  return false;
 }
 
 function toFailedChatMessage(message: FailedOutgoingMessage, currentUserId: string): ChatMessage {
@@ -2183,10 +2238,16 @@ function getAlbumLayout(attachments: MessageAttachment[], windowWidth: number): 
 
 function getMediaTileImageUrl(attachment: MessageAttachment): string | undefined {
   if (attachment.kind === 'video') {
-    return attachment.thumbUrl;
+    return attachment.posterUrl || attachment.thumbnailUrl || attachment.thumbUrl;
   }
 
-  return attachment.thumbUrl || attachment.url || undefined;
+  return (
+    attachment.previewUrl ||
+    attachment.thumbnailUrl ||
+    attachment.thumbUrl ||
+    attachment.url ||
+    undefined
+  );
 }
 
 function dominantMediaPlaceholder(attachment: MessageAttachment): MediaPlaceholder {
@@ -2201,8 +2262,14 @@ function mediaDisplayCacheKey(
   messageId: string,
   attachment: MessageAttachment,
 ): string | undefined {
+  if (attachment.kind === 'video' && attachment.posterCacheKey) {
+    return attachment.posterCacheKey;
+  }
   if (attachment.previewCacheKey) {
     return attachment.previewCacheKey;
+  }
+  if (attachment.thumbnailCacheKey) {
+    return attachment.thumbnailCacheKey;
   }
   const keyPart = attachment.attachmentId ?? attachment.name;
   if (!keyPart) {
@@ -2228,16 +2295,13 @@ function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) 
     !attachment.attachmentId ||
     !attachment.conversationId ||
     !attachment.messageId ||
-    !attachment.objectKey
+    !attachment.objectKey ||
+    !attachment.variantObjectKey
   ) {
     return undefined;
   }
 
   const variant = attachment.cacheVariant ?? (attachment.kind === 'video' ? 'poster' : 'preview');
-  const variantObjectKey = attachment.variantObjectKey ?? attachment.objectKey;
-  if (!variantObjectKey) {
-    return undefined;
-  }
 
   return {
     attachmentId: attachment.attachmentId,
@@ -2250,14 +2314,14 @@ function mediaDisplayCacheRecord(authId: string, attachment: MessageAttachment) 
     messageId: attachment.messageId,
     mimeType: attachment.mimeType,
     protectedReason: attachment.kind === 'video' ? 'visible-video-poster' : 'visible-media-preview',
-    remoteObjectKey: variantObjectKey,
+    remoteObjectKey: attachment.variantObjectKey,
     sha256: attachment.sha256,
     variant,
     width: attachment.width,
   } satisfies ManagedMediaCacheRecordInput;
 }
 
-function originalCacheRecord(
+function originalMediaCacheRecord(
   authId: string,
   attachment: MessageAttachment,
 ): ManagedMediaCacheRecordInput | undefined {
@@ -2280,11 +2344,10 @@ function originalCacheRecord(
     fileName: attachment.name,
     messageId: attachment.messageId,
     mimeType: attachment.mimeType,
-    pinned: attachment.kind === 'file',
-    protectedReason: attachment.kind === 'file' ? 'downloaded-file' : 'opened-original',
+    protectedReason: 'opened-original',
     remoteObjectKey: attachment.objectKey,
     sha256: attachment.sha256,
-    variant: attachment.kind === 'file' ? 'file' : 'original',
+    variant: 'original',
     width: attachment.width,
   };
 }
@@ -2294,6 +2357,7 @@ async function persistDownloadedAttachment(
   attachment: MessageAttachment,
   localUri: string,
   cacheKey: string,
+  localByteSize?: number,
 ) {
   if (
     !attachment.attachmentId ||
@@ -2306,7 +2370,7 @@ async function persistDownloadedAttachment(
 
   await upsertMediaCacheEntry(authId, {
     attachmentId: attachment.attachmentId,
-    byteSize: attachment.byteSize,
+    byteSize: attachment.byteSize ?? localByteSize,
     cacheKey,
     conversationId: attachment.conversationId,
     durationMs: attachment.durationMs,
@@ -2325,9 +2389,35 @@ async function persistDownloadedAttachment(
   await touchMediaCacheEntry(authId, cacheKey);
 }
 
+async function openDocumentWithNativePreview(
+  localUri: string,
+  fileName: string,
+  mimeType?: string | null,
+) {
+  try {
+    await InfchatMediaTransfer.openDocumentAsync({
+      fileName,
+      localUri,
+      mimeType,
+      title: fileName,
+    });
+    return;
+  } catch {
+    const canShare = await Sharing.isAvailableAsync();
+    if (!canShare) {
+      throw new Error('No document preview is available.');
+    }
+    await Sharing.shareAsync(localUri, {
+      dialogTitle: fileName,
+      mimeType: mimeType ?? undefined,
+    });
+  }
+}
+
 async function resolveAttachmentOriginalUrl(
   authId: string,
   attachment: MessageAttachment,
+  options?: { cache?: boolean },
 ): Promise<string | null> {
   if (attachment.originalLocalUri) {
     return attachment.originalLocalUri;
@@ -2358,20 +2448,18 @@ async function resolveAttachmentOriginalUrl(
   const response = await signMediaURLs(pb, [request]);
 
   const remoteUrl = response.items[0]?.presigned.url ?? null;
+  if (options?.cache === false || attachment.kind !== 'image') {
+    return remoteUrl;
+  }
   const cacheKey =
     attachment.originalCacheKey ??
     (attachment.attachmentId && attachment.messageId
-      ? mediaCacheKeyForVariant(
-          attachment.messageId,
-          attachment.attachmentId,
-          attachment.kind === 'file' ? 'file' : 'original',
-        )
+      ? mediaCacheKeyForVariant(attachment.messageId, attachment.attachmentId, 'original')
       : null);
-  const cacheRecord = originalCacheRecord(authId, attachment);
+  const cacheRecord = originalMediaCacheRecord(authId, attachment);
   if (remoteUrl && cacheKey && cacheRecord) {
     return (await cacheRemoteMediaFile(remoteUrl, cacheKey, cacheRecord)) ?? remoteUrl;
   }
-
   return remoteUrl;
 }
 
@@ -2746,14 +2834,24 @@ function MediaAlbumTile({
   overflowCount: number;
 }) {
   const sourceUrl = getMediaTileImageUrl(attachment);
+  const knownPreviewUri =
+    attachment.kind === 'video' ? attachment.posterLocalUri : attachment.previewLocalUri;
+  const cacheRecord = mediaDisplayCacheRecord(authId, attachment);
   const cachedUri = useCachedRemoteUri(
     sourceUrl,
     sourceUrl ? mediaDisplayCacheKey(messageId, attachment) : undefined,
-    sourceUrl ? mediaDisplayCacheRecord(authId, attachment) : undefined,
-    attachment.previewLocalUri,
+    sourceUrl ? cacheRecord : undefined,
+    knownPreviewUri,
   );
   const isVideo = attachment.kind === 'video';
   const hasPreview = Boolean(cachedUri && sourceUrl);
+  const needsSignedPreview = Boolean(
+    cacheRecord &&
+      !sourceUrl &&
+      !knownPreviewUri &&
+      !hasProcessingStatus(attachment.processingStatus),
+  );
+  const isProcessing = hasProcessingStatus(attachment.processingStatus) && !hasPreview;
 
   return (
     <Pressable
@@ -2774,18 +2872,24 @@ function MediaAlbumTile({
           enforceEarlyResizing
           placeholder={dominantMediaPlaceholder(attachment)}
           placeholderContentFit="cover"
-          priority={attachment.previewLocalUri ? 'high' : 'normal'}
-          recyclingKey={attachment.previewLocalUri ?? cachedUri ?? sourceUrl}
+          priority={knownPreviewUri ? 'high' : 'normal'}
+          recyclingKey={knownPreviewUri ?? cachedUri ?? sourceUrl}
           source={{ uri: cachedUri ?? sourceUrl }}
           style={{ height: frame.height, width: frame.width }}
-          transition={attachment.previewLocalUri ? 0 : 120}
+          transition={knownPreviewUri ? 0 : 120}
         />
       ) : (
         <View className="h-full w-full items-center justify-center bg-muted">
           <Ionicons color="#94a3b8" name={isVideo ? 'videocam' : 'image'} size={26} />
-          {isVideo ? (
-            <Text className="mt-2 text-xs font-bold text-muted-foreground">Video</Text>
-          ) : null}
+          <Text className="mt-2 text-xs font-bold text-muted-foreground">
+            {isProcessing
+              ? 'Processing'
+              : needsSignedPreview
+                ? 'Loading'
+                : isVideo
+                  ? 'Video'
+                  : 'Photo'}
+          </Text>
         </View>
       )}
       {isVideo ? (
@@ -2842,8 +2946,10 @@ function MediaGalleryModal({
     }
 
     let isMounted = true;
-    setResolvedUrl(selected.originalLocalUri ?? selected.previewLocalUri ?? null);
-    resolveAttachmentOriginalUrl(authId, selected)
+    setResolvedUrl(initialGalleryMediaUrl(selected));
+    resolveAttachmentOriginalUrl(authId, selected, {
+      cache: selected.kind !== 'video',
+    })
       .then((url) => {
         if (isMounted) {
           setResolvedUrl(url);
@@ -2851,7 +2957,7 @@ function MediaGalleryModal({
       })
       .catch(() => {
         if (isMounted) {
-          setResolvedUrl(selected.url || selected.thumbUrl || null);
+          setResolvedUrl(fallbackGalleryMediaUrl(selected));
         }
       });
 
@@ -2866,6 +2972,7 @@ function MediaGalleryModal({
 
   const canGoBack = attachments.length > 1 && currentIndex > 0;
   const canGoForward = attachments.length > 1 && currentIndex < attachments.length - 1;
+  const videoPosterUrl = selected.kind === 'video' ? galleryVideoPosterUrl(selected) : null;
 
   return (
     <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
@@ -2884,26 +2991,28 @@ function MediaGalleryModal({
           </Pressable>
         </View>
         <View className="flex-1 items-center justify-center">
-          {resolvedUrl ? (
-            selected.kind === 'video' ? (
+          {selected.kind === 'video' ? (
+            resolvedUrl ? (
               <GalleryVideo
                 attachment={selected}
                 key={`${selected.attachmentId ?? selected.name}:${resolvedUrl}`}
                 uri={resolvedUrl}
               />
             ) : (
-              <ExpoImage
-                cachePolicy="memory-disk"
-                contentFit="contain"
-                placeholder={dominantMediaPlaceholder(selected)}
-                placeholderContentFit="contain"
-                priority="high"
-                recyclingKey={resolvedUrl}
-                source={{ uri: resolvedUrl }}
-                style={{ height: windowHeight, width: windowWidth }}
-                transition={80}
-              />
+              <GalleryVideoLoading attachment={selected} posterUrl={videoPosterUrl} />
             )
+          ) : resolvedUrl ? (
+            <ExpoImage
+              cachePolicy="memory-disk"
+              contentFit="contain"
+              placeholder={dominantMediaPlaceholder(selected)}
+              placeholderContentFit="contain"
+              priority="high"
+              recyclingKey={resolvedUrl}
+              source={{ uri: resolvedUrl }}
+              style={{ height: windowHeight, width: windowWidth }}
+              transition={80}
+            />
           ) : (
             <ActivityIndicator colorClassName="accent-white" size="large" />
           )}
@@ -2968,6 +3077,63 @@ function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri:
       style={{ height: '100%', width: '100%' }}
     />
   );
+}
+
+function GalleryVideoLoading({
+  attachment,
+  posterUrl,
+}: {
+  attachment: MessageAttachment;
+  posterUrl: string | null;
+}) {
+  return (
+    <View className="h-full w-full items-center justify-center bg-black">
+      {posterUrl ? (
+        <ExpoImage
+          cachePolicy="memory-disk"
+          contentFit="contain"
+          placeholder={dominantMediaPlaceholder(attachment)}
+          placeholderContentFit="contain"
+          recyclingKey={posterUrl}
+          source={{ uri: posterUrl }}
+          style={StyleSheet.absoluteFillObject}
+        />
+      ) : null}
+      <View className="absolute inset-0 items-center justify-center bg-black/35">
+        <ActivityIndicator colorClassName="accent-white" size="large" />
+      </View>
+    </View>
+  );
+}
+
+function initialGalleryMediaUrl(attachment: MessageAttachment): string | null {
+  if (attachment.kind === 'video') {
+    return attachment.originalLocalUri ?? null;
+  }
+
+  return attachment.originalLocalUri ?? attachment.previewLocalUri ?? attachment.previewUrl ?? null;
+}
+
+function fallbackGalleryMediaUrl(attachment: MessageAttachment): string | null {
+  if (attachment.kind === 'video') {
+    return attachment.originalLocalUri ?? null;
+  }
+
+  return attachment.url || attachment.previewUrl || attachment.thumbUrl || null;
+}
+
+function galleryVideoPosterUrl(attachment: MessageAttachment): string | null {
+  return (
+    attachment.posterLocalUri ??
+    attachment.posterUrl ??
+    attachment.thumbnailUrl ??
+    attachment.thumbUrl ??
+    null
+  );
+}
+
+function hasProcessingStatus(status: MessageAttachment['processingStatus']): boolean {
+  return status === 'pending' || status === 'processing';
 }
 
 function FileMessageBubble({
@@ -3059,23 +3225,19 @@ function FileMessageBubble({
           const download = await FileSystem.downloadAsync(fileUrl, localFileUri);
           uriToOpen = download.uri;
         }
+        const downloadedInfo = await FileSystem.getInfoAsync(uriToOpen);
         await persistDownloadedAttachment(
           authId,
           fileAttachment,
           uriToOpen,
           fileCacheKey(message.id, fileAttachment),
+          downloadedInfo.exists && !downloadedInfo.isDirectory ? downloadedInfo.size : undefined,
         );
       }
 
       setFileDownloadState('downloaded');
 
-      const canShare = await Sharing.isAvailableAsync();
-      if (!canShare) {
-        Alert.alert('File downloaded', 'This device cannot open local files from InfChat yet.');
-        return;
-      }
-
-      await Sharing.shareAsync(uriToOpen, { dialogTitle: fileName });
+      await openDocumentWithNativePreview(uriToOpen, fileName, fileAttachment.mimeType);
       setIsFilePreviewVisible(false);
     } catch {
       setFileDownloadState('idle');

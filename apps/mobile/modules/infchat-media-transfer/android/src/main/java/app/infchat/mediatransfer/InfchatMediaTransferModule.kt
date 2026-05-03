@@ -1,8 +1,11 @@
 package app.infchat.mediatransfer
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import androidx.core.content.FileProvider
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.functions.Coroutine
@@ -22,6 +25,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.EnumSet
 import java.util.regex.Pattern
+
+internal class OpenDocumentOptions : Record {
+  @Field var fileName: String = ""
+  @Field var localUri: String = ""
+  @Field var mimeType: String? = null
+  @Field var title: String = ""
+}
 
 internal class UploadFileOptions : Record {
   @Field var fileUri: String = ""
@@ -49,6 +59,12 @@ class InfchatMediaTransferModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("InfchatMediaTransfer")
 
+    AsyncFunction("openDocumentAsync") Coroutine { options: OpenDocumentOptions ->
+      withContext(Dispatchers.Main) {
+        openDocument(options)
+      }
+    }
+
     AsyncFunction("uploadFileAsync") Coroutine { options: UploadFileOptions ->
       withContext(Dispatchers.IO) {
         uploadFile(options)
@@ -60,6 +76,46 @@ class InfchatMediaTransferModule : Module() {
         uploadFilePart(options)
       }
     }
+  }
+
+  private fun openDocument(options: OpenDocumentOptions) {
+    val uri = Uri.parse(slashifyFilePath(options.localUri))
+    ensureReadable(uri)
+    val file = uri.toFile()
+    if (!file.exists()) {
+      throw InfchatMediaTransferException("Document file does not exist.")
+    }
+
+    val contentUri = FileProvider.getUriForFile(
+      appContext.throwingActivity.application,
+      "${appContext.throwingActivity.application.packageName}.FileSystemFileProvider",
+      file
+    )
+    val mimeType = options.mimeType?.takeIf { it.isNotBlank() } ?: "*/*"
+    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+      setDataAndType(contentUri, mimeType)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    val chooserTitle = options.title.ifBlank { options.fileName.ifBlank { "Open file" } }
+    val chooser = Intent.createChooser(viewIntent, chooserTitle).apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    val resolveInfos = context.packageManager.queryIntentActivities(
+      chooser,
+      PackageManager.MATCH_DEFAULT_ONLY
+    )
+    if (resolveInfos.isEmpty()) {
+      throw InfchatMediaTransferException("No app is available to open this file.")
+    }
+    resolveInfos.forEach { resolveInfo ->
+      context.grantUriPermission(
+        resolveInfo.activityInfo.packageName,
+        contentUri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION
+      )
+    }
+
+    appContext.throwingActivity.startActivity(chooser)
   }
 
   private fun uploadFile(options: UploadFileOptions): Bundle {
