@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
+  type PresenceRecord,
   acceptFriendRequest,
   cancelFriendRequest,
   declineFriendRequest,
@@ -43,12 +44,14 @@ import {
   searchCachedProfilesByUsername,
 } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
+import { formatPresenceLabel, usePresence } from '../../lib/presence';
 
 type FriendStatus = 'friend' | 'incoming' | 'pending' | 'none';
 type FriendFilter = 'Friends' | 'Requests' | 'Find';
 
 type Person = {
   id: string;
+  isOnline?: boolean;
   userId: string;
   friendshipId?: string;
   name: string;
@@ -140,6 +143,18 @@ export default function FriendsTab() {
     networkMode: 'always',
     staleTime: 1000 * 60,
   });
+  const visiblePresenceUserIds = useMemo(() => {
+    const ids = new Set(relatedUserIds);
+    for (const profile of searchProfilesQuery.data ?? []) {
+      ids.add(profile.user);
+    }
+    for (const suggestion of suggestionsQuery.data ?? []) {
+      ids.add(suggestion.profile.user);
+    }
+
+    return [...ids].sort();
+  }, [relatedUserIds, searchProfilesQuery.data, suggestionsQuery.data]);
+  const presenceQuery = usePresence(visiblePresenceUserIds);
 
   const activeFriendshipByUserId = useMemo(() => {
     const friendshipsByUserId = new Map<string, FriendshipRecord>();
@@ -170,12 +185,19 @@ export default function FriendsTab() {
           activeFriendshipByUserId.get(profile.user),
           currentUserId,
           fileTokenQuery.data,
+          presenceQuery.byUserId.get(profile.user),
         ),
       );
     }
 
     return people;
-  }, [activeFriendshipByUserId, currentUserId, fileTokenQuery.data, relatedProfilesQuery.data]);
+  }, [
+    activeFriendshipByUserId,
+    currentUserId,
+    fileTokenQuery.data,
+    presenceQuery.byUserId,
+    relatedProfilesQuery.data,
+  ]);
 
   const friends = useMemo(
     () => [...peopleByUserId.values()].filter((person) => person.status === 'friend'),
@@ -194,6 +216,7 @@ export default function FriendsTab() {
             activeFriendshipByUserId.get(suggestion.profile.user),
             currentUserId,
             fileTokenQuery.data,
+            presenceQuery.byUserId.get(suggestion.profile.user),
           ),
         )
         .filter((person) => person.status === 'none');
@@ -207,6 +230,7 @@ export default function FriendsTab() {
             activeFriendshipByUserId.get(profile.user),
             currentUserId,
             fileTokenQuery.data,
+            presenceQuery.byUserId.get(profile.user),
           ),
         )
         .filter((person) => person.status !== 'friend');
@@ -217,6 +241,7 @@ export default function FriendsTab() {
     activeFriendshipByUserId,
     currentUserId,
     fileTokenQuery.data,
+    presenceQuery.byUserId,
     searchProfilesQuery.data,
     shouldShowSuggestions,
     shouldSearchProfiles,
@@ -574,6 +599,7 @@ export default function FriendsTab() {
           activeFriendshipByUserId.get(suggestion.profile.user),
           currentUserId,
           fileTokenQuery.data,
+          presenceQuery.byUserId.get(suggestion.profile.user),
         ),
       )
       .filter((person) => person.status === 'none').length;
@@ -781,6 +807,7 @@ function toPerson(
   friendship: FriendshipRecord | undefined,
   currentUserId: string,
   fileToken?: string,
+  presence?: PresenceRecord,
 ): Person {
   const name = profile.display_name || profile.username;
   const status = getFriendStatus(friendship, currentUserId);
@@ -789,11 +816,12 @@ function toPerson(
     id: profile.id,
     userId: profile.user,
     friendshipId: friendship?.id,
+    isOnline: presence?.isOnline,
     name,
     username: profile.username,
     avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
     status,
-    note: getFriendNote(status),
+    note: formatPresenceLabel(presence) || getFriendNote(status),
   };
 }
 
@@ -802,10 +830,11 @@ function toSuggestedPerson(
   friendship: FriendshipRecord | undefined,
   currentUserId: string,
   fileToken?: string,
+  presence?: PresenceRecord,
 ): Person {
   return {
-    ...toPerson(suggestion.profile, friendship, currentUserId, fileToken),
-    note: getSuggestionNote(suggestion),
+    ...toPerson(suggestion.profile, friendship, currentUserId, fileToken, presence),
+    note: formatPresenceLabel(presence) || getSuggestionNote(suggestion),
   };
 }
 
@@ -1005,6 +1034,7 @@ function Avatar({ person }: { person: Person }) {
   return (
     <ProfileAvatar
       avatarUrl={person.avatarUrl}
+      isOnline={person.isOnline}
       name={person.name}
       size={44}
       userId={person.userId}

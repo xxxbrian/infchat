@@ -4,6 +4,7 @@ import {
   type ConversationMembershipRecord,
   type ConversationRecord,
   type FriendshipRecord,
+  type PresenceRecord,
   getProfileAvatarUrl,
   listActiveCalls,
   type ProfileRecord,
@@ -43,6 +44,7 @@ import {
   refreshCachedProfilesByUserIds,
 } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
+import { formatPresenceLabel, usePresence } from '../../lib/presence';
 
 type ConversationView = {
   id: string;
@@ -57,11 +59,13 @@ type ConversationView = {
   avatarUserId: string;
   avatarUsername: string;
   activeCall?: CallRoomRecord;
+  isOnline?: boolean;
 };
 
 type NewMessagePerson = {
   avatarUrl?: string | null;
   id: string;
+  isOnline?: boolean;
   name: string;
   note: string;
   userId: string;
@@ -176,6 +180,7 @@ export default function ChatTab() {
 
     return profiles;
   }, [profilesQuery.data]);
+  const presenceQuery = usePresence(relatedUserIds);
   const conversationViews = useMemo(
     () =>
       conversations
@@ -188,6 +193,7 @@ export default function ChatTab() {
             activeCallByConversation.get(conversation.id),
             unreadCounts[conversation.id] ?? 0,
             membershipsByConversation.get(conversation.id) ?? [],
+            presenceQuery.byUserId,
           ),
         )
         .sort(compareConversationViewsByRecency),
@@ -197,6 +203,7 @@ export default function ChatTab() {
       conversations,
       fileTokenQuery.data,
       profilesByUserId,
+      presenceQuery.byUserId,
       unreadCounts,
       membershipsByConversation,
     ],
@@ -541,18 +548,32 @@ function NewMessageSheet({
     () => toNewMessagePeople(profilesQuery.data ?? [], fileTokenQuery.data),
     [fileTokenQuery.data, profilesQuery.data],
   );
+  const presenceQuery = usePresence(profilesQuery.data?.map((profile) => profile.user) ?? []);
+  const peopleWithPresence = useMemo(
+    () =>
+      people.map((person) => {
+        const presence = presenceQuery.byUserId.get(person.userId);
+
+        return {
+          ...person,
+          isOnline: presence?.isOnline,
+          note: formatPresenceLabel(presence) || person.note,
+        };
+      }),
+    [people, presenceQuery.byUserId],
+  );
   const visiblePeople = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     if (!normalizedQuery) {
-      return people;
+      return peopleWithPresence;
     }
 
-    return people.filter(
+    return peopleWithPresence.filter(
       (person) =>
         person.name.toLowerCase().includes(normalizedQuery) ||
         person.username.toLowerCase().includes(normalizedQuery),
     );
-  }, [people, query]);
+  }, [peopleWithPresence, query]);
 
   const startPrivateChatMutation = useMutation({
     mutationFn: (recipientUserId: string) => startPrivateConversationCommand(pb, recipientUserId),
@@ -771,6 +792,7 @@ function NewMessagePersonRow({
     >
       <ProfileAvatar
         avatarUrl={person.avatarUrl}
+        isOnline={person.isOnline}
         name={person.name}
         size={48}
         userId={person.userId}
@@ -807,6 +829,7 @@ function toConversationView(
   activeCall?: CallRoomRecord,
   unread = 0,
   memberships: ConversationMembershipRecord[] = [],
+  presenceByUserId = new Map<string, PresenceRecord>(),
 ): ConversationView {
   const activeMemberIds = memberships
     .filter((membership) => membership.status === 'active')
@@ -816,6 +839,7 @@ function toConversationView(
     .map((memberId) => profilesByUserId.get(memberId))
     .filter((profile): profile is ProfileRecord => Boolean(profile));
   const firstProfile = otherProfiles[0];
+  const firstPresence = firstProfile ? presenceByUserId.get(firstProfile.user) : undefined;
   const fallbackName =
     conversation.kind === 'group' ? conversation.title || 'Group chat' : 'Private chat';
   const name =
@@ -836,11 +860,12 @@ function toConversationView(
     subtitle:
       conversation.kind === 'group'
         ? `${conversation.member_count ?? activeMemberIds.length} members`
-        : 'friend',
+        : formatPresenceLabel(firstPresence) || 'friend',
     avatarUrl: firstProfile ? getProfileAvatarUrl(pb, firstProfile, fileToken, 'thumb') : null,
     avatarUserId: firstProfile?.user || conversation.id,
     avatarUsername: firstProfile?.username || name,
     activeCall,
+    isOnline: firstPresence?.isOnline,
   };
 }
 
@@ -1014,6 +1039,7 @@ function ConversationRow({
         name={conversation.name}
         privateProfile={{
           avatarUrl: conversation.avatarUrl,
+          isOnline: conversation.isOnline,
           name: conversation.name,
           userId: conversation.avatarUserId,
           username: conversation.avatarUsername,

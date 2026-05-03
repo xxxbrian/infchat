@@ -34,6 +34,7 @@ import { ChatSyncService } from '../lib/chat-sync-service';
 import { installDebugLogCapture } from '../lib/debug-log';
 import { refreshCachedCurrentProfile } from '../lib/local-cache';
 import { pb } from '../lib/pocketbase';
+import { PresenceProvider } from '../lib/presence';
 import { getMissingProfileSetupFields } from '../lib/profile-completion';
 import {
   endSystemCallForCallRoom,
@@ -145,6 +146,7 @@ export default function RootLayout() {
                       <Stack.Screen name="preferences/storage" />
                     </Stack>
                     <ProfileSetupGate authRecord={authRecord} />
+                    <PresenceProvider authId={authRecord.id} />
                     <PushRegistration authRecord={authRecord} />
                     <ForegroundMessageNotificationSync authRecord={authRecord} />
                     <IncomingCallListener authRecord={authRecord} />

@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import {
+  type PresenceRecord,
   addGroupMembers,
   type ConversationMembershipRecord,
   type ConversationRecord,
@@ -48,6 +49,7 @@ import {
   refreshCachedProfilesByUserIds,
 } from '../../../lib/local-cache';
 import { pb } from '../../../lib/pocketbase';
+import { formatPresenceLabel, usePresence } from '../../../lib/presence';
 
 type GroupMutationResponse = {
   conversation: ConversationRecord;
@@ -65,6 +67,7 @@ type GroupMutationContext = {
 type MemberView = {
   avatarUrl?: string | null;
   id: string;
+  isOnline?: boolean;
   isCurrentUser: boolean;
   name: string;
   note: string;
@@ -76,7 +79,9 @@ type MemberView = {
 type AddableFriend = {
   avatarUrl?: string | null;
   id: string;
+  isOnline?: boolean;
   name: string;
+  note?: string;
   userId: string;
   username: string;
 };
@@ -133,11 +138,18 @@ export default function GroupInfoScreen() {
 
     return profiles;
   }, [profilesQuery.data]);
+  const presenceQuery = usePresence(memberUserIds);
   const members = useMemo(
     () =>
       activeMemberships
         .map((membership) =>
-          toMemberView(membership, profilesByUserId, authRecord.id, fileTokenQuery.data),
+          toMemberView(
+            membership,
+            profilesByUserId,
+            authRecord.id,
+            fileTokenQuery.data,
+            presenceQuery.byUserId.get(membership.user),
+          ),
         )
         .sort((left, right) => {
           if (left.isCurrentUser) {
@@ -155,7 +167,13 @@ export default function GroupInfoScreen() {
 
           return left.name.localeCompare(right.name);
         }),
-    [activeMemberships, authRecord.id, fileTokenQuery.data, profilesByUserId],
+    [
+      activeMemberships,
+      authRecord.id,
+      fileTokenQuery.data,
+      presenceQuery.byUserId,
+      profilesByUserId,
+    ],
   );
   const conversation = conversationQuery.data;
   const title = conversation?.title || 'Group chat';
@@ -468,6 +486,7 @@ function MemberRow({
     >
       <ProfileAvatar
         avatarUrl={member.avatarUrl}
+        isOnline={member.isOnline}
         name={member.name}
         size={48}
         userId={member.userId}
@@ -548,9 +567,10 @@ function AddMembersModal({
     enabled: visible && addableUserIds.length > 0,
     networkMode: 'always',
   });
+  const presenceQuery = usePresence(addableUserIds);
   const friends = useMemo(
-    () => toAddableFriends(profilesQuery.data ?? [], fileTokenQuery.data),
-    [fileTokenQuery.data, profilesQuery.data],
+    () => toAddableFriends(profilesQuery.data ?? [], fileTokenQuery.data, presenceQuery.byUserId),
+    [fileTokenQuery.data, presenceQuery.byUserId, profilesQuery.data],
   );
   const visibleFriends = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -961,6 +981,7 @@ function AddableFriendRow({
       </View>
       <ProfileAvatar
         avatarUrl={friend.avatarUrl}
+        isOnline={friend.isOnline}
         name={friend.name}
         size={52}
         userId={friend.userId}
@@ -971,7 +992,7 @@ function AddableFriendRow({
           {friend.name}
         </Text>
         <Text className="mt-0.5 text-[14px] font-medium text-muted-foreground" numberOfLines={1}>
-          @{friend.username}
+          {friend.note || `@${friend.username}`}
         </Text>
       </View>
     </Pressable>
@@ -994,6 +1015,7 @@ function toMemberView(
   profilesByUserId: Map<string, ProfileRecord>,
   currentUserId: string,
   fileToken?: string,
+  presence?: PresenceRecord,
 ): MemberView {
   const profile = profilesByUserId.get(membership.user);
   const name =
@@ -1006,9 +1028,10 @@ function toMemberView(
   return {
     avatarUrl: profile ? getProfileAvatarUrl(pb, profile, fileToken, 'thumb') : null,
     id: membership.id,
+    isOnline: presence?.isOnline,
     isCurrentUser,
     name: isCurrentUser ? `${name} (You)` : name,
-    note: isCurrentUser ? 'online' : `@${username}`,
+    note: formatPresenceLabel(presence) || (isCurrentUser ? 'online' : `@${username}`),
     role: membership.role,
     userId: membership.user,
     username,
@@ -1075,15 +1098,22 @@ function getAcceptedFriendUserIds(
   return [...ids].sort();
 }
 
-function toAddableFriends(profiles: ProfileRecord[], fileToken?: string): AddableFriend[] {
+function toAddableFriends(
+  profiles: ProfileRecord[],
+  fileToken?: string,
+  presenceByUserId = new Map<string, PresenceRecord>(),
+): AddableFriend[] {
   return profiles
     .map((profile) => {
       const name = profile.display_name || profile.username;
+      const presence = presenceByUserId.get(profile.user);
 
       return {
         avatarUrl: getProfileAvatarUrl(pb, profile, fileToken, 'thumb'),
         id: profile.id,
+        isOnline: presence?.isOnline,
         name,
+        note: formatPresenceLabel(presence) || `@${profile.username}`,
         userId: profile.user,
         username: profile.username,
       };

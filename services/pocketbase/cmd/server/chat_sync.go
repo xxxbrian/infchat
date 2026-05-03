@@ -781,6 +781,7 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		return nil, err
 	}
 	if messageForPush != nil {
+		go grantPresenceExposuresForConversation(app, conversation.Id, userId)
 		go sendMessagePushNotifications(app, messageForPush)
 	}
 
@@ -1105,8 +1106,34 @@ func markConversationReadCommand(app core.App, userId string, conversationId str
 
 		return createConversationEvent(txApp, conversation, "read.updated", userId, currentMembership.Id, userId, currentMembership.Id, "", cursor, conversationEventPayload{Conversation: conversation, Membership: currentMembership})
 	})
+	if err == nil {
+		go grantPresenceExposuresForConversation(app, conversationId, userId)
+	}
 
 	return map[string]any{"cursor": cursor, "membership": membership}, err
+}
+
+func grantPresenceExposuresForConversation(app core.App, conversationId string, actorUserId string) {
+	memberships, err := app.FindRecordsByFilter(
+		"conversation_memberships",
+		"conversation={:conversationId} && status='active'",
+		"user",
+		100,
+		0,
+		dbx.Params{"conversationId": conversationId},
+	)
+	if err != nil {
+		return
+	}
+
+	for _, membership := range memberships {
+		subjectUserId := membership.GetString("user")
+		if subjectUserId == "" || subjectUserId == actorUserId {
+			continue
+		}
+		_ = grantPresenceExposure(app, actorUserId, subjectUserId)
+		_ = grantPresenceExposure(app, subjectUserId, actorUserId)
+	}
 }
 
 func messageReadersCommand(app core.App, userId string, messageId string) (map[string]any, error) {
