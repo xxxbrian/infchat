@@ -45,6 +45,7 @@ func main() {
 	bindConversationHooks(app)
 	bindCallRoutes(app)
 	bindChatSyncRoutes(app)
+	bindMediaProcessingWorker(app)
 	bindFriendSuggestionRoutes(app)
 	bindPushRoutes(app)
 
@@ -1206,7 +1207,7 @@ func bindConversationHooks(app *pocketbase.PocketBase) {
 		return router.NewBadRequestError("Use the InfChat message command endpoint.", nil)
 	})
 
-	for _, collectionName := range []string{"message_attachments", "attachment_variants", "media_upload_sessions", "media_upload_parts"} {
+	for _, collectionName := range []string{"message_attachments", "attachment_variants", "media_upload_sessions", "media_upload_parts", "media_processing_jobs"} {
 		app.OnRecordCreateRequest(collectionName).BindFunc(func(e *core.RecordRequestEvent) error {
 			if e.HasSuperuserAuth() {
 				return e.Next()

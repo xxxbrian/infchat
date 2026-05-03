@@ -143,7 +143,7 @@ export type MessageAttachmentRecord = {
   sha256?: string;
   blurhash?: string;
   waveform_json?: unknown;
-  processing_status: 'pending' | 'ready' | 'failed';
+  processing_status: 'pending' | 'processing' | 'ready' | 'failed';
   processing_error?: string;
   created: string;
   updated: string;
@@ -282,6 +282,7 @@ export type ConversationEventType =
   | 'membership.role_updated'
   | 'read.updated'
   | 'message.created'
+  | 'message.media_processed'
   | 'message.edited'
   | 'message.deleted'
   | 'call.started'

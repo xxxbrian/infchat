@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"sort"
@@ -73,6 +74,8 @@ type uploadedMediaPart struct {
 type mediaObjectStorage interface {
 	Profile() mediaStorageProfile
 	HeadObject(ctx context.Context, objectKey string) (mediaStorageObjectInfo, error)
+	GetObject(ctx context.Context, objectKey string) (io.ReadCloser, mediaStorageObjectInfo, error)
+	PutObject(ctx context.Context, objectKey string, contentType string, body io.Reader, byteSize int64) (mediaStorageObjectInfo, error)
 	PresignPutObject(ctx context.Context, objectKey string, contentType string, expires time.Duration) (mediaPresignedRequest, error)
 	PresignGetObject(ctx context.Context, objectKey string, expires time.Duration) (mediaPresignedRequest, error)
 	CreateMultipartUpload(ctx context.Context, objectKey string, contentType string) (string, error)
@@ -182,6 +185,47 @@ func (s *s3MediaObjectStorage) HeadObject(ctx context.Context, objectKey string)
 		ContentType: aws.ToString(result.ContentType),
 		ETag:        aws.ToString(result.ETag),
 	}, nil
+}
+
+func (s *s3MediaObjectStorage) GetObject(ctx context.Context, objectKey string) (io.ReadCloser, mediaStorageObjectInfo, error) {
+	result, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.profile.Bucket),
+		Key:    aws.String(objectKey),
+	})
+	if err != nil {
+		return nil, mediaStorageObjectInfo{}, err
+	}
+
+	return result.Body, mediaStorageObjectInfo{
+		ByteSize:    aws.ToInt64(result.ContentLength),
+		ContentType: aws.ToString(result.ContentType),
+		ETag:        aws.ToString(result.ETag),
+	}, nil
+}
+
+func (s *s3MediaObjectStorage) PutObject(ctx context.Context, objectKey string, contentType string, body io.Reader, byteSize int64) (mediaStorageObjectInfo, error) {
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(s.profile.Bucket),
+		Key:    aws.String(objectKey),
+		Body:   body,
+	}
+	if strings.TrimSpace(contentType) != "" {
+		input.ContentType = aws.String(strings.TrimSpace(contentType))
+	}
+	if byteSize > 0 {
+		input.ContentLength = aws.Int64(byteSize)
+	}
+
+	result, err := s.client.PutObject(ctx, input)
+	if err != nil {
+		return mediaStorageObjectInfo{}, err
+	}
+	info, err := s.HeadObject(ctx, objectKey)
+	if err == nil {
+		return info, nil
+	}
+
+	return mediaStorageObjectInfo{ByteSize: byteSize, ContentType: contentType, ETag: aws.ToString(result.ETag)}, nil
 }
 
 func (s *s3MediaObjectStorage) PresignPutObject(ctx context.Context, objectKey string, contentType string, expires time.Duration) (mediaPresignedRequest, error) {

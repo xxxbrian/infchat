@@ -752,6 +752,9 @@ func sendChatMessageCommand(app core.App, userId string, data sendMessageCommand
 		if err != nil {
 			return err
 		}
+		if err := enqueueMediaProcessingJobsForAttachments(txApp, attachments); err != nil {
+			return err
+		}
 
 		conversation, err = updateConversationPreviewFromMessageWithCursor(txApp, message, message.GetString("created"), cursor)
 		if err != nil {
@@ -968,7 +971,11 @@ func createMediaRecordsForMessage(app core.App, message *core.Record, senderId s
 		attachment.Set("duration_ms", session.GetInt("duration_ms"))
 		attachment.Set("sha256", session.GetString("sha256"))
 		attachment.Set("blurhash", session.GetString("blurhash"))
-		attachment.Set("processing_status", "pending")
+		if mediaAttachmentRequiresProcessing(session.GetString("attachment_kind")) {
+			attachment.Set("processing_status", "pending")
+		} else {
+			attachment.Set("processing_status", "ready")
+		}
 		if err := app.Save(attachment); err != nil {
 			return nil, nil, err
 		}
@@ -991,15 +998,15 @@ func createMediaRecordsForMessage(app core.App, message *core.Record, senderId s
 			return nil, nil, err
 		}
 
-		attachment.Set("processing_status", "ready")
-		if err := app.Save(attachment); err != nil {
-			return nil, nil, err
-		}
 		attachments = append(attachments, attachment)
 		variants = append(variants, variant)
 	}
 
 	return attachments, variants, nil
+}
+
+func mediaAttachmentRequiresProcessing(kind string) bool {
+	return kind == "image" || kind == "video"
 }
 
 func mediaRecordsForMessage(app core.App, messageId string) ([]*core.Record, []*core.Record, error) {
