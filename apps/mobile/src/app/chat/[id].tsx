@@ -2163,7 +2163,40 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 function formatAttachmentName(name: string): string {
-  return name.replace(/^\w+_/, '');
+  const trimmedName = name.trim();
+  const withoutQuery = trimmedName.split('?')[0] ?? trimmedName;
+  const decodedName = safeDecodeURIComponent(withoutQuery);
+  const lastPathComponent = decodedName.split('/').filter(Boolean).at(-1) ?? decodedName;
+
+  return lastPathComponent.replace(/^[a-z0-9]{6,}[-_]/i, '').trim();
+}
+
+function displayFileNameForAttachment(attachment: MessageAttachment): string {
+  for (const candidate of [
+    attachment.name,
+    attachment.originalLocalUri,
+    attachment.url,
+    attachment.objectKey,
+    attachment.variantObjectKey,
+  ]) {
+    if (!candidate) {
+      continue;
+    }
+    const formattedName = formatAttachmentName(candidate);
+    if (formattedName) {
+      return formattedName;
+    }
+  }
+
+  return 'File';
+}
+
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 function getMessageFileCacheDirectory(): string | null {
@@ -3723,8 +3756,10 @@ function FileMessageBubble({
   onLongPressMessage: MessageLongPressHandler;
   onRetryFailedMessage: (messageId: string) => void;
 }) {
+  const { width: windowWidth } = useWindowDimensions();
   const bubbleRef = useRef<ComponentRef<typeof Pressable>>(null);
-  const fileName = formatAttachmentName(fileAttachment.name) || 'File';
+  const fileName = displayFileNameForAttachment(fileAttachment);
+  const fileBubbleWidth = Math.round(Math.min(windowWidth * 0.78, 328));
   const localFileUri = getLocalMessageFileUri(message.id, fileName);
   const sourceLocalUri =
     fileAttachment.originalLocalUri ??
@@ -3841,7 +3876,7 @@ function FileMessageBubble({
         )}
         <Pressable
           ref={bubbleRef}
-          className={`${isPreview ? 'w-full' : 'max-w-[82%]'} overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
+          className={`overflow-hidden rounded-[24px] ${isMine ? 'bg-foreground' : 'bg-muted'}`}
           disabled={isPreview}
           onLongPress={
             isPreview
@@ -3849,17 +3884,17 @@ function FileMessageBubble({
               : () => measureMessageActionFrame(bubbleRef, message, onLongPressMessage)
           }
           onPress={isPreview ? undefined : handleOpenFile}
-          style={styles.bubble}
+          style={[styles.bubble, { width: isPreview ? '100%' : fileBubbleWidth }]}
         >
-          <View className="flex-row items-center gap-3 px-3 py-2.5">
+          <View className="flex-row items-center gap-3 px-3 py-3">
             <View
-              className={`h-11 w-11 items-center justify-center rounded-[16px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+              className={`h-14 w-14 items-center justify-center rounded-[18px] ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
             >
-              <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="document-text" size={21} />
+              <Ionicons color={isMine ? '#080b12' : '#f8fafc'} name="document-text" size={26} />
             </View>
-            <View className="min-w-0 flex-1 pr-2">
+            <View className="min-w-0 flex-1">
               <Text
-                className={`text-[15px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+                className={`text-[16px] font-bold leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
                 numberOfLines={3}
               >
                 {fileName}
@@ -3872,7 +3907,7 @@ function FileMessageBubble({
             </View>
             {fileDownloadState === 'downloaded' ? null : (
               <View
-                className={`h-8 w-8 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
+                className={`h-9 w-9 items-center justify-center rounded-full ${isMine ? 'bg-background/10' : 'bg-background/55'}`}
               >
                 {isFileActionBusy ? (
                   <ActivityIndicator color={isMine ? '#080b12' : '#f8fafc'} size="small" />
