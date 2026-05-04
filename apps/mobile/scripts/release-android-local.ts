@@ -381,6 +381,12 @@ function patchAndroidBuildGradle(versionCode: number, versionName: string) {
     .replace(/versionCode\s+\d+/g, `versionCode ${versionCode}`)
     .replace(/versionName\s+['"][^'"]+['"]/g, `versionName "${versionName}"`);
   if (patched === original) {
+    if (
+      original.includes(`versionCode ${versionCode}`) &&
+      original.includes(`versionName "${versionName}"`)
+    ) {
+      return;
+    }
     throw new Error('Could not patch Android versionCode/versionName in build.gradle.');
   }
   writeFileSync(buildGradlePath, patched);
@@ -501,7 +507,9 @@ async function main() {
       printOutput: verbose,
     }),
   );
-  patchAndroidBuildGradle(versionCode, appVersion);
+  await runStep('android-version', 'Patch Android app version', async () => {
+    patchAndroidBuildGradle(versionCode, appVersion);
+  });
 
   const gradleCommand = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
   await runStep('gradle', 'Build Android release APK', () =>
