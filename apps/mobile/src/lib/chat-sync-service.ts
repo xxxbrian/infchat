@@ -12,6 +12,7 @@ import {
   type MessageAttachmentRecord,
   type MessageRecord,
   type MediaUploadSessionResponse,
+  type StartMediaUploadInput,
   sendMediaMessageCommand,
   sendTextMessageCommand,
   signMediaUploadParts,
@@ -520,22 +521,19 @@ export class ChatSyncService {
         continue;
       }
 
-      const response = await startMediaUpload(this.pb, {
-        attachmentKind: attachment.kind,
-        blurhash: attachment.blurhash ?? undefined,
-        byteSize: attachment.byte_size,
-        clientAttachmentId: attachment.client_attachment_id,
-        clientMessageId: message.client_message_id,
-        conversationId: message.conversation_id,
-        durationMs: attachment.duration_ms ?? undefined,
-        height: attachment.height ?? undefined,
-        mimeType: attachment.mime_type,
-        ordinal: attachment.ordinal,
-        originalName: attachment.original_name,
-        sha256: attachment.sha256 ?? undefined,
-        variant: 'original',
-        width: attachment.width ?? undefined,
+      const startInput = mediaUploadStartInput(message, attachment, 'original');
+      void logDebugEvent('debug', 'media-outbox', 'Starting media upload session', {
+        attachmentKind: startInput.attachmentKind,
+        byteSize: startInput.byteSize,
+        clientAttachmentId: startInput.clientAttachmentId,
+        clientMessageId: startInput.clientMessageId,
+        durationMs: startInput.durationMs ?? null,
+        height: startInput.height ?? null,
+        mimeType: startInput.mimeType,
+        originalName: startInput.originalName,
+        width: startInput.width ?? null,
       });
+      const response = await startMediaUpload(this.pb, startInput);
       await this.persistMediaUploadSessionResponse(attachment, response);
       await markMediaAttachmentState(
         this.authId,
@@ -621,22 +619,17 @@ export class ChatSyncService {
       if (!session.upload_session_id) {
         throw new Error('Media upload session is missing its server id.');
       }
-      const refreshed = await startMediaUpload(this.pb, {
-        attachmentKind: attachment.kind,
-        blurhash: attachment.blurhash ?? undefined,
-        byteSize: attachment.byte_size,
-        clientAttachmentId: attachment.client_attachment_id,
-        clientMessageId: attachment.client_message_id,
-        conversationId: attachment.conversation_id,
-        durationMs: attachment.duration_ms ?? undefined,
-        height: attachment.height ?? undefined,
-        mimeType: attachment.mime_type,
-        ordinal: attachment.ordinal,
-        originalName: attachment.original_name,
-        sha256: attachment.sha256 ?? undefined,
-        variant: session.variant,
-        width: attachment.width ?? undefined,
-      });
+      const refreshed = await startMediaUpload(
+        this.pb,
+        mediaUploadStartInput(
+          {
+            client_message_id: attachment.client_message_id,
+            conversation_id: attachment.conversation_id,
+          },
+          attachment,
+          session.variant,
+        ),
+      );
       await this.persistMediaUploadSessionResponse(attachment, refreshed);
       session = {
         ...session,
@@ -1031,6 +1024,47 @@ function mediaCacheKeyForVariant(
   variant: 'thumbnail' | 'preview' | 'original' | 'poster' | 'file' | 'voice',
 ): string {
   return `message-media:${messageId}:${attachmentId}:${variant}`;
+}
+
+function mediaUploadStartInput(
+  message: Pick<LocalMediaOutboxMessageWithAttachments, 'client_message_id' | 'conversation_id'>,
+  attachment: LocalMediaOutboxAttachment,
+  variant: StartMediaUploadInput['variant'],
+): StartMediaUploadInput {
+  return {
+    attachmentKind: attachment.kind,
+    blurhash: stringOrUndefined(attachment.blurhash),
+    byteSize: positiveIntegerOrFallback(attachment.byte_size, 0),
+    clientAttachmentId: attachment.client_attachment_id,
+    clientMessageId: message.client_message_id,
+    conversationId: message.conversation_id,
+    durationMs: positiveIntegerOrUndefined(attachment.duration_ms),
+    height: positiveIntegerOrUndefined(attachment.height),
+    mimeType: attachment.mime_type,
+    ordinal: positiveIntegerOrFallback(attachment.ordinal, 0),
+    originalName: stringOrUndefined(attachment.original_name),
+    sha256: stringOrUndefined(attachment.sha256),
+    variant,
+    width: positiveIntegerOrUndefined(attachment.width),
+  };
+}
+
+function positiveIntegerOrFallback(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : fallback;
+}
+
+function positiveIntegerOrUndefined(value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : undefined;
+}
+
+function stringOrUndefined(value?: string | null): string | undefined {
+  const trimmed = value?.trim();
+
+  return trimmed || undefined;
 }
 
 function isPermanentCommandError(error: unknown) {

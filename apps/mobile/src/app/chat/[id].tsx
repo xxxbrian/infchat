@@ -25,6 +25,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { BlurView } from 'expo-blur';
 import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
+import { useEvent } from 'expo';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
 import { Image as ExpoImage } from 'expo-image';
@@ -3445,6 +3446,7 @@ function MediaGalleryModal({
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  const [videoPlaybackFailedUrl, setVideoPlaybackFailedUrl] = useState<string | null>(null);
   const selected = attachments[currentIndex] ?? attachments[0] ?? null;
   const videoDownload = useVideoOriginalDownload(
     authId,
@@ -3454,6 +3456,7 @@ function MediaGalleryModal({
   useEffect(() => {
     if (visible) {
       setCurrentIndex(initialIndex);
+      setVideoPlaybackFailedUrl(null);
     }
   }, [initialIndex, visible]);
 
@@ -3464,6 +3467,7 @@ function MediaGalleryModal({
     }
 
     let isMounted = true;
+    setVideoPlaybackFailedUrl(null);
     void initialGalleryMediaUrl(selected).then((url) => {
       if (isMounted) {
         setResolvedUrl(url);
@@ -3495,6 +3499,8 @@ function MediaGalleryModal({
   const canGoBack = attachments.length > 1 && currentIndex > 0;
   const canGoForward = attachments.length > 1 && currentIndex < attachments.length - 1;
   const videoPosterUrl = selected.kind === 'video' ? galleryVideoPosterUrl(selected) : null;
+  const shouldShowVideoFallback =
+    selected.kind === 'video' && resolvedUrl && videoPlaybackFailedUrl === resolvedUrl;
   const handleDownloadVideo = async () => {
     const localUri = await videoDownload.downloadOriginal();
     if (localUri) {
@@ -3522,14 +3528,19 @@ function MediaGalleryModal({
         </View>
         <View className="flex-1 items-center justify-center">
           {selected.kind === 'video' ? (
-            resolvedUrl ? (
+            resolvedUrl && !shouldShowVideoFallback ? (
               <GalleryVideo
                 attachment={selected}
                 key={`${selected.attachmentId ?? selected.name}:${resolvedUrl}`}
+                onError={() => setVideoPlaybackFailedUrl(resolvedUrl)}
                 uri={resolvedUrl}
               />
             ) : (
-              <GalleryVideoLoading attachment={selected} posterUrl={videoPosterUrl} />
+              <GalleryVideoLoading
+                attachment={selected}
+                isError={Boolean(shouldShowVideoFallback)}
+                posterUrl={videoPosterUrl}
+              />
             )
           ) : resolvedUrl ? (
             <ExpoImage
@@ -3583,10 +3594,18 @@ function MediaGalleryModal({
   );
 }
 
-function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri: string }) {
+function GalleryVideo({
+  attachment,
+  onError,
+  uri,
+}: {
+  attachment: MessageAttachment;
+  onError: () => void;
+  uri: string;
+}) {
   const source = useMemo<VideoSource>(
     () => ({
-      contentType: 'progressive',
+      contentType: 'auto',
       metadata: {
         title: attachment.name,
       },
@@ -3600,10 +3619,17 @@ function GalleryVideo({ attachment, uri }: { attachment: MessageAttachment; uri:
     createdPlayer.muted = false;
     createdPlayer.staysActiveInBackground = false;
   });
+  const status = useEvent(player, 'statusChange', { status: player.status });
 
   useEffect(() => {
     player.play();
   }, [player]);
+
+  useEffect(() => {
+    if (status?.status === 'error') {
+      onError();
+    }
+  }, [onError, status?.status]);
 
   return (
     <VideoView
@@ -3665,9 +3691,11 @@ function GalleryVideoDownloadButton({
 
 function GalleryVideoLoading({
   attachment,
+  isError = false,
   posterUrl,
 }: {
   attachment: MessageAttachment;
+  isError?: boolean;
   posterUrl: string | null;
 }) {
   return (
@@ -3683,8 +3711,22 @@ function GalleryVideoLoading({
           style={StyleSheet.absoluteFillObject}
         />
       ) : null}
-      <View className="absolute inset-0 items-center justify-center bg-black/35">
-        <ActivityIndicator colorClassName="accent-white" size="large" />
+      <View className="absolute inset-0 items-center justify-center bg-black/35 px-8">
+        {isError ? (
+          <>
+            <View className="h-14 w-14 items-center justify-center rounded-full bg-black/60">
+              <Ionicons color="#fff" name="cloud-download-outline" size={25} />
+            </View>
+            <Text className="mt-4 text-center text-sm font-bold text-white">
+              This video cannot stream on this device.
+            </Text>
+            <Text className="mt-1 text-center text-xs font-semibold text-white/65">
+              Download it to play from local storage.
+            </Text>
+          </>
+        ) : (
+          <ActivityIndicator colorClassName="accent-white" size="large" />
+        )}
       </View>
     </View>
   );
@@ -4146,14 +4188,24 @@ function messageActionRows(message: ChatMessage, canDelete: boolean): MessageAct
   const canCopyText = message.kind === 'text' && message.text.trim().length > 0;
 
   return [
-    { disabled: true, icon: 'return-down-back', kind: 'placeholder', label: 'Reply' },
+    {
+      disabled: true,
+      icon: 'return-down-back',
+      kind: 'placeholder',
+      label: 'Reply',
+    },
     {
       disabled: !canCopyText,
       icon: 'copy-outline',
       kind: canCopyText ? 'copy' : 'placeholder',
       label: 'Copy',
     },
-    { disabled: true, icon: 'arrow-redo-outline', kind: 'placeholder', label: 'Forward' },
+    {
+      disabled: true,
+      icon: 'arrow-redo-outline',
+      kind: 'placeholder',
+      label: 'Forward',
+    },
     {
       disabled: true,
       icon: 'bookmark-outline',
@@ -4169,7 +4221,12 @@ function messageActionRows(message: ChatMessage, canDelete: boolean): MessageAct
           },
         ]
       : []),
-    { disabled: true, icon: 'checkmark-circle-outline', kind: 'placeholder', label: 'Select' },
+    {
+      disabled: true,
+      icon: 'checkmark-circle-outline',
+      kind: 'placeholder',
+      label: 'Select',
+    },
   ];
 }
 

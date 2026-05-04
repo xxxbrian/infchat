@@ -84,15 +84,15 @@ export async function preparePickedMediaAttachments(
 
     attachments.push(
       await copyAttachmentToOutbox({
-        byteSize: asset.fileSize,
-        durationMs: asset.duration,
-        height: positiveNumberOrNull(asset.height),
+        byteSize: positiveIntegerOrNull(asset.fileSize),
+        durationMs: positiveIntegerOrNull(asset.duration),
+        height: positiveIntegerOrNull(asset.height),
         kind,
         mimeType: asset.mimeType,
         ordinal: index,
         originalName: asset.fileName,
         sourceUri: asset.uri,
-        width: positiveNumberOrNull(asset.width),
+        width: positiveIntegerOrNull(asset.width),
       }),
     );
   }
@@ -108,7 +108,7 @@ export async function preparePickedDocumentAttachments(
   for (const [index, asset] of assets.entries()) {
     attachments.push(
       await copyAttachmentToOutbox({
-        byteSize: asset.size,
+        byteSize: positiveIntegerOrNull(asset.size),
         kind: 'file',
         mimeType: asset.mimeType,
         ordinal: index,
@@ -147,22 +147,22 @@ async function copyAttachmentToOutbox(
     throw new Error('Selected attachment could not be copied into local outbox storage.');
   }
 
-  const byteSize = input.byteSize && input.byteSize > 0 ? input.byteSize : copiedInfo.size;
+  const byteSize = positiveIntegerOrNull(copiedInfo.size) ?? input.byteSize ?? 0;
   if (byteSize <= 0) {
     throw new Error('Selected attachment is empty and cannot be sent.');
   }
 
   return {
     byteSize,
-    durationMs: input.durationMs ?? null,
-    height: input.height ?? null,
+    durationMs: positiveIntegerOrNull(input.durationMs),
+    height: positiveIntegerOrNull(input.height),
     kind: input.kind,
     localUri: targetUri,
     mimeType,
     ordinal: input.ordinal,
     originalName,
     thumbnailLocalUri: input.kind === 'image' ? targetUri : null,
-    width: input.width ?? null,
+    width: positiveIntegerOrNull(input.width),
   };
 }
 
@@ -256,6 +256,8 @@ function sanitizeFileName(name: string): string {
   return safeName || 'attachment';
 }
 
-function positiveNumberOrNull(value: number | null | undefined): number | null {
-  return typeof value === 'number' && value > 0 ? value : null;
+function positiveIntegerOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : null;
 }
