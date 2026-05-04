@@ -7,6 +7,7 @@
     "start": "expo start",
     "android": "expo prebuild --platform android && bun ./scripts/ensure-android-sdk-local-properties.ts && expo run:android",
     "ios": "expo run:ios",
+    "release:android:local": "bun ./scripts/release-android-local.ts",
     "release:ios:local": "bun ./scripts/release-ios-local.ts",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit"
@@ -57,6 +58,7 @@
     "uniwind": "^1.6.3"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.940.0",
     "@types/react": "~19.2.14",
     "typescript": "~5.9.2"
   },
