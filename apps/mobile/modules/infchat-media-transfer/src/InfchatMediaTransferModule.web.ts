@@ -12,7 +12,9 @@ const unsupported = async (): Promise<UploadResult> => {
 
 const module: InfchatMediaTransferModule = {
   canInstallUnknownAppsAsync: async () => false,
+  enterPictureInPictureAsync: async (_width: number, _height: number) => false,
   getNativeVersionCodeAsync: async () => 0,
+  isPictureInPictureSupportedAsync: async () => false,
   installApkAsync: async (_fileUri: string) => {
     throw new Error('InfchatMediaTransfer APK installation is only available on Android.');
   },

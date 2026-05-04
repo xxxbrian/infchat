@@ -58,6 +58,7 @@
     "plugins": [
       "expo-router",
       "expo-notifications",
+      "./plugins/with-android-picture-in-picture",
       "./plugins/with-ios-call-notifications",
       "./plugins/with-ios-source-built-react-native",
       [

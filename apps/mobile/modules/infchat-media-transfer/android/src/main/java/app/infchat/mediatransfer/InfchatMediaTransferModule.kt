@@ -2,11 +2,13 @@ package app.infchat.mediatransfer
 
 import android.content.Context
 import android.content.Intent
+import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Rational
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
@@ -76,8 +78,16 @@ class InfchatMediaTransferModule : Module() {
       }
     }
 
+    AsyncFunction("enterPictureInPictureAsync") { width: Int, height: Int ->
+      enterPictureInPicture(width, height)
+    }
+
     AsyncFunction("getNativeVersionCodeAsync") {
       getNativeVersionCode()
+    }
+
+    AsyncFunction("isPictureInPictureSupportedAsync") {
+      isPictureInPictureSupported()
     }
 
     AsyncFunction("installApkAsync") Coroutine { fileUri: String ->
@@ -163,6 +173,23 @@ class InfchatMediaTransferModule : Module() {
     }
 
     appContext.throwingActivity.startActivity(chooser)
+  }
+
+  private fun isPictureInPictureSupported(): Boolean {
+    return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+      context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+  }
+
+  private fun enterPictureInPicture(width: Int, height: Int): Boolean {
+    if (!isPictureInPictureSupported()) {
+      return false
+    }
+
+    val params = PictureInPictureParams.Builder()
+      .setAspectRatio(Rational(width.coerceAtLeast(1), height.coerceAtLeast(1)))
+      .build()
+
+    return appContext.throwingActivity.enterPictureInPictureMode(params)
   }
 
   private fun installApk(fileUri: String) {

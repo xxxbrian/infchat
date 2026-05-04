@@ -34,6 +34,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ProfileAvatar } from '../../components/ProfileAvatar';
+import { enterAndroidPictureInPicture } from '../../lib/android-picture-in-picture';
 import { useCallSession } from '../../lib/call-context';
 import { listCachedProfilesByUserIds, refreshCachedProfilesByUserIds } from '../../lib/local-cache';
 import { pb } from '../../lib/pocketbase';
@@ -369,6 +370,18 @@ function CallRoomView({
       { onPress: onEndCall, style: 'destructive', text: 'End call' },
     ]);
   };
+  const handleMinimize = () => {
+    if (Platform.OS === 'android' && callRoom.kind === 'video') {
+      void enterAndroidPictureInPicture(9, 16).then((didEnter) => {
+        if (!didEnter) {
+          onMinimize();
+        }
+      });
+      return;
+    }
+
+    onMinimize();
+  };
 
   return (
     <View className="flex-1 bg-background" onTouchStart={revealChrome}>
@@ -380,7 +393,7 @@ function CallRoomView({
         }}
         layoutMode={layoutMode}
         onChangeLayout={() => setLayoutMode(layoutMode === 'focus' ? 'gallery' : 'focus')}
-        onMinimize={onMinimize}
+        onMinimize={handleMinimize}
         pointerEvents={chromePointerEvents}
         participantCount={participantCount}
         statusLabel={statusLabel}

@@ -34,7 +34,9 @@ export type AndroidNotificationRuntimeOptions = {
 
 export type InfchatMediaTransferModule = {
   canInstallUnknownAppsAsync(): Promise<boolean>;
+  enterPictureInPictureAsync(width: number, height: number): Promise<boolean>;
   getNativeVersionCodeAsync(): Promise<number>;
+  isPictureInPictureSupportedAsync(): Promise<boolean>;
   installApkAsync(fileUri: string): Promise<void>;
   openInstallUnknownAppsSettingsAsync(): Promise<void>;
   sha256FileAsync(fileUri: string): Promise<string>;
