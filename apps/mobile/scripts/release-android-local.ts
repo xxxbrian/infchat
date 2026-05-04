@@ -479,6 +479,8 @@ async function main() {
 
   const buildEnv = {
     ...process.env,
+    EXPO_PUBLIC_INFCHAT_DOWNLOADS_BASE_URL:
+      process.env.EXPO_PUBLIC_INFCHAT_DOWNLOADS_BASE_URL || config?.publicBaseUrl || '',
     EXPO_PUBLIC_INFCHAT_UPDATE_CHANNEL: channel,
     EXPO_PUBLIC_POCKETBASE_URL: pocketbaseUrl,
     ...(livekitUrl ? { EXPO_PUBLIC_LIVEKIT_URL: livekitUrl } : {}),

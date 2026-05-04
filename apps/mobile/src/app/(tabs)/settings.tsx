@@ -62,6 +62,11 @@ const SETTINGS_SECTIONS: SettingsRowItem[][] = [
       onPress: () => router.push({ pathname: '/preferences/notifications' } as never),
     },
     {
+      icon: 'cloud-download',
+      label: 'Updates',
+      onPress: () => router.push({ pathname: '/preferences/updates' } as never),
+    },
+    {
       icon: 'lock-closed',
       label: 'Privacy',
       onPress: () => router.push({ pathname: '/preferences/privacy' } as never),

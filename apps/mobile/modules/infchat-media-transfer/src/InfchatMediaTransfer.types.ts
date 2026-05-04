@@ -27,6 +27,11 @@ export type OpenDocumentOptions = {
 };
 
 export type InfchatMediaTransferModule = {
+  canInstallUnknownAppsAsync(): Promise<boolean>;
+  getNativeVersionCodeAsync(): Promise<number>;
+  installApkAsync(fileUri: string): Promise<void>;
+  openInstallUnknownAppsSettingsAsync(): Promise<void>;
+  sha256FileAsync(fileUri: string): Promise<string>;
   openDocumentAsync(options: OpenDocumentOptions): Promise<void>;
   uploadFileAsync(options: UploadFileOptions): Promise<UploadResult>;
   uploadFilePartAsync(options: UploadFilePartOptions): Promise<UploadResult>;

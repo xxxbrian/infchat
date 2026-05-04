@@ -24,7 +24,17 @@ import * as Notifications from 'expo-notifications';
 import { router, Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { type ReactNode, useContext, useEffect, useRef, useState } from 'react';
-import { Animated, AppState, Keyboard, Pressable, Text, Vibration, View } from 'react-native';
+import {
+  Alert,
+  Animated,
+  AppState,
+  Keyboard,
+  Platform,
+  Pressable,
+  Text,
+  Vibration,
+  View,
+} from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
@@ -144,10 +154,12 @@ export default function RootLayout() {
                       <Stack.Screen name="preferences/notifications" />
                       <Stack.Screen name="preferences/privacy" />
                       <Stack.Screen name="preferences/storage" />
+                      <Stack.Screen name="preferences/updates" />
                     </Stack>
                     <ProfileSetupGate authRecord={authRecord} />
                     <PresenceProvider authId={authRecord.id} />
                     <PushRegistration authRecord={authRecord} />
+                    <AppUpdateAutoCheck authRecord={authRecord} />
                     <ForegroundMessageNotificationSync authRecord={authRecord} />
                     <IncomingCallListener authRecord={authRecord} />
                   </View>
@@ -182,6 +194,58 @@ export default function RootLayout() {
       </ThemeProvider>
     </QueryClientProvider>
   );
+}
+
+function AppUpdateAutoCheck({ authRecord }: { authRecord: AuthRecord }) {
+  useEffect(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    let isChecking = false;
+    const checkUpdate = async () => {
+      if (isChecking) {
+        return;
+      }
+      isChecking = true;
+      try {
+        const updates = await import('../lib/app-updates');
+        if (!(await updates.shouldAutoCheckAppUpdate())) {
+          return;
+        }
+        const result = await updates.checkForAppUpdate();
+        if (!result.release) {
+          return;
+        }
+        Alert.alert(
+          result.isForced ? 'Update required' : 'Update available',
+          `InfChat ${result.release.versionName} (${result.release.versionCode}) is available on ${updates.formatAppUpdateChannel(result.release.channel)}.`,
+          [
+            ...(result.isForced ? [] : [{ style: 'cancel' as const, text: 'Later' }]),
+            {
+              onPress: () => router.push({ pathname: '/preferences/updates' } as never),
+              text: 'Update',
+            },
+          ],
+        );
+      } catch {
+        // Update checks should never block chat startup.
+      } finally {
+        isChecking = false;
+      }
+    };
+
+    void checkUpdate();
+    const subscription = AppState.addEventListener('change', (status) => {
+      if (status === 'active') {
+        void checkUpdate();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [authRecord.id]);
+
+  return null;
 }
 
 function ProfileSetupGate({ authRecord }: { authRecord: AuthRecord }) {

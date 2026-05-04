@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.exception.Exceptions
@@ -23,6 +25,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.regex.Pattern
 
@@ -59,9 +62,39 @@ class InfchatMediaTransferModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("InfchatMediaTransfer")
 
+    AsyncFunction("canInstallUnknownAppsAsync") Coroutine {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        context.packageManager.canRequestPackageInstalls()
+      } else {
+        true
+      }
+    }
+
+    AsyncFunction("getNativeVersionCodeAsync") Coroutine {
+      getNativeVersionCode()
+    }
+
+    AsyncFunction("installApkAsync") Coroutine { fileUri: String ->
+      withContext(Dispatchers.Main) {
+        installApk(fileUri)
+      }
+    }
+
     AsyncFunction("openDocumentAsync") Coroutine { options: OpenDocumentOptions ->
       withContext(Dispatchers.Main) {
         openDocument(options)
+      }
+    }
+
+    AsyncFunction("openInstallUnknownAppsSettingsAsync") Coroutine {
+      withContext(Dispatchers.Main) {
+        openInstallUnknownAppsSettings()
+      }
+    }
+
+    AsyncFunction("sha256FileAsync") Coroutine { fileUri: String ->
+      withContext(Dispatchers.IO) {
+        sha256File(fileUri)
       }
     }
 
@@ -116,6 +149,91 @@ class InfchatMediaTransferModule : Module() {
     }
 
     appContext.throwingActivity.startActivity(chooser)
+  }
+
+  private fun installApk(fileUri: String) {
+    val uri = Uri.parse(slashifyFilePath(fileUri))
+    ensureReadable(uri)
+    val file = uri.toFile()
+    if (!file.exists()) {
+      throw InfchatMediaTransferException("APK file does not exist.")
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+      throw InfchatMediaTransferException("Unknown app installation is not allowed for InfChat.")
+    }
+
+    val contentUri = FileProvider.getUriForFile(
+      appContext.throwingActivity.application,
+      "${appContext.throwingActivity.application.packageName}.FileSystemFileProvider",
+      file
+    )
+    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+      setDataAndType(contentUri, "application/vnd.android.package-archive")
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.packageManager.queryIntentActivities(
+      installIntent,
+      PackageManager.MATCH_DEFAULT_ONLY
+    ).forEach { resolveInfo ->
+      context.grantUriPermission(
+        resolveInfo.activityInfo.packageName,
+        contentUri,
+        Intent.FLAG_GRANT_READ_URI_PERMISSION
+      )
+    }
+
+    appContext.throwingActivity.startActivity(installIntent)
+  }
+
+  private fun openInstallUnknownAppsSettings() {
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+        data = Uri.parse("package:${context.packageName}")
+      }
+    } else {
+      Intent(Settings.ACTION_SECURITY_SETTINGS)
+    }.apply {
+      addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    appContext.throwingActivity.startActivity(intent)
+  }
+
+  private fun getNativeVersionCode(): Long {
+    val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      context.packageManager.getPackageInfo(context.packageName, PackageManager.PackageInfoFlags.of(0))
+    } else {
+      @Suppress("DEPRECATION")
+      context.packageManager.getPackageInfo(context.packageName, 0)
+    }
+
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      packageInfo.longVersionCode
+    } else {
+      @Suppress("DEPRECATION")
+      packageInfo.versionCode.toLong()
+    }
+  }
+
+  private fun sha256File(fileUri: String): String {
+    val uri = Uri.parse(slashifyFilePath(fileUri))
+    ensureReadable(uri)
+    val file = uri.toFile()
+    if (!file.exists()) {
+      throw InfchatMediaTransferException("File does not exist.")
+    }
+    val digest = MessageDigest.getInstance("SHA-256")
+    FileInputStream(file).use { input ->
+      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+      while (true) {
+        val read = input.read(buffer)
+        if (read <= 0) break
+        digest.update(buffer, 0, read)
+      }
+    }
+
+    return digest.digest().joinToString("") { "%02x".format(it) }
   }
 
   private fun uploadFile(options: UploadFileOptions): Bundle {
