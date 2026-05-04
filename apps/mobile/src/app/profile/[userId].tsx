@@ -33,6 +33,7 @@ import { getCachedProfileByUserId, refreshCachedProfileByUserId } from '../../li
 import { useCachedRemoteUri } from '../../lib/media-cache';
 import { pb } from '../../lib/pocketbase';
 import { formatPresenceLabel, usePresence } from '../../lib/presence';
+import { usePullExpandResponder } from '../../lib/pull-expand-responder';
 
 const HEADER_SIDE_PADDING = 20;
 const TOP_BAR_HEIGHT = 48;
@@ -208,14 +209,29 @@ export default function ProfileScreen() {
       useNativeDriver: false,
     }).start();
   };
+  const setProfileExpanded = (isExpanded: boolean) => {
+    if (isProfileExpandedRef.current === isExpanded) {
+      return;
+    }
+
+    isProfileExpandedRef.current = isExpanded;
+    animateProfileExpansion(isExpanded);
+  };
+  const pullExpandResponder = usePullExpandResponder({
+    collapseOffset: PROFILE_COLLAPSE_OFFSET,
+    expandOffset: PROFILE_EXPAND_OFFSET,
+    isExpanded: () => isProfileExpandedRef.current,
+    onCollapse: () => setProfileExpanded(false),
+    onExpand: () => setProfileExpanded(true),
+    scrollOffset: () => scrollYValue.current,
+  });
   const handleScroll = Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], {
     listener: ({ nativeEvent }: { nativeEvent: { contentOffset: { y: number } } }) => {
       const nextOffset = nativeEvent.contentOffset.y;
       scrollYValue.current = nextOffset;
 
       if (!isProfileExpandedRef.current && nextOffset <= PROFILE_EXPAND_OFFSET) {
-        isProfileExpandedRef.current = true;
-        animateProfileExpansion(true);
+        setProfileExpanded(true);
         return;
       }
 
@@ -224,8 +240,7 @@ export default function ProfileScreen() {
         isDraggingRef.current &&
         nextOffset >= PROFILE_COLLAPSE_OFFSET
       ) {
-        isProfileExpandedRef.current = false;
-        animateProfileExpansion(false);
+        setProfileExpanded(false);
       }
     },
     useNativeDriver: false,
@@ -276,6 +291,7 @@ export default function ProfileScreen() {
         }}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
+        {...pullExpandResponder.panHandlers}
       >
         <Animated.View className="bg-background" style={{ height: heroHeight }}>
           <View className="items-center">
