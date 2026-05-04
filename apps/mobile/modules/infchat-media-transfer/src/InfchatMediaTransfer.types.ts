@@ -26,12 +26,20 @@ export type OpenDocumentOptions = {
   title?: string;
 };
 
+export type AndroidNotificationRuntimeOptions = {
+  authToken: string;
+  baseUrl: string;
+  userId: string;
+};
+
 export type InfchatMediaTransferModule = {
   canInstallUnknownAppsAsync(): Promise<boolean>;
   getNativeVersionCodeAsync(): Promise<number>;
   installApkAsync(fileUri: string): Promise<void>;
   openInstallUnknownAppsSettingsAsync(): Promise<void>;
   sha256FileAsync(fileUri: string): Promise<string>;
+  startAndroidNotificationRuntimeAsync(options: AndroidNotificationRuntimeOptions): Promise<void>;
+  stopAndroidNotificationRuntimeAsync(): Promise<void>;
   openDocumentAsync(options: OpenDocumentOptions): Promise<void>;
   uploadFileAsync(options: UploadFileOptions): Promise<UploadResult>;
   uploadFilePartAsync(options: UploadFilePartOptions): Promise<UploadResult>;

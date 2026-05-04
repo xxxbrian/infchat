@@ -52,6 +52,12 @@ internal class UploadFilePartOptions : Record {
   @Field var url: String = ""
 }
 
+internal class AndroidNotificationRuntimeOptions : Record {
+  @Field var authToken: String = ""
+  @Field var baseUrl: String = ""
+  @Field var userId: String = ""
+}
+
 internal class InfchatMediaTransferException(message: String, cause: Throwable? = null) :
   CodedException(message, cause)
 
@@ -62,7 +68,7 @@ class InfchatMediaTransferModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("InfchatMediaTransfer")
 
-    AsyncFunction("canInstallUnknownAppsAsync") Coroutine {
+    AsyncFunction("canInstallUnknownAppsAsync") {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         context.packageManager.canRequestPackageInstalls()
       } else {
@@ -70,7 +76,7 @@ class InfchatMediaTransferModule : Module() {
       }
     }
 
-    AsyncFunction("getNativeVersionCodeAsync") Coroutine {
+    AsyncFunction("getNativeVersionCodeAsync") {
       getNativeVersionCode()
     }
 
@@ -86,16 +92,24 @@ class InfchatMediaTransferModule : Module() {
       }
     }
 
-    AsyncFunction("openInstallUnknownAppsSettingsAsync") Coroutine {
-      withContext(Dispatchers.Main) {
-        openInstallUnknownAppsSettings()
-      }
+    AsyncFunction("openInstallUnknownAppsSettingsAsync") {
+      openInstallUnknownAppsSettings()
     }
 
     AsyncFunction("sha256FileAsync") Coroutine { fileUri: String ->
       withContext(Dispatchers.IO) {
         sha256File(fileUri)
       }
+    }
+
+    AsyncFunction("startAndroidNotificationRuntimeAsync") Coroutine { options: AndroidNotificationRuntimeOptions ->
+      withContext(Dispatchers.Main) {
+        InfchatAndroidNotificationRuntimeService.start(context, options.baseUrl, options.authToken, options.userId)
+      }
+    }
+
+    AsyncFunction("stopAndroidNotificationRuntimeAsync") {
+      InfchatAndroidNotificationRuntimeService.stop(context)
     }
 
     AsyncFunction("uploadFileAsync") Coroutine { options: UploadFileOptions ->

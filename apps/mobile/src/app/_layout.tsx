@@ -37,6 +37,10 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AuthContext, type AuthRecord, type AuthRoute } from '../lib/auth-context';
+import {
+  startAndroidNotificationRuntime,
+  stopAndroidNotificationRuntime,
+} from '../lib/android-notification-runtime';
 import { CallSessionProvider, useCallSession } from '../lib/call-context';
 import { useRingingSecondsLeft } from '../lib/call-countdown';
 import { ChatSyncContext } from '../lib/chat-sync-context';
@@ -127,6 +131,7 @@ export default function RootLayout() {
               value={{
                 authRecord,
                 logout: () => {
+                  void stopAndroidNotificationRuntime();
                   signOut(pb);
                   queryClient.clear();
                   setRoute('login');
@@ -159,6 +164,7 @@ export default function RootLayout() {
                     <ProfileSetupGate authRecord={authRecord} />
                     <PresenceProvider authId={authRecord.id} />
                     <PushRegistration authRecord={authRecord} />
+                    <AndroidNotificationRuntime authRecord={authRecord} />
                     <AppUpdateAutoCheck authRecord={authRecord} />
                     <ForegroundMessageNotificationSync authRecord={authRecord} />
                     <IncomingCallListener authRecord={authRecord} />
@@ -320,6 +326,18 @@ function PushRegistration({ authRecord }: { authRecord: AuthRecord }) {
       cleanupSystemCalls();
     };
   }, [authRecord.id, chatSyncService]);
+
+  return null;
+}
+
+function AndroidNotificationRuntime({ authRecord }: { authRecord: AuthRecord }) {
+  useEffect(() => {
+    void startAndroidNotificationRuntime(authRecord.id);
+
+    return () => {
+      void stopAndroidNotificationRuntime();
+    };
+  }, [authRecord.id]);
 
   return null;
 }

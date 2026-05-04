@@ -25,6 +25,8 @@ const module: InfchatMediaTransferModule = {
   sha256FileAsync: async (_fileUri: string) => {
     throw new Error('InfchatMediaTransfer file hashing is only available on native platforms.');
   },
+  startAndroidNotificationRuntimeAsync: async (_options) => {},
+  stopAndroidNotificationRuntimeAsync: async () => {},
   uploadFileAsync: (_options: UploadFileOptions) => unsupported(),
   uploadFilePartAsync: (_options: UploadFilePartOptions) => unsupported(),
 };
