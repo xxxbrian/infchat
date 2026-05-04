@@ -33,7 +33,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useVideoPlayer, VideoView, type VideoSource } from 'expo-video';
-import { type ComponentRef, useEffect, useMemo, useRef, useState } from 'react';
+import { type ComponentRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -262,7 +262,9 @@ export default function ChatDetailScreen() {
   const queryClient = useQueryClient();
   const netInfo = useNetInfo();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const listRef = useRef<FlashListRef<ChatRenderItem>>(null);
+  const composerContainerRef = useRef<ComponentRef<typeof View>>(null);
   const didScrollToEnd = useRef(false);
   const isJumpButtonVisible = useRef(false);
   const lastScrollY = useRef(0);
@@ -272,6 +274,9 @@ export default function ChatDetailScreen() {
   const attachmentMenuProgress = useRef(new Animated.Value(0)).current;
   const jumpButtonProgress = useRef(new Animated.Value(0)).current;
   const composerInputExtraHeightValue = useRef(0);
+  const androidComposerKeyboardOffsetValue = useRef(0);
+  const androidKeyboardTop = useRef<number | null>(null);
+  const composerMeasureTimeouts = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const isLoadingOlderMessagesRef = useRef(false);
   const [composerText, setComposerText] = useState('');
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
@@ -284,6 +289,7 @@ export default function ChatDetailScreen() {
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const [composerInputExtraHeightState, setComposerInputExtraHeightState] = useState(0);
+  const [androidComposerKeyboardOffset, setAndroidComposerKeyboardOffsetState] = useState(0);
   const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget | null>(null);
   const [failedOutgoingMessages, setFailedOutgoingMessages] = useState<FailedOutgoingMessage[]>([]);
   const hasComposerText = composerText.trim().length > 0;
@@ -525,11 +531,17 @@ export default function ChatDetailScreen() {
         Math.max(insets.bottom, 12) +
         (isComposerExpanded ? COMPOSER_EXPANDED_HEIGHT : COMPOSER_HEIGHT) +
         composerInputExtraHeightState +
+        androidComposerKeyboardOffset +
         16,
       paddingHorizontal: 14,
       paddingTop: 14,
     }),
-    [composerInputExtraHeightState, insets.bottom, isComposerExpanded],
+    [
+      androidComposerKeyboardOffset,
+      composerInputExtraHeightState,
+      insets.bottom,
+      isComposerExpanded,
+    ],
   );
   const maintainVisibleContentPosition = useMemo(
     () => ({
@@ -695,6 +707,55 @@ export default function ChatDetailScreen() {
       }
     });
   };
+  const setAndroidComposerKeyboardOffset = useCallback((offset: number) => {
+    if (Math.abs(offset - androidComposerKeyboardOffsetValue.current) < 1) {
+      return;
+    }
+
+    androidComposerKeyboardOffsetValue.current = offset;
+    setAndroidComposerKeyboardOffsetState(offset);
+  }, []);
+  const clearComposerMeasureTimeouts = useCallback(() => {
+    for (const timeout of composerMeasureTimeouts.current) {
+      clearTimeout(timeout);
+    }
+    composerMeasureTimeouts.current = [];
+  }, []);
+  const measureAndroidComposerKeyboardOverlap = useCallback(() => {
+    if (Platform.OS !== 'android') {
+      return;
+    }
+
+    const keyboardTop = androidKeyboardTop.current;
+    if (keyboardTop === null) {
+      setAndroidComposerKeyboardOffset(0);
+      return;
+    }
+
+    composerContainerRef.current?.measureInWindow?.((_x, y, _width, height) => {
+      if (height <= 0) {
+        return;
+      }
+
+      const desiredGap = 8;
+      const unshiftedBottom = y + androidComposerKeyboardOffsetValue.current + height;
+      const nextOffset = Math.max(0, Math.ceil(unshiftedBottom + desiredGap - keyboardTop));
+      setAndroidComposerKeyboardOffset(nextOffset);
+    });
+  }, [setAndroidComposerKeyboardOffset]);
+  const scheduleAndroidComposerKeyboardMeasure = useCallback(
+    (delays: number[]) => {
+      if (Platform.OS !== 'android') {
+        return;
+      }
+
+      clearComposerMeasureTimeouts();
+      composerMeasureTimeouts.current = delays.map((delay) =>
+        setTimeout(measureAndroidComposerKeyboardOverlap, delay),
+      );
+    },
+    [clearComposerMeasureTimeouts, measureAndroidComposerKeyboardOverlap],
+  );
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -702,11 +763,21 @@ export default function ChatDetailScreen() {
     const showSubscription = Keyboard.addListener(showEvent, (event) => {
       setAttachmentMenuVisible(false);
       setIsComposerExpanded(true);
+      if (Platform.OS === 'android') {
+        androidKeyboardTop.current =
+          event.endCoordinates?.screenY ?? windowHeight - (event.endCoordinates?.height ?? 0);
+        scheduleAndroidComposerKeyboardMeasure([0, 16, 50, 120, 260]);
+      }
       syncMessagesToBottomIfNearBottom();
       animateComposer(1, event.duration ?? 240);
     });
     const hideSubscription = Keyboard.addListener(hideEvent, (event) => {
       setIsComposerExpanded(false);
+      if (Platform.OS === 'android') {
+        androidKeyboardTop.current = null;
+        clearComposerMeasureTimeouts();
+        setAndroidComposerKeyboardOffset(0);
+      }
       animateComposer(0, event.duration ?? 220);
     });
     const changeFrameSubscription =
@@ -720,8 +791,16 @@ export default function ChatDetailScreen() {
       showSubscription.remove();
       hideSubscription.remove();
       changeFrameSubscription?.remove();
+      clearComposerMeasureTimeouts();
     };
-  }, [attachmentMenuProgress, composerProgress]);
+  }, [
+    attachmentMenuProgress,
+    clearComposerMeasureTimeouts,
+    composerProgress,
+    scheduleAndroidComposerKeyboardMeasure,
+    setAndroidComposerKeyboardOffset,
+    windowHeight,
+  ]);
 
   useEffect(() => {
     Animated.timing(composerAttachmentProgress, {
@@ -840,7 +919,11 @@ export default function ChatDetailScreen() {
       Math.max(insets.bottom, 10) + COMPOSER_EXPANDED_HEIGHT + 18,
     ],
   });
-  const jumpButtonBottom = Animated.add(jumpButtonBaseBottom, composerInputExtraHeight);
+  const composerKeyboardOffset = Platform.OS === 'android' ? androidComposerKeyboardOffset : 0;
+  const jumpButtonBottom = Animated.add(
+    Animated.add(jumpButtonBaseBottom, composerInputExtraHeight),
+    composerKeyboardOffset,
+  );
   const jumpButtonTranslateY = jumpButtonProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [10, 0],
@@ -1035,7 +1118,10 @@ export default function ChatDetailScreen() {
         duration: 120,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: false,
-      }).start(syncMessagesToBottomIfNearBottom);
+      }).start(() => {
+        scheduleAndroidComposerKeyboardMeasure([0, 16, 50, 120, 180]);
+        syncMessagesToBottomIfNearBottom();
+      });
       return;
     }
 
@@ -1058,7 +1144,10 @@ export default function ChatDetailScreen() {
       duration: 120,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
-    }).start(syncMessagesToBottomIfNearBottom);
+    }).start(() => {
+      scheduleAndroidComposerKeyboardMeasure([0, 16, 50, 120, 180]);
+      syncMessagesToBottomIfNearBottom();
+    });
   };
 
   const handleSendMessage = () => {
@@ -1450,7 +1539,7 @@ export default function ChatDetailScreen() {
           className="absolute left-4 gap-2"
           pointerEvents={isAttachmentMenuTouchable ? 'auto' : 'none'}
           style={{
-            bottom: Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 14,
+            bottom: composerKeyboardOffset + Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 14,
             opacity: attachmentMenuOpacity,
             transform: [{ translateX: attachmentMenuTranslateX }, { scale: attachmentMenuScale }],
           }}
@@ -1474,8 +1563,10 @@ export default function ChatDetailScreen() {
         </Animated.View>
 
         <View
+          ref={composerContainerRef}
           className="absolute left-0 right-0 bg-background/95 px-3 pt-2"
-          style={{ bottom: 0, paddingBottom: Math.max(insets.bottom, 10) }}
+          onLayout={() => scheduleAndroidComposerKeyboardMeasure([0, 16, 50])}
+          style={{ bottom: composerKeyboardOffset, paddingBottom: Math.max(insets.bottom, 10) }}
         >
           <View className="flex-row items-end">
             <Animated.View
@@ -1515,6 +1606,7 @@ export default function ChatDetailScreen() {
                   setIsComposerExpanded(true);
                   syncMessagesToBottomIfNearBottom();
                   animateComposer(1, 220);
+                  scheduleAndroidComposerKeyboardMeasure([16, 90, 260]);
                 }}
                 placeholder="Message"
                 placeholderTextColor="#64748b"

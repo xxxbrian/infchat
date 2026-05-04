@@ -23,6 +23,10 @@ export function usePullExpandResponder({
   return useMemo(
     () =>
       PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) =>
+          scrollOffset() <= 0 &&
+          gestureState.dy > 4 &&
+          Math.abs(gestureState.dy) > Math.abs(gestureState.dx),
         onMoveShouldSetPanResponderCapture: (_event, gestureState) =>
           scrollOffset() <= 0 &&
           gestureState.dy > 4 &&

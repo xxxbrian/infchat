@@ -291,9 +291,12 @@ export default function ProfileScreen() {
         }}
         scrollEventThrottle={16}
         showsVerticalScrollIndicator={false}
-        {...pullExpandResponder.panHandlers}
       >
-        <Animated.View className="bg-background" style={{ height: heroHeight }}>
+        <Animated.View
+          className="bg-background"
+          style={{ height: heroHeight }}
+          {...pullExpandResponder.panHandlers}
+        >
           <View className="items-center">
             <Animated.View
               className="overflow-hidden"
