@@ -284,7 +284,6 @@ export default function ChatDetailScreen() {
   const [isJumpButtonTouchable, setIsJumpButtonTouchable] = useState(false);
   const [isComposerInputScrollable, setIsComposerInputScrollable] = useState(false);
   const [composerInputExtraHeightState, setComposerInputExtraHeightState] = useState(0);
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
   const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget | null>(null);
   const [failedOutgoingMessages, setFailedOutgoingMessages] = useState<FailedOutgoingMessage[]>([]);
   const hasComposerText = composerText.trim().length > 0;
@@ -526,12 +525,11 @@ export default function ChatDetailScreen() {
         Math.max(insets.bottom, 12) +
         (isComposerExpanded ? COMPOSER_EXPANDED_HEIGHT : COMPOSER_HEIGHT) +
         composerInputExtraHeightState +
-        androidKeyboardHeight +
         16,
       paddingHorizontal: 14,
       paddingTop: 14,
     }),
-    [androidKeyboardHeight, composerInputExtraHeightState, insets.bottom, isComposerExpanded],
+    [composerInputExtraHeightState, insets.bottom, isComposerExpanded],
   );
   const maintainVisibleContentPosition = useMemo(
     () => ({
@@ -704,17 +702,11 @@ export default function ChatDetailScreen() {
     const showSubscription = Keyboard.addListener(showEvent, (event) => {
       setAttachmentMenuVisible(false);
       setIsComposerExpanded(true);
-      if (Platform.OS === 'android') {
-        setAndroidKeyboardHeight(event.endCoordinates?.height ?? 0);
-      }
       syncMessagesToBottomIfNearBottom();
       animateComposer(1, event.duration ?? 240);
     });
     const hideSubscription = Keyboard.addListener(hideEvent, (event) => {
       setIsComposerExpanded(false);
-      if (Platform.OS === 'android') {
-        setAndroidKeyboardHeight(0);
-      }
       animateComposer(0, event.duration ?? 220);
     });
     const changeFrameSubscription =
@@ -848,11 +840,7 @@ export default function ChatDetailScreen() {
       Math.max(insets.bottom, 10) + COMPOSER_EXPANDED_HEIGHT + 18,
     ],
   });
-  const keyboardOffset = Platform.OS === 'android' ? androidKeyboardHeight : 0;
-  const jumpButtonBottom = Animated.add(
-    Animated.add(jumpButtonBaseBottom, composerInputExtraHeight),
-    keyboardOffset,
-  );
+  const jumpButtonBottom = Animated.add(jumpButtonBaseBottom, composerInputExtraHeight);
   const jumpButtonTranslateY = jumpButtonProgress.interpolate({
     inputRange: [0, 1],
     outputRange: [10, 0],
@@ -1462,7 +1450,7 @@ export default function ChatDetailScreen() {
           className="absolute left-4 gap-2"
           pointerEvents={isAttachmentMenuTouchable ? 'auto' : 'none'}
           style={{
-            bottom: keyboardOffset + Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 14,
+            bottom: Math.max(insets.bottom, 10) + COMPOSER_HEIGHT + 14,
             opacity: attachmentMenuOpacity,
             transform: [{ translateX: attachmentMenuTranslateX }, { scale: attachmentMenuScale }],
           }}
@@ -1487,7 +1475,7 @@ export default function ChatDetailScreen() {
 
         <View
           className="absolute left-0 right-0 bg-background/95 px-3 pt-2"
-          style={{ bottom: keyboardOffset, paddingBottom: Math.max(insets.bottom, 10) }}
+          style={{ bottom: 0, paddingBottom: Math.max(insets.bottom, 10) }}
         >
           <View className="flex-row items-end">
             <Animated.View

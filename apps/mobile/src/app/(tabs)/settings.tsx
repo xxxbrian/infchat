@@ -272,7 +272,7 @@ export default function SettingsTab() {
         {...pullExpandResponder.panHandlers}
       >
         <Animated.View className="bg-background" style={{ height: heroHeight }}>
-          <Pressable className="items-center" onPress={() => router.push('/profile/edit')}>
+          <View className="items-center">
             <Animated.View
               className="overflow-hidden"
               style={{
@@ -342,7 +342,7 @@ export default function SettingsTab() {
                 @{username}
               </Text>
             </Animated.View>
-          </Pressable>
+          </View>
         </Animated.View>
 
         <View className="px-5 pt-5">
