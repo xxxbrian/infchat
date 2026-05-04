@@ -445,6 +445,9 @@ async function main() {
   }
 
   const config = uploadMode === 'always' ? downloadsConfig() : null;
+  const downloadsPublicBaseUrl = (
+    config?.publicBaseUrl || optionalEnv('INFCHAT_DOWNLOADS_PUBLIC_BASE_URL')
+  ).replace(/\/+$/, '');
   const channelIndexKey = `${releaseRootKey}/android/channels/${channel}.json`;
   const betaUrl = config
     ? stablePublicUrl(config.publicBaseUrl, `${releaseRootKey}/android/channels/beta.json`)
@@ -478,7 +481,8 @@ async function main() {
   console.log(`${label('Channel')} ${channel}`);
   console.log(`${label('PocketBase URL')} ${pocketbaseUrl}`);
   if (livekitUrl) console.log(`${label('LiveKit URL')} ${livekitUrl}`);
-  if (config) console.log(`${label('Downloads base URL')} ${config.publicBaseUrl}`);
+  if (downloadsPublicBaseUrl)
+    console.log(`${label('Downloads base URL')} ${downloadsPublicBaseUrl}`);
   console.log(
     `${label('Publish')} ${publishMode === 'always' ? 'update channel index' : 'skip channel index'}`,
   );
@@ -486,7 +490,7 @@ async function main() {
   const buildEnv = {
     ...process.env,
     EXPO_PUBLIC_INFCHAT_DOWNLOADS_BASE_URL:
-      process.env.EXPO_PUBLIC_INFCHAT_DOWNLOADS_BASE_URL || config?.publicBaseUrl || '',
+      process.env.EXPO_PUBLIC_INFCHAT_DOWNLOADS_BASE_URL || downloadsPublicBaseUrl,
     EXPO_PUBLIC_INFCHAT_UPDATE_CHANNEL: channel,
     EXPO_PUBLIC_POCKETBASE_URL: pocketbaseUrl,
     ...(livekitUrl ? { EXPO_PUBLIC_LIVEKIT_URL: livekitUrl } : {}),
