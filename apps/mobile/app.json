@@ -44,7 +44,7 @@
         "android.permission.WAKE_LOCK"
       ],
       "predictiveBackGestureEnabled": false,
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "pan"
     },
     "web": {
       "bundler": "metro",
