@@ -346,9 +346,6 @@ export default function ProfileScreen() {
                   <Text className="text-[34px] font-bold tracking-[-1.2px] text-foreground">
                     {displayName}
                   </Text>
-                  <Text className="mt-1 text-base font-semibold text-foreground/75">
-                    @{username}
-                  </Text>
                   {presenceLabel ? (
                     <Text className="mt-1 text-sm font-semibold text-emerald-200/90">
                       {presenceLabel}
@@ -364,12 +361,6 @@ export default function ProfileScreen() {
                 numberOfLines={1}
               >
                 {displayName}
-              </Text>
-              <Text
-                className="mt-1 text-base font-semibold text-muted-foreground"
-                numberOfLines={1}
-              >
-                @{username}
               </Text>
               {presenceLabel ? (
                 <Text
