@@ -2966,12 +2966,12 @@ function TextMessageBubble({
             {hasText || message.kind === 'text' ? (
               <Text
                 className={`text-[16px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+                style={styles.textMessageBody}
               >
                 {message.text}
-                <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
               </Text>
             ) : (
-              <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
+              <Text style={styles.textMessageBody} />
             )}
             <Text
               className={`absolute bottom-3 right-4 text-[11px] font-medium ${
@@ -3082,9 +3082,9 @@ function MediaAlbumBubble({
             >
               <Text
                 className={`text-[15px] leading-5 ${isMine ? 'text-background' : 'text-foreground'}`}
+                style={styles.mediaCaptionBody}
               >
                 {message.text}
-                <Text style={styles.timestampPlaceholder}>{`      ${message.time}`}</Text>
               </Text>
               <Text
                 className={`absolute bottom-2 right-3 text-[11px] font-medium ${
@@ -4417,10 +4417,13 @@ const styles = StyleSheet.create({
   bubble: {
     borderCurve: 'continuous',
   } as ViewStyle,
-  timestampPlaceholder: {
-    color: 'transparent',
-    fontSize: 11,
-    lineHeight: 20,
+  mediaCaptionBody: {
+    paddingBottom: 14,
+    paddingRight: 58,
+  },
+  textMessageBody: {
+    paddingBottom: 14,
+    paddingRight: 58,
   },
   jumpButton: {
     shadowColor: '#000',
